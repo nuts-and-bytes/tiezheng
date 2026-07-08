@@ -1,0 +1,29 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-bg: #0a0a0b;
+  --color-card: #1c1c1e;
+  --color-card2: #2c2c2e;
+  --color-line: #3a3a3c;
+  --color-ink: #f5f5f7;
+  --color-mute: #8e8e93;
+  --color-iron: #ff5c1f;
+  --color-iron2: #ff8c42;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  -webkit-font-smoothing: antialiased;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px; /* 防止 iOS 聚焦自动放大页面 */
+}
