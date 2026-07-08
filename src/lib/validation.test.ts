@@ -1,4 +1,3 @@
-import { test, expect } from 'vitest';
 import {
   LIMITS, sanitizeSets, validBodyWeight, validLoad, validReps, validSetCount,
 } from './validation';
@@ -34,5 +33,6 @@ test('sanitizeSets 剔除非法重量/次数，保留组本身', () => {
   expect(
     sanitizeSets([{ weight: 60, reps: 10 }, { weight: 9999, reps: 0 }, {}]),
   ).toEqual([{ weight: 60, reps: 10 }, {}, {}]);
+  expect(sanitizeSets([{ weight: 60, reps: 500 }])).toEqual([{ weight: 60 }]);
   expect(LIMITS.sets.max).toBe(20);
 });
