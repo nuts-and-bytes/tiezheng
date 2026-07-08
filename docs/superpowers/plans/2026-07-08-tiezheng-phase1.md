@@ -2453,7 +2453,7 @@ import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ProgressRing } from '../../components/ProgressRing';
 import { bodyPartInfo } from '../../data/bodyParts';
-import { formatToday, todayStr } from '../../lib/dates';
+import { formatToday, parseDate, todayStr } from '../../lib/dates';
 import { currentStreak, weekProgress } from '../../lib/stats';
 import { validBodyWeight } from '../../lib/validation';
 import { getProfile } from '../../repos/profileRepo';
@@ -2478,7 +2478,7 @@ export function TodayScreen() {
   return (
     <div className="flex flex-col gap-4 px-4 pt-4">
       <header>
-        <p className="text-sm text-mute">{formatToday(today)}</p>
+        <p className="text-sm text-mute">{formatToday(parseDate(today))}</p>
         <h1 className="text-3xl font-bold">今天，留证。</h1>
       </header>
 
