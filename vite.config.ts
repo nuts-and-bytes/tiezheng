@@ -29,6 +29,13 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: { chart: ['chart.js', 'react-chartjs-2'] },
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     globals: true,
