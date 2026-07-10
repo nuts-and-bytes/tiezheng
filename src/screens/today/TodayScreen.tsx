@@ -18,8 +18,7 @@ export function TodayScreen() {
     const [profile, allDates] = await Promise.all([getProfile(), listAllWorkoutDates()]);
     return { profile, allDates };
   }, []);
-  const draft = useLogDraft();
-  const draftActive = draft.active && (draft.parts.length > 0 || draft.items.length > 0);
+  const hasDraft = useLogDraft((s) => s.active && (s.parts.length > 0 || s.items.length > 0));
 
   const goal = data?.profile.weeklyGoal ?? 4;
   const week = data ? weekProgress(data.allDates, today) : 0;
@@ -74,7 +73,7 @@ export function TodayScreen() {
       >
         {items && items.length > 0
           ? '+ 继续加练'
-          : draftActive
+          : hasDraft
             ? '继续未完成的记录'
             : '+ 开始今日训练'}
       </Link>
@@ -103,13 +102,16 @@ function WeightQuickEntry({ today }: { today: string }) {
   return (
     <div className="rounded-2xl bg-card p-5">
       <h2 className="mb-3 text-sm font-semibold text-mute">今日体重</h2>
-      {existing && <p className="mb-2 text-2xl font-bold">{existing.weightKg} kg</p>}
+      {existing && <p className="mb-2 text-2xl font-bold">{existing.weightKg.toFixed(1)} kg</p>}
       <div className="flex gap-2">
         <input
           inputMode="decimal"
           placeholder={existing ? '修改…' : '体重 kg'}
           value={raw}
-          onChange={(e) => setRaw(e.target.value)}
+          onChange={(e) => {
+            setRaw(e.target.value);
+            if (error) setError(false);
+          }}
           className="flex-1 rounded-lg bg-card2 px-3 py-2 text-ink placeholder:text-mute/60"
         />
         <button
