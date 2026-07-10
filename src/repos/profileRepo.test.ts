@@ -16,3 +16,10 @@ test('saveProfile 合并补丁并持久化', async () => {
   expect(p.onboarded).toBe(true);
   expect(p.updatedAt).toBeGreaterThan(0);
 });
+
+test('saveProfile 并发补丁不丢更新', async () => {
+  await Promise.all([saveProfile({ weeklyGoal: 5 }), saveProfile({ onboarded: true })]);
+  const p = await getProfile();
+  expect(p.weeklyGoal).toBe(5);
+  expect(p.onboarded).toBe(true);
+});
