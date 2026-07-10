@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Line, MixedChart, Radar } from '../../components/charts';
+import { PhotoTimeline } from '../../components/PhotoTimeline';
 import { BODY_PARTS } from '../../data/bodyParts';
 import { addDays, todayStr } from '../../lib/dates';
 import {
@@ -194,6 +195,8 @@ export function StatsScreen() {
           />
         </section>
       )}
+
+      <PhotoTimeline />
     </div>
   );
 }

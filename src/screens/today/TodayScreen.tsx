@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ProgressRing } from '../../components/ProgressRing';
+import { PhotoCard } from '../../components/PhotoCard';
 import { bodyPartInfo } from '../../data/bodyParts';
 import { formatToday, parseDate, todayStr } from '../../lib/dates';
 import { currentStreak, weekProgress } from '../../lib/stats';
@@ -79,6 +80,8 @@ export function TodayScreen() {
       </Link>
 
       <WeightQuickEntry today={today} />
+
+      <PhotoCard date={today} />
     </div>
   );
 }

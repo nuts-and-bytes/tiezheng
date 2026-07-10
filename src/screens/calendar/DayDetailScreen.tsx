@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
 import { bodyPartInfo } from '../../data/bodyParts';
 import { sanitizeSets } from '../../lib/validation';
@@ -34,6 +35,8 @@ export function DayDetailScreen() {
           <span className="text-xl font-bold">{weight.weightKg.toFixed(1)} kg</span>
         </div>
       )}
+
+      <PhotoCard date={date} />
     </div>
   );
 }

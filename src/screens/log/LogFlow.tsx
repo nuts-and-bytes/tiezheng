@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
 import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { todayStr } from '../../lib/dates';
@@ -256,6 +257,9 @@ function DoneScreen({ moves, sets }: { moves: number; sets: number }) {
       <p className="text-mute">
         {moves} 个动作 · {sets} 组
       </p>
+      <div className="w-full">
+        <PhotoCard date={todayStr()} />
+      </div>
       <button
         type="button"
         onClick={() => nav('/')}
