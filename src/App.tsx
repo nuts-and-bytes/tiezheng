@@ -1,4 +1,5 @@
 import { HashRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { TabBar } from './components/TabBar';
 import { CalendarScreen } from './screens/calendar/CalendarScreen';
@@ -7,8 +8,13 @@ import { LogFlow } from './screens/log/LogFlow';
 import { ProfileScreen } from './screens/profile/ProfileScreen';
 import { StatsScreen } from './screens/stats/StatsScreen';
 import { TodayScreen } from './screens/today/TodayScreen';
+import { Onboarding } from './screens/Onboarding';
+import { getProfile } from './repos/profileRepo';
 
 function TabLayout() {
+  const profile = useLiveQuery(() => getProfile(), []);
+  if (!profile) return null;
+  if (!profile.onboarded) return <Onboarding />;
   return (
     <div className="mx-auto min-h-dvh max-w-md pb-24 pt-[env(safe-area-inset-top)]">
       <Outlet />
