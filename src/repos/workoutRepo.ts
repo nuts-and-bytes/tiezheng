@@ -44,19 +44,21 @@ export async function addWorkoutItem(
   exerciseId: string,
   sets: SetEntry[],
 ): Promise<WorkoutItem> {
-  const workout = await getOrCreateWorkout(date);
-  const order = (await activeItems(workout.id)).length;
-  const row: WorkoutItem = {
-    id: newId(),
-    workoutId: workout.id,
-    exerciseId,
-    order,
-    sets,
-    updatedAt: Date.now(),
-    deletedAt: null,
-  };
-  await db.workoutItems.add(row);
-  return row;
+  return await db.transaction('rw', db.workouts, db.workoutItems, async () => {
+    const workout = await getOrCreateWorkout(date);
+    const order = (await activeItems(workout.id)).length;
+    const row: WorkoutItem = {
+      id: newId(),
+      workoutId: workout.id,
+      exerciseId,
+      order,
+      sets,
+      updatedAt: Date.now(),
+      deletedAt: null,
+    };
+    await db.workoutItems.add(row);
+    return row;
+  });
 }
 
 export async function updateItemSets(id: string, sets: SetEntry[]): Promise<void> {

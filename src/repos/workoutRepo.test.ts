@@ -71,3 +71,46 @@ test('listRecentExerciseIds 去重且最近使用在前', async () => {
   const ids = await listRecentExerciseIds();
   expect(ids.slice(0, 2)).toEqual(['p-bench', 'p-squat']);
 });
+
+test('addWorkoutItem 并发添加同日动作 order 不撞号', async () => {
+  await Promise.all([
+    addWorkoutItem('2026-07-08', 'p-bench', [{}]),
+    addWorkoutItem('2026-07-08', 'p-squat', [{}]),
+    addWorkoutItem('2026-07-08', 'p-deadlift', [{}]),
+  ]);
+  const all = await db.workoutItems.toArray();
+  const orders = all
+    .filter((i) => i.deletedAt === null)
+    .map((i) => i.order)
+    .sort((a, b) => a - b);
+  expect(orders).toEqual([0, 1, 2]);
+});
+
+test('commitDraft 并发同日提交 order 唯一', async () => {
+  await Promise.all([
+    commitDraft(
+      [
+        { exerciseId: 'p-bench', sets: [{ weight: 60, reps: 10 }] },
+        { exerciseId: 'p-squat', sets: [{ weight: 80, reps: 8 }] },
+      ],
+      '2026-07-08',
+    ),
+    commitDraft([{ exerciseId: 'p-deadlift', sets: [{ weight: 100, reps: 5 }] }], '2026-07-08'),
+  ]);
+  const all = await db.workoutItems.toArray();
+  const orders = all.filter((i) => i.deletedAt === null).map((i) => i.order);
+  expect(new Set(orders).size).toBe(orders.length);
+});
+
+test('removeWorkoutItem 并发删除最后两条时连带软删 workout', async () => {
+  const a = await addWorkoutItem('2026-07-08', 'p-bench', [{}]);
+  const b = await addWorkoutItem('2026-07-08', 'p-squat', [{}]);
+  await Promise.all([removeWorkoutItem(a.id), removeWorkoutItem(b.id)]);
+  // 软删：workout 行仍物理存在，deletedAt 已置为时间戳（日历不再亮格）
+  const workouts = await db.workouts.toArray();
+  const workout = workouts.find((w) => w.date === '2026-07-08');
+  expect(workout).toBeDefined();
+  expect(typeof workout?.deletedAt).toBe('number');
+  const items = await db.workoutItems.toArray();
+  expect(items.filter((i) => i.deletedAt === null)).toHaveLength(0);
+});
