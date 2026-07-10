@@ -1,5 +1,5 @@
 import { resetDb } from '../test/dbTestUtils';
-import { getProfile, saveProfile } from './profileRepo';
+import { adjustWeeklyGoal, getProfile, saveProfile } from './profileRepo';
 
 beforeEach(resetDb);
 
@@ -22,4 +22,21 @@ test('saveProfile 并发补丁不丢更新', async () => {
   const p = await getProfile();
   expect(p.weeklyGoal).toBe(5);
   expect(p.onboarded).toBe(true);
+});
+
+test('adjustWeeklyGoal 连续两次 +1 不丢更新（4 → 6）', async () => {
+  await Promise.all([adjustWeeklyGoal(1), adjustWeeklyGoal(1)]);
+  expect((await getProfile()).weeklyGoal).toBe(6);
+});
+
+test('adjustWeeklyGoal 下界 clamp：1 不再减', async () => {
+  await saveProfile({ weeklyGoal: 1 });
+  await adjustWeeklyGoal(-1);
+  expect((await getProfile()).weeklyGoal).toBe(1);
+});
+
+test('adjustWeeklyGoal 上界 clamp：7 不再加', async () => {
+  await saveProfile({ weeklyGoal: 7 });
+  await adjustWeeklyGoal(1);
+  expect((await getProfile()).weeklyGoal).toBe(7);
 });

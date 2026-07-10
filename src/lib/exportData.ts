@@ -1,6 +1,8 @@
 import { db } from './db';
 
 export function csvEscape(value: string): string {
+  // OWASP CSV Injection：前导 = + - @ 会被 Excel/WPS 当公式执行，加单引号中和（先前缀再走引号转义）
+  if (/^[=+\-@]/.test(value)) value = `'${value}`;
   if (/[",\n]/.test(value)) return `"${value.replaceAll('"', '""')}"`;
   return value;
 }

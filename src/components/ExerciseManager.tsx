@@ -1,15 +1,54 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { BODY_PARTS, bodyPartInfo } from '../data/bodyParts';
-import type { BodyPart } from '../lib/types';
+import type { BodyPart, Exercise } from '../lib/types';
 import { addCustomExercise, listByPart, removeExercise, renameExercise } from '../repos/exerciseRepo';
 
 export function ExerciseManager() {
   const [open, setOpen] = useState(false);
   const [part, setPart] = useState<BodyPart>('chest');
   const [newName, setNewName] = useState('');
+  // 门闩：写库期间重入直接返回（ref 保证同 tick 连点也拦得住，LogFlow 判例）
+  const busyRef = useRef(false);
+  const [creating, setCreating] = useState(false);
   const list = useLiveQuery(() => listByPart(part), [part]);
   const info = bodyPartInfo(part);
+
+  async function create() {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setCreating(true);
+    try {
+      await addCustomExercise(newName, part);
+      setNewName('');
+    } finally {
+      busyRef.current = false;
+      setCreating(false);
+    }
+  }
+
+  async function rename(ex: Exercise) {
+    if (busyRef.current) return;
+    const name = window.prompt('新名称', ex.name);
+    if (!name || !name.trim()) return;
+    busyRef.current = true;
+    try {
+      await renameExercise(ex.id, name);
+    } finally {
+      busyRef.current = false;
+    }
+  }
+
+  async function remove(ex: Exercise) {
+    if (busyRef.current) return;
+    if (!window.confirm(`删除「${ex.name}」？已有记录不受影响。`)) return;
+    busyRef.current = true;
+    try {
+      await removeExercise(ex.id);
+    } finally {
+      busyRef.current = false;
+    }
+  }
 
   return (
     <div className="rounded-2xl bg-card p-5">
@@ -44,25 +83,10 @@ export function ExerciseManager() {
                 {ex.preset && <span className="rounded bg-card2 px-1.5 py-0.5 text-[10px] text-mute">预置</span>}
                 {!ex.preset && (
                   <>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const name = window.prompt('新名称', ex.name);
-                        if (name && name.trim()) await renameExercise(ex.id, name);
-                      }}
-                      className="text-mute"
-                    >
+                    <button type="button" onClick={() => rename(ex)} className="text-mute">
                       改名
                     </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (window.confirm(`删除「${ex.name}」？已有记录不受影响。`)) {
-                          await removeExercise(ex.id);
-                        }
-                      }}
-                      className="text-iron"
-                    >
+                    <button type="button" onClick={() => remove(ex)} className="text-iron">
                       删除
                     </button>
                   </>
@@ -79,11 +103,8 @@ export function ExerciseManager() {
             />
             <button
               type="button"
-              disabled={newName.trim() === ''}
-              onClick={async () => {
-                await addCustomExercise(newName, part);
-                setNewName('');
-              }}
+              disabled={newName.trim() === '' || creating}
+              onClick={() => create()}
               className="rounded-lg bg-card2 px-3 py-2 text-sm text-iron disabled:opacity-30"
             >
               新建

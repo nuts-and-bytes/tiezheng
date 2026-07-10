@@ -1,11 +1,38 @@
+import { useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ExerciseManager } from '../../components/ExerciseManager';
 import { todayStr } from '../../lib/dates';
 import { buildJsonExport, buildWorkoutCsv, downloadText } from '../../lib/exportData';
-import { getProfile, saveProfile } from '../../repos/profileRepo';
+import { log } from '../../lib/logger';
+import { adjustWeeklyGoal, getProfile } from '../../repos/profileRepo';
 
 export function ProfileScreen() {
   const profile = useLiveQuery(() => getProfile(), []);
+  // 门闩：导出期间重入直接返回（ref 保证同 tick 连点也拦得住，LogFlow 判例）
+  const exportingRef = useRef(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(false);
+
+  async function exportFile(kind: 'csv' | 'json') {
+    if (exportingRef.current) return;
+    exportingRef.current = true;
+    setExporting(true);
+    setExportError(false);
+    try {
+      if (kind === 'csv') {
+        downloadText(`tiezheng-${todayStr()}.csv`, await buildWorkoutCsv(), 'text/csv');
+      } else {
+        downloadText(`tiezheng-${todayStr()}.json`, await buildJsonExport(), 'application/json');
+      }
+    } catch (err) {
+      log(`export ${kind}: ${String(err)}`);
+      setExportError(true);
+    } finally {
+      exportingRef.current = false;
+      setExporting(false);
+    }
+  }
+
   if (!profile) return null;
 
   return (
@@ -27,7 +54,7 @@ export function ProfileScreen() {
             type="button"
             aria-label="减少目标"
             disabled={profile.weeklyGoal <= 1}
-            onClick={() => saveProfile({ weeklyGoal: profile.weeklyGoal - 1 })}
+            onClick={() => adjustWeeklyGoal(-1)}
             className="h-9 w-9 rounded-lg bg-card2 text-lg disabled:opacity-30 active:scale-95"
           >
             −
@@ -37,7 +64,7 @@ export function ProfileScreen() {
             type="button"
             aria-label="增加目标"
             disabled={profile.weeklyGoal >= 7}
-            onClick={() => saveProfile({ weeklyGoal: profile.weeklyGoal + 1 })}
+            onClick={() => adjustWeeklyGoal(1)}
             className="h-9 w-9 rounded-lg bg-card2 text-lg disabled:opacity-30 active:scale-95"
           >
             ＋
@@ -53,23 +80,22 @@ export function ProfileScreen() {
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={async () => {
-              downloadText(`tiezheng-${todayStr()}.csv`, await buildWorkoutCsv(), 'text/csv');
-            }}
-            className="flex-1 rounded-lg bg-card2 py-3 text-sm font-semibold text-ink active:scale-95"
+            disabled={exporting}
+            onClick={() => exportFile('csv')}
+            className="flex-1 rounded-lg bg-card2 py-3 text-sm font-semibold text-ink disabled:opacity-30 active:scale-95"
           >
             导出 CSV
           </button>
           <button
             type="button"
-            onClick={async () => {
-              downloadText(`tiezheng-${todayStr()}.json`, await buildJsonExport(), 'application/json');
-            }}
-            className="flex-1 rounded-lg bg-card2 py-3 text-sm font-semibold text-ink active:scale-95"
+            disabled={exporting}
+            onClick={() => exportFile('json')}
+            className="flex-1 rounded-lg bg-card2 py-3 text-sm font-semibold text-ink disabled:opacity-30 active:scale-95"
           >
             导出 JSON
           </button>
         </div>
+        {exportError && <p className="mt-2 text-sm text-iron">导出失败，请重试</p>}
       </div>
 
       <p className="py-4 text-center text-xs text-mute">铁证 IRONPROOF · 你练过的，都有铁证</p>
