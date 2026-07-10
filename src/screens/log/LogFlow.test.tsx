@@ -1,6 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { db } from '../../lib/db';
+import { todayStr } from '../../lib/dates';
 import { seedPresets } from '../../repos/exerciseRepo';
 import { resetDb } from '../../test/dbTestUtils';
 import { useLogDraft } from '../../stores/logDraftStore';
@@ -13,13 +15,32 @@ beforeEach(async () => {
   await seedPresets();
 });
 
-test('第一步展示 7 个部位，选中后可进下一步', async () => {
-  const user = userEvent.setup();
-  render(
+function renderFlow() {
+  return render(
     <MemoryRouter>
       <LogFlow />
     </MemoryRouter>,
   );
+}
+
+/** 预置草稿到 step2（记组数）：active 必须为 true，否则挂载时 start() 会清空 */
+function presetDraftAtStep2(sets: { weight?: number; reps?: number }[] = [{}, {}, {}]) {
+  useLogDraft.setState({
+    active: true,
+    parts: ['chest'],
+    items: [{ exerciseId: 'p-bench', sets }],
+  });
+}
+
+async function activeWorkoutRows() {
+  const workouts = (await db.workouts.toArray()).filter((w) => w.deletedAt === null);
+  const items = (await db.workoutItems.toArray()).filter((i) => i.deletedAt === null);
+  return { workouts, items };
+}
+
+test('第一步展示 7 个部位，选中后可进下一步', async () => {
+  const user = userEvent.setup();
+  renderFlow();
   expect(await screen.findByText('今天练哪儿？')).toBeInTheDocument();
   expect(screen.getByText('胸')).toBeInTheDocument();
   expect(screen.getByText('有氧')).toBeInTheDocument();
@@ -30,4 +51,76 @@ test('第一步展示 7 个部位，选中后可进下一步', async () => {
   await waitFor(() => {
     expect(screen.getByText('下一步 · 选动作')).toBeEnabled();
   });
+});
+
+test('记录流端到端主链路：选部位→选动作→记组数→完成落库', async () => {
+  const user = userEvent.setup();
+  renderFlow();
+
+  await user.click(await screen.findByText('胸'));
+  await user.click(screen.getByText('下一步 · 选动作'));
+
+  await user.click(await screen.findByText('卧推'));
+  await user.click(screen.getByText('下一步 · 记组数（1）'));
+
+  expect(await screen.findByText('记组数')).toBeInTheDocument();
+  await user.type(screen.getAllByPlaceholderText('重量kg')[0], '60');
+  await user.type(screen.getAllByPlaceholderText('次数')[0], '10');
+  await user.click(screen.getByText('完成打卡'));
+
+  expect(await screen.findByText('已留下铁证')).toBeInTheDocument();
+  const { workouts, items } = await activeWorkoutRows();
+  expect(workouts).toHaveLength(1);
+  expect(workouts[0].date).toBe(todayStr());
+  expect(items).toHaveLength(1);
+  expect(items[0].exerciseId).toBe('p-bench');
+  expect(items[0].sets).toEqual([{ weight: 60, reps: 10 }, {}, {}]);
+});
+
+test('草稿有动作时挂载直接恢复到记组数步骤', async () => {
+  presetDraftAtStep2();
+  renderFlow();
+
+  expect(await screen.findByText('记组数')).toBeInTheDocument();
+  expect(screen.queryByText('今天练哪儿？')).toBeNull();
+  expect(screen.getByText('完成打卡')).toBeInTheDocument();
+});
+
+test('连点完成打卡只落库一次', async () => {
+  presetDraftAtStep2([{ weight: 60, reps: 10 }]);
+  renderFlow();
+
+  // 同 tick 双击：两次 click 之间无微任务间隙，复现 iOS 快速连点
+  const finishBtn = await screen.findByText('完成打卡');
+  fireEvent.click(finishBtn);
+  fireEvent.click(finishBtn);
+
+  expect(await screen.findByText('已留下铁证')).toBeInTheDocument();
+  const { workouts, items } = await activeWorkoutRows();
+  expect(workouts).toHaveLength(1);
+  expect(items).toHaveLength(1);
+});
+
+test('重量支持小数输入（62.5 不被吃成 625）', async () => {
+  const user = userEvent.setup();
+  presetDraftAtStep2([{}]);
+  renderFlow();
+
+  const weightInput = await screen.findByPlaceholderText('重量kg');
+  await user.type(weightInput, '62.5');
+
+  expect(useLogDraft.getState().items[0].sets[0].weight).toBe(62.5);
+});
+
+test('输入一位数字后焦点保持在同一输入框', async () => {
+  const user = userEvent.setup();
+  presetDraftAtStep2([{}]);
+  renderFlow();
+
+  const weightInput = await screen.findByPlaceholderText('重量kg');
+  await user.click(weightInput);
+  await user.keyboard('5');
+
+  expect(weightInput).toBeInTheDocument();
+  expect(document.activeElement).toBe(weightInput);
 });
