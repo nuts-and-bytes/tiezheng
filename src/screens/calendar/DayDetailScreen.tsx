@@ -31,7 +31,7 @@ export function DayDetailScreen() {
       {weight && (
         <div className="flex items-center justify-between rounded-2xl bg-card p-4">
           <span className="text-sm text-mute">当日体重</span>
-          <span className="text-xl font-bold">{weight.weightKg} kg</span>
+          <span className="text-xl font-bold">{weight.weightKg.toFixed(1)} kg</span>
         </div>
       )}
     </div>
