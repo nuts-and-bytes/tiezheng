@@ -25,10 +25,11 @@ export function weeklyCounts(workoutDates: string[], weeks: number, today: strin
   return starts.map((weekStart) => ({ weekStart, count: bucket.get(weekStart)! }));
 }
 
-/** 移动平均；前段不足窗口时按已有值平均（体重 7 日均线用） */
+/** 移动平均；前段不足窗口时按已有值平均（体重 7 日均线用）；window<=0 时按 1 处理 */
 export function movingAverage(values: number[], window: number): number[] {
+  const w = Math.max(1, window);
   return values.map((_, i) => {
-    const slice = values.slice(Math.max(0, i - window + 1), i + 1);
+    const slice = values.slice(Math.max(0, i - w + 1), i + 1);
     return slice.reduce((a, b) => a + b, 0) / slice.length;
   });
 }
