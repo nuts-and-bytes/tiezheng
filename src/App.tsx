@@ -1,4 +1,4 @@
-import { HashRouter, Outlet, Route, Routes } from 'react-router-dom';
+import { HashRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { TabBar } from './components/TabBar';
 import { CalendarScreen } from './screens/calendar/CalendarScreen';
@@ -30,6 +30,7 @@ export default function App() {
             <Route path="/stats" element={<StatsScreen />} />
             <Route path="/profile" element={<ProfileScreen />} />
           </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </HashRouter>
     </ErrorBoundary>

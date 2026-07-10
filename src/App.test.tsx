@@ -15,3 +15,14 @@ test('渲染 4 个底部 Tab', async () => {
   expect(screen.getByText('数据')).toBeInTheDocument();
   expect(screen.getByText('我的')).toBeInTheDocument();
 });
+
+test('未知路由回退到今日页', async () => {
+  window.location.hash = '#/does-not-exist';
+  try {
+    render(<App />);
+    const tabLabels = await screen.findAllByText('今日');
+    expect(tabLabels.length).toBeGreaterThan(0);
+  } finally {
+    window.location.hash = '';
+  }
+});

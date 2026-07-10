@@ -29,7 +29,11 @@ export class ErrorBoundary extends Component<Props, State> {
         <button
           type="button"
           className="rounded-xl bg-iron px-6 py-3 font-semibold text-white active:scale-95"
-          onClick={() => window.location.reload()}
+          onClick={() => {
+            // 先回到首页再重载，避免确定性渲染错误在原路由上无限崩溃
+            window.location.hash = '#/';
+            window.location.reload();
+          }}
         >
           重新载入
         </button>
