@@ -9,18 +9,20 @@ async function activeByDate(date: string): Promise<Photo | undefined> {
 
 /** 每天一张上限（规格 §9）：重拍 = 软删旧照 + 新增 */
 export async function savePhoto(date: string, blob: Blob): Promise<Photo> {
-  const old = await activeByDate(date);
-  if (old) await db.photos.update(old.id, { deletedAt: Date.now(), updatedAt: Date.now() });
-  const row: Photo = {
-    id: newId(),
-    date,
-    blob,
-    size: blob.size,
-    updatedAt: Date.now(),
-    deletedAt: null,
-  };
-  await db.photos.add(row);
-  return row;
+  return await db.transaction('rw', db.photos, async () => {
+    const old = await activeByDate(date);
+    if (old) await db.photos.update(old.id, { deletedAt: Date.now(), updatedAt: Date.now() });
+    const row: Photo = {
+      id: newId(),
+      date,
+      blob,
+      size: blob.size,
+      updatedAt: Date.now(),
+      deletedAt: null,
+    };
+    await db.photos.add(row);
+    return row;
+  });
 }
 
 export async function getPhoto(date: string): Promise<Photo | undefined> {

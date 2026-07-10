@@ -9,15 +9,17 @@ async function activeByDate(date: string): Promise<WeightLog | undefined> {
 
 /** 每天一条：已有则覆盖数值 */
 export async function setWeight(date: string, weightKg: number): Promise<WeightLog> {
-  const existing = await activeByDate(date);
-  if (existing) {
-    const next = { ...existing, weightKg, updatedAt: Date.now() };
-    await db.weightLogs.put(next);
-    return next;
-  }
-  const row: WeightLog = { id: newId(), date, weightKg, updatedAt: Date.now(), deletedAt: null };
-  await db.weightLogs.add(row);
-  return row;
+  return await db.transaction('rw', db.weightLogs, async () => {
+    const existing = await activeByDate(date);
+    if (existing) {
+      const next = { ...existing, weightKg, updatedAt: Date.now() };
+      await db.weightLogs.put(next);
+      return next;
+    }
+    const row: WeightLog = { id: newId(), date, weightKg, updatedAt: Date.now(), deletedAt: null };
+    await db.weightLogs.add(row);
+    return row;
+  });
 }
 
 export async function getWeight(date: string): Promise<WeightLog | undefined> {

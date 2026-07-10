@@ -28,4 +28,16 @@ test('removePhoto 软删后查不到', async () => {
   await savePhoto('2026-07-08', blob('a'));
   await removePhoto('2026-07-08');
   expect(await getPhoto('2026-07-08')).toBeUndefined();
+  // 软删：行仍物理存在，deletedAt 已置为时间戳
+  const all = await db.photos.toArray();
+  const row = all.find((p) => p.date === '2026-07-08');
+  expect(row).toBeDefined();
+  expect(typeof row?.deletedAt).toBe('number');
+});
+
+test('savePhoto 并发同日写入仅保留一张活跃照片', async () => {
+  await Promise.all([savePhoto('2026-07-08', blob('a')), savePhoto('2026-07-08', blob('b'))]);
+  const all = await db.photos.toArray();
+  const active = all.filter((p) => p.date === '2026-07-08' && p.deletedAt === null);
+  expect(active).toHaveLength(1);
 });
