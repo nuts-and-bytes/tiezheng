@@ -1,4 +1,5 @@
 node_modules/
 dist/
+dev-dist/
 .superpowers/
 .DS_Store

@@ -1,6 +1,8 @@
 import { HashRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { InstallHint } from './components/InstallHint';
+import { UpdateToast } from './components/UpdateToast';
 import { TabBar } from './components/TabBar';
 import { CalendarScreen } from './screens/calendar/CalendarScreen';
 import { DayDetailScreen } from './screens/calendar/DayDetailScreen';
@@ -43,6 +45,8 @@ function OnboardingGate() {
 export default function App() {
   return (
     <ErrorBoundary>
+      <UpdateToast />
+      <InstallHint />
       <HashRouter>
         <OnboardingGate />
       </HashRouter>
