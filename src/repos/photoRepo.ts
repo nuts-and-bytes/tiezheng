@@ -7,11 +7,19 @@ async function activeByDate(date: string): Promise<Photo | undefined> {
   return rows.find((p) => p.deletedAt === null);
 }
 
-/** 每天一张上限（规格 §9）：重拍 = 软删旧照 + 新增 */
+/** 每天一张上限（规格 §9）：重拍 = 软删旧照 + 新增。
+ * 隐私：照片永不同步，软删行同时置空 blob，字节不得滞留 IndexedDB。 */
 export async function savePhoto(date: string, blob: Blob): Promise<Photo> {
   return await db.transaction('rw', db.photos, async () => {
     const old = await activeByDate(date);
-    if (old) await db.photos.update(old.id, { deletedAt: Date.now(), updatedAt: Date.now() });
+    if (old) {
+      await db.photos.update(old.id, {
+        deletedAt: Date.now(),
+        updatedAt: Date.now(),
+        blob: new Blob([]),
+        size: 0,
+      });
+    }
     const row: Photo = {
       id: newId(),
       date,
@@ -44,6 +52,11 @@ export async function listPhotoDates(from: string, to: string): Promise<Set<stri
 export async function removePhoto(date: string): Promise<void> {
   const existing = await activeByDate(date);
   if (existing) {
-    await db.photos.update(existing.id, { deletedAt: Date.now(), updatedAt: Date.now() });
+    await db.photos.update(existing.id, {
+      deletedAt: Date.now(),
+      updatedAt: Date.now(),
+      blob: new Blob([]),
+      size: 0,
+    });
   }
 }
