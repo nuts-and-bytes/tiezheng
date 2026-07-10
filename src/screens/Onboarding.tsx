@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { saveProfile } from '../repos/profileRepo';
 
@@ -7,6 +7,19 @@ const GOALS = [3, 4, 5];
 export function Onboarding() {
   const nav = useNavigate();
   const [goal, setGoal] = useState(4);
+  const submittingRef = useRef(false);
+
+  async function start() {
+    // 门闩：提交期间重入直接返回（ref 保证同 tick 连点也拦得住，LogFlow 判例）
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    try {
+      await saveProfile({ weeklyGoal: goal, onboarded: true });
+      nav('/log');
+    } finally {
+      submittingRef.current = false;
+    }
+  }
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-6 px-8 text-center">
@@ -39,10 +52,7 @@ export function Onboarding() {
       </div>
       <button
         type="button"
-        onClick={async () => {
-          await saveProfile({ weeklyGoal: goal, onboarded: true });
-          nav('/log');
-        }}
+        onClick={start}
         className="w-full rounded-2xl bg-iron py-4 text-lg font-bold text-white active:scale-[.98]"
       >
         开始第一次打卡
