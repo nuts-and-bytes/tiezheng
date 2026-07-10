@@ -141,6 +141,15 @@ export function StatsScreen() {
                 { data: weightMa, borderColor: '#FF8C42', pointRadius: 0, tension: 0.3 },
               ],
             }}
+            options={{
+              plugins: {
+                tooltip: {
+                  callbacks: {
+                    label: (c) => (c.parsed.y == null ? '' : `${c.parsed.y.toFixed(1)} kg`),
+                  },
+                },
+              },
+            }}
           />
         </section>
       )}
@@ -172,6 +181,15 @@ export function StatsScreen() {
                   tension: 0.2,
                 },
               ],
+            }}
+            options={{
+              plugins: {
+                tooltip: {
+                  callbacks: {
+                    label: (c) => (c.parsed.y == null ? '' : `${c.parsed.y.toFixed(1)} kg`),
+                  },
+                },
+              },
             }}
           />
         </section>
