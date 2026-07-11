@@ -67,6 +67,10 @@ export function downloadText(filename: string, text: string, mime: string): void
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  // iOS Safari（尤其 PWA 独立模式）：<a> 必须挂载到 DOM 才能可靠触发下载/分享面板；
+  // revokeObjectURL 若与 click() 同步执行，部分机型会在下载真正发起前吊销 blob URL。
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

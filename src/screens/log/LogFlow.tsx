@@ -139,6 +139,9 @@ function PickExercises({ onBack, onNext }: { onBack: () => void; onNext: () => v
 
 function PartSection({ part, query }: { part: BodyPart; query: string }) {
   const [newName, setNewName] = useState('');
+  // 门闩：写库期间重入直接返回（ref 保证同 tick 连点也拦得住，ExerciseManager 判例）
+  const busyRef = useRef(false);
+  const [creating, setCreating] = useState(false);
   const items = useLogDraft((s) => s.items);
   const addItem = useLogDraft((s) => s.addItem);
   const removeItemByExercise = useLogDraft((s) => s.removeItemByExercise);
@@ -152,6 +155,21 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
   }, [part]);
   const info = bodyPartInfo(part);
   const shown = (data ?? []).filter((e) => !query || e.name.includes(query));
+
+  async function create() {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setCreating(true);
+    try {
+      const ex = await addCustomExercise(newName, part);
+      addItem(ex.id);
+      setNewName('');
+    } finally {
+      busyRef.current = false;
+      setCreating(false);
+    }
+  }
+
   return (
     <section>
       <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-mute">
@@ -184,12 +202,8 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
         />
         <button
           type="button"
-          disabled={newName.trim() === ''}
-          onClick={async () => {
-            const ex = await addCustomExercise(newName, part);
-            addItem(ex.id);
-            setNewName('');
-          }}
+          disabled={newName.trim() === '' || creating}
+          onClick={() => create()}
           className="rounded-lg bg-card2 px-3 py-2 text-sm text-iron disabled:opacity-30"
         >
           新建

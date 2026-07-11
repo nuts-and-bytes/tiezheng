@@ -3,15 +3,18 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { db } from '../../lib/db';
 import { todayStr } from '../../lib/dates';
-import { seedPresets } from '../../repos/exerciseRepo';
+import { addCustomExercise, seedPresets } from '../../repos/exerciseRepo';
 import { resetDb } from '../../test/dbTestUtils';
 import { useLogDraft } from '../../stores/logDraftStore';
 import { LogFlow } from './LogFlow';
+
+vi.mock('../../repos/exerciseRepo', { spy: true });
 
 beforeEach(async () => {
   localStorage.clear();
   useLogDraft.setState({ active: false, parts: [], items: [] });
   await resetDb();
+  vi.clearAllMocks();
   await seedPresets();
 });
 
@@ -123,4 +126,24 @@ test('输入一位数字后焦点保持在同一输入框', async () => {
 
   expect(weightInput).toBeInTheDocument();
   expect(document.activeElement).toBe(weightInput);
+});
+
+test('选动作步骤内新建动作按钮同 tick 双击只产生 1 条记录', async () => {
+  const user = userEvent.setup();
+  renderFlow();
+
+  await user.click(await screen.findByText('胸'));
+  await user.click(screen.getByText('下一步 · 选动作'));
+  await user.type(await screen.findByPlaceholderText('新建胸动作…'), '史密斯上斜推');
+
+  // 同 tick 双击：两次 click 之间无微任务间隙，复现 iOS 快速连点（ExerciseManager 判例）
+  const btn = screen.getByText('新建');
+  fireEvent.click(btn);
+  fireEvent.click(btn);
+
+  expect(addCustomExercise).toHaveBeenCalledTimes(1);
+  await waitFor(async () => {
+    const customs = (await db.exercises.toArray()).filter((e) => !e.preset);
+    expect(customs).toHaveLength(1);
+  });
 });
