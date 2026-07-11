@@ -26,6 +26,15 @@ test('渲染错误时展示 fallback', () => {
   expect(screen.getByRole('button', { name: '重新载入' })).toBeInTheDocument();
 });
 
+test('崩溃页展示错误信息本身，便于截图定位', () => {
+  render(
+    <ErrorBoundary>
+      <Boom />
+    </ErrorBoundary>,
+  );
+  expect(screen.getByText(/boom-test/)).toBeInTheDocument();
+});
+
 test('渲染错误写入环形日志', () => {
   render(
     <ErrorBoundary>

@@ -7,13 +7,14 @@ interface Props {
 
 interface State {
   hasError: boolean;
+  message: string;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { hasError: false };
+  state: State = { hasError: false, message: '' };
 
-  static getDerivedStateFromError(): State {
-    return { hasError: true };
+  static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, message: error.message };
   }
 
   componentDidCatch(error: Error): void {
@@ -26,6 +27,11 @@ export class ErrorBoundary extends Component<Props, State> {
       <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-8 text-center">
         <p className="text-2xl font-bold">出了点问题</p>
         <p className="text-sm text-mute">你的数据都在本地，不会丢失。</p>
+        {this.state.message && (
+          <p className="max-w-full break-words rounded-lg bg-card px-3 py-2 font-mono text-xs text-mute">
+            {this.state.message}
+          </p>
+        )}
         <button
           type="button"
           className="rounded-xl bg-iron px-6 py-3 font-semibold text-white active:scale-95"
