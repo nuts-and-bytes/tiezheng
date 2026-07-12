@@ -17,10 +17,10 @@ export function ProgressRing({ value, max, size = 120, stroke = 10, children }: 
         <defs>
           <linearGradient id="ring-grad" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0%" stopColor="#FF5C1F" />
-            <stop offset="100%" stopColor="#FF8C42" />
+            <stop offset="100%" stopColor="#FFB340" />
           </linearGradient>
         </defs>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#2C2C2E" strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1A1A1D" strokeWidth={stroke} />
         <circle
           cx={size / 2}
           cy={size / 2}

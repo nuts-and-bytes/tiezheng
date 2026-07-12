@@ -1,6 +1,28 @@
 import {
   countByBodyPart, currentStreak, maxWeightSeries, movingAverage, totals, weekProgress, weeklyCounts,
 } from './stats';
+import {
+  compare,
+  dailyLoad,
+  dailyMovingAverage,
+  dailyPartLoad,
+  daysBetween,
+  daysInRange,
+  daysInYear,
+  e1rmSeries,
+  estimate1RM,
+  hasWeightData,
+  lastTrainedByBodyPart,
+  longestStreak,
+  percentile,
+  prevRangeOf,
+  prsByExercise,
+  rangeOf,
+  setsByBodyPart,
+  topExerciseIds,
+  yearsWithData,
+} from './stats';
+import type { Exercise } from './types';
 
 test('countByBodyPart 零填充全部 7 个部位', () => {
   const r = countByBodyPart(['chest', 'chest', 'leg']);
@@ -67,4 +89,231 @@ test('currentStreak 空记录为 0、只有今天为 1', () => {
 
 test('weekProgress 只数本周（周一起）', () => {
   expect(weekProgress(['2026-07-06', '2026-07-08', '2026-07-01'], '2026-07-08')).toBe(2);
+});
+
+/** 测试夹具：两个动作，胸推 + 深蹲 */
+const EX: Map<string, Exercise> = new Map([
+  ['e1', { id: 'e1', name: '卧推', bodyPart: 'chest', preset: true, updatedAt: 0, deletedAt: null }],
+  ['e2', { id: 'e2', name: '深蹲', bodyPart: 'leg', preset: true, updatedAt: 0, deletedAt: null }],
+]);
+
+const ITEMS = [
+  { date: '2026-07-01', exerciseId: 'e1', sets: [{ weight: 60, reps: 10 }, { weight: 60, reps: 8 }] },
+  { date: '2026-07-03', exerciseId: 'e1', sets: [{ weight: 65, reps: 8 }] },
+  { date: '2026-07-03', exerciseId: 'e2', sets: [{ weight: 80, reps: 5 }, { weight: 80, reps: 5 }, { weight: 80, reps: 5 }] },
+  { date: '2026-06-20', exerciseId: 'e1', sets: [{ weight: 50, reps: 10 }] },
+];
+
+describe('rangeOf / prevRangeOf', () => {
+  it('本周从周一到今天', () => {
+    // 2026-07-12 是周日 → 周一是 07-06
+    expect(rangeOf('week', '2026-07-12')).toEqual({ from: '2026-07-06', to: '2026-07-12' });
+  });
+
+  it('本月从 1 号到今天', () => {
+    expect(rangeOf('month', '2026-07-12')).toEqual({ from: '2026-07-01', to: '2026-07-12' });
+  });
+
+  it('今年从 1 月 1 日到今天', () => {
+    expect(rangeOf('year', '2026-07-12')).toEqual({ from: '2026-01-01', to: '2026-07-12' });
+  });
+
+  it('全部从纪元起算', () => {
+    expect(rangeOf('all', '2026-07-12')).toEqual({ from: '1970-01-01', to: '2026-07-12' });
+  });
+
+  it('上一区间与本区间等长且紧邻', () => {
+    // 07-06..07-12 共 7 天 → 上一段 06-29..07-05
+    expect(prevRangeOf({ from: '2026-07-06', to: '2026-07-12' })).toEqual({
+      from: '2026-06-29',
+      to: '2026-07-05',
+    });
+  });
+});
+
+describe('daysBetween / daysInRange / daysInYear', () => {
+  it('daysBetween 算头尾差值', () => {
+    expect(daysBetween('2026-07-01', '2026-07-12')).toBe(11);
+    expect(daysBetween('2026-07-12', '2026-07-12')).toBe(0);
+  });
+
+  it('daysInRange 去重且只数区间内的', () => {
+    const dates = ['2026-07-01', '2026-07-03', '2026-07-03', '2026-06-20'];
+    expect(daysInRange(dates, '2026-07-01', '2026-07-12')).toBe(2);
+  });
+
+  it('daysInYear 认得闰年', () => {
+    expect(daysInYear(2026)).toBe(365);
+    expect(daysInYear(2024)).toBe(366);
+  });
+});
+
+describe('hasWeightData', () => {
+  it('有重量+次数才算有', () => {
+    expect(hasWeightData(ITEMS)).toBe(true);
+  });
+
+  it('只记组数的用户算没有', () => {
+    expect(hasWeightData([{ date: '2026-07-01', exerciseId: 'e1', sets: [{}, {}, {}] }])).toBe(false);
+  });
+
+  it('只填重量不填次数也算没有（容量算不出来）', () => {
+    expect(
+      hasWeightData([{ date: '2026-07-01', exerciseId: 'e1', sets: [{ weight: 60 }] }]),
+    ).toBe(false);
+  });
+});
+
+describe('dailyLoad', () => {
+  it('按日期汇总组数，区间外不计', () => {
+    const load = dailyLoad(ITEMS, '2026-07-01', '2026-07-12');
+    expect(load.get('2026-07-01')).toBe(2);
+    expect(load.get('2026-07-03')).toBe(4); // e1 一组 + e2 三组
+    expect(load.has('2026-06-20')).toBe(false);
+  });
+});
+
+describe('compare', () => {
+  it('环比给出本期、上期和百分比', () => {
+    const dates = ITEMS.map((i) => i.date);
+    const r = compare(
+      ITEMS,
+      dates,
+      { from: '2026-07-01', to: '2026-07-12' },
+      { from: '2026-06-19', to: '2026-06-30' },
+    );
+    expect(r.days.cur).toBe(2);
+    expect(r.days.prev).toBe(1);
+    expect(r.days.pct).toBe(100);
+    expect(r.sets.cur).toBe(6);
+    expect(r.sets.prev).toBe(1);
+  });
+
+  it('上期为 0 时百分比为 null（不能除以 0，也不能写成 +Infinity%）', () => {
+    const r = compare(ITEMS, ['2026-07-01'], { from: '2026-07-01', to: '2026-07-12' }, { from: '2026-06-01', to: '2026-06-12' });
+    expect(r.days.prev).toBe(0);
+    expect(r.days.pct).toBeNull();
+  });
+});
+
+describe('estimate1RM', () => {
+  it('Epley 公式', () => {
+    expect(estimate1RM(100, 1)).toBeCloseTo(103.33, 1);
+    expect(estimate1RM(60, 10)).toBeCloseTo(80, 5);
+  });
+
+  it('非法输入返回 0，不返回 NaN', () => {
+    expect(estimate1RM(0, 10)).toBe(0);
+    expect(estimate1RM(60, 0)).toBe(0);
+  });
+});
+
+describe('prsByExercise', () => {
+  it('每个动作取历史最佳 e1RM，按 e1RM 降序', () => {
+    const prs = prsByExercise(ITEMS, EX);
+    expect(prs[0].name).toBe('深蹲'); // 80×5 → 93.3
+    expect(prs[0].e1rm).toBeCloseTo(93.33, 1);
+    expect(prs[1].name).toBe('卧推'); // 65×8 → 82.3 胜过 60×10 的 80
+    expect(prs[1].date).toBe('2026-07-03');
+  });
+
+  it('没有重量数据时返回空数组，不返回 NaN 行', () => {
+    expect(prsByExercise([{ date: '2026-07-01', exerciseId: 'e1', sets: [{}] }], EX)).toEqual([]);
+  });
+});
+
+describe('e1rmSeries / topExerciseIds', () => {
+  it('每天取该动作最大 e1RM，按日期升序', () => {
+    const s = e1rmSeries(ITEMS, 'e1');
+    expect(s.map((p) => p.date)).toEqual(['2026-06-20', '2026-07-01', '2026-07-03']);
+    expect(s[2].e1rm).toBeCloseTo(82.33, 1);
+  });
+
+  it('默认动作 = 有效数据点最多的那个（不再是 Map 迭代顺序里随机的第一个）', () => {
+    expect(topExerciseIds(ITEMS, 5)[0]).toBe('e1'); // e1 有 3 天，e2 只有 1 天
+  });
+});
+
+describe('setsByBodyPart / lastTrainedByBodyPart', () => {
+  it('按部位汇总组数（组数计权，不是次数计权）', () => {
+    const by = setsByBodyPart(ITEMS, EX);
+    expect(by.chest).toBe(4);
+    expect(by.leg).toBe(3);
+    expect(by.back).toBe(0);
+  });
+
+  it('距上次训练天数；从未练过为 null', () => {
+    const last = lastTrainedByBodyPart(ITEMS, EX, '2026-07-12');
+    expect(last.chest).toBe(9); // 07-03
+    expect(last.back).toBeNull();
+  });
+});
+
+describe('longestStreak', () => {
+  it('最长连续打卡天数', () => {
+    expect(longestStreak(['2026-07-01', '2026-07-02', '2026-07-03', '2026-07-06'])).toBe(3);
+  });
+
+  it('空数组为 0', () => {
+    expect(longestStreak([])).toBe(0);
+  });
+
+  it('重复日期不重复计数', () => {
+    expect(longestStreak(['2026-07-01', '2026-07-01', '2026-07-02'])).toBe(2);
+  });
+});
+
+describe('dailyPartLoad', () => {
+  it('每天给出主练部位和总组数', () => {
+    const m = dailyPartLoad(ITEMS, EX);
+    expect(m.get('2026-07-03')).toEqual({ part: 'leg', sets: 4 }); // 腿 3 组 > 胸 1 组
+    expect(m.get('2026-07-01')).toEqual({ part: 'chest', sets: 2 });
+  });
+
+  it('并列时取 BODY_PARTS 顺序靠前者（结果必须确定，不能靠 Map 迭代顺序）', () => {
+    const tie = [
+      { date: '2026-07-05', exerciseId: 'e2', sets: [{}] }, // leg 1 组
+      { date: '2026-07-05', exerciseId: 'e1', sets: [{}] }, // chest 1 组
+    ];
+    expect(dailyPartLoad(tie, EX).get('2026-07-05')).toEqual({ part: 'chest', sets: 2 });
+  });
+});
+
+describe('percentile', () => {
+  it('p90 线性插值：(n-1)*p/100 = 8.1 → 9 + (10-9)*0.1 = 9.1', () => {
+    // 计划里写的 toBe(10) 与它自己的实现（和 numpy / Excel PERCENTILE.INC）矛盾。
+    // p90 若等于最大值就失去了意义——它存在的目的正是「别让某一天的暴走把热力图色阶冲淡」。
+    expect(percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 90)).toBeCloseTo(9.1, 5);
+  });
+
+  it('分位落在整数下标上时直接取该值', () => {
+    expect(percentile([1, 2, 3, 4, 5], 50)).toBe(3);
+    expect(percentile([5, 1, 3], 100)).toBe(5); // 内部先排序，不假设入参有序
+  });
+
+  it('空数组为 0（海报热力图靠它防 0 除）', () => {
+    expect(percentile([], 90)).toBe(0);
+  });
+});
+
+describe('yearsWithData', () => {
+  it('降序返回有数据的年份', () => {
+    expect(yearsWithData(['2025-12-31', '2026-01-01', '2026-07-01'])).toEqual([2026, 2025]);
+  });
+});
+
+describe('dailyMovingAverage', () => {
+  it('按自然日开窗，不按记录序号（隔了 30 天的两条不该互相平滑）', () => {
+    const out = dailyMovingAverage(
+      [
+        { date: '2026-06-01', value: 70 },
+        { date: '2026-07-01', value: 80 },
+        { date: '2026-07-02', value: 82 },
+      ],
+      7,
+    );
+    expect(out[0].value).toBe(70);
+    expect(out[1].value).toBe(80); // 7 日窗内只有它自己，不该被 6-01 的 70 拖下来
+    expect(out[2].value).toBe(81); // (80+82)/2
+  });
 });

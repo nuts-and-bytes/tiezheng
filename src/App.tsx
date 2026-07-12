@@ -7,6 +7,7 @@ import { TabBar } from './components/TabBar';
 import { CalendarScreen } from './screens/calendar/CalendarScreen';
 import { DayDetailScreen } from './screens/calendar/DayDetailScreen';
 import { LogFlow } from './screens/log/LogFlow';
+import { PosterScreen } from './screens/poster/PosterScreen';
 import { ProfileScreen } from './screens/profile/ProfileScreen';
 import { StatsScreen } from './screens/stats/StatsScreen';
 import { TodayScreen } from './screens/today/TodayScreen';
@@ -31,6 +32,7 @@ function OnboardingGate() {
     <Routes>
       <Route path="/log" element={<LogFlow />} />
       <Route path="/day/:date" element={<DayDetailScreen />} />
+      <Route path="/poster" element={<PosterScreen />} />
       <Route element={<TabLayout />}>
         <Route path="/" element={<TodayScreen />} />
         <Route path="/calendar" element={<CalendarScreen />} />
@@ -45,6 +47,8 @@ function OnboardingGate() {
 export default function App() {
   return (
     <ErrorBoundary>
+      {/* 全屏噪点：锻造质感的来源，pointer-events:none 不挡交互 */}
+      <div className="grain" aria-hidden />
       <UpdateToast />
       <InstallHint />
       <HashRouter>
