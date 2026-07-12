@@ -24,12 +24,31 @@ export function heatAlpha(sets: number, maxSets: number): number {
   return HEAT_FLOOR + (1 - HEAT_FLOOR) * t;
 }
 
+function rgb(part: BodyPart): [number, number, number] {
+  const hex = bodyPartInfo(part).color;
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
 /** 当日主练部位的本色 + 由组数决定的浓淡。返回值可直接给 CSS 或 canvas fillStyle。 */
 export function heatColor(part: BodyPart, sets: number, maxSets: number): string {
-  const hex = bodyPartInfo(part).color;
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
+  const [r, g, b] = rgb(part);
   const a = Math.round(heatAlpha(sets, maxSets) * 1000) / 1000;
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+/**
+ * 日历格的浓度天花板。年度小格和海报格上没有字，可以满色；
+ * 日历格上压着白色日期数字——满 alpha 的饱和红/紫会把白字吃掉。
+ */
+export const CALENDAR_ALPHA_CEIL = 0.6;
+
+/** 日历格专用：同一个色相、同一条浓淡曲线，只是整体压到 CALENDAR_ALPHA_CEIL 以内。 */
+export function calendarHeatColor(part: BodyPart, sets: number, maxSets: number): string {
+  const [r, g, b] = rgb(part);
+  const a = Math.round(heatAlpha(sets, maxSets) * CALENDAR_ALPHA_CEIL * 1000) / 1000;
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
