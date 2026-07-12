@@ -1,9 +1,12 @@
 import { useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { BODY_PARTS, bodyPartInfo } from '../data/bodyParts';
+import { db } from '../lib/db';
 import type { BodyPart, Exercise } from '../lib/types';
 import { addCustomExercise, listByPart, removeExercise, renameExercise } from '../repos/exerciseRepo';
+import { PartIcon } from './PartIcon';
 
+/** 「我的」页里的一行设置项：折叠时只是一条细线上的行，展开才长出管理面板 */
 export function ExerciseManager() {
   const [open, setOpen] = useState(false);
   const [part, setPart] = useState<BodyPart>('chest');
@@ -12,6 +15,8 @@ export function ExerciseManager() {
   const busyRef = useRef(false);
   const [creating, setCreating] = useState(false);
   const list = useLiveQuery(() => listByPart(part), [part]);
+  // 在库总数：exerciseRepo 没有 count helper，直接读表（软删行不算）
+  const total = useLiveQuery(() => db.exercises.filter((e) => e.deletedAt === null).count(), []);
   const info = bodyPartInfo(part);
 
   async function create() {
@@ -51,42 +56,80 @@ export function ExerciseManager() {
   }
 
   return (
-    <div className="rounded-2xl bg-card p-5">
+    <div className="border-t border-line">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between"
+        className="flex w-full items-center gap-3.5 py-4 text-left"
       >
-        <h2 className="text-sm font-semibold text-mute">动作库管理</h2>
-        <span className="text-sm text-iron">{open ? '收起' : '展开'}</span>
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-line bg-raised">
+          <svg
+            width={18}
+            height={18}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            className="text-mute"
+            aria-hidden
+          >
+            <path d="M4 9v6M7 7.5v9M17 7.5v9M20 9v6M7 12h10" />
+          </svg>
+        </span>
+        <span className="min-w-0 flex-1">
+          <b className="block text-[15px] font-semibold">动作库</b>
+          <span className="mt-0.5 block text-xs text-mute">预置 + 你自己的动作</span>
+        </span>
+        <span className="text-sm font-semibold tabular-nums">{total ?? 0} 个</span>
+        <span className="text-xs text-mute">{open ? '收起' : '展开'}</span>
       </button>
+
       {open && (
-        <div className="mt-4 flex flex-col gap-3">
-          <div className="flex flex-wrap gap-2">
+        <div className="pb-5">
+          <div className="mb-1 flex flex-wrap gap-1.5">
             {BODY_PARTS.map((p) => (
               <button
                 key={p.id}
                 type="button"
                 onClick={() => setPart(p.id)}
-                className={`rounded-full px-3 py-1.5 text-sm ${
-                  part === p.id ? 'bg-iron/15 font-semibold text-iron' : 'bg-card2 text-mute'
+                className={`rounded-lg px-2.5 py-1 text-xs ${
+                  part === p.id
+                    ? 'bg-iron/15 font-semibold text-iron'
+                    : 'border border-line bg-raised text-mute'
                 }`}
               >
                 {p.name}
               </button>
             ))}
           </div>
-          <ul className="flex flex-col gap-2">
+          <ul className="flex flex-col">
             {list?.map((ex) => (
-              <li key={ex.id} className="flex items-center gap-2 text-sm">
-                <span className="flex-1">{ex.name}</span>
-                {ex.preset && <span className="rounded bg-card2 px-1.5 py-0.5 text-[10px] text-mute">预置</span>}
+              <li
+                key={ex.id}
+                className="flex items-center gap-2.5 border-t border-line py-2.5 text-sm"
+              >
+                <PartIcon part={ex.bodyPart} size={16} />
+                <span className="min-w-0 flex-1 truncate">{ex.name}</span>
+                {ex.preset && (
+                  <span className="rounded border border-line px-1.5 py-0.5 text-[10px] text-mute">
+                    预置
+                  </span>
+                )}
                 {!ex.preset && (
                   <>
-                    <button type="button" onClick={() => rename(ex)} className="text-mute">
+                    <button
+                      type="button"
+                      onClick={() => rename(ex)}
+                      className="px-1 text-xs text-mute active:scale-95"
+                    >
                       改名
                     </button>
-                    <button type="button" onClick={() => remove(ex)} className="text-iron">
+                    <button
+                      type="button"
+                      onClick={() => remove(ex)}
+                      className="px-1 text-xs text-iron active:scale-95"
+                    >
                       删除
                     </button>
                   </>
@@ -94,18 +137,18 @@ export function ExerciseManager() {
               </li>
             ))}
           </ul>
-          <div className="flex gap-2">
+          <div className="mt-3 flex gap-2">
             <input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder={`新建${info.name}动作…`}
-              className="flex-1 rounded-lg bg-card2 px-3 py-2 text-sm text-ink placeholder:text-mute/60"
+              className="flex-1 rounded-xl border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute/60"
             />
             <button
               type="button"
               disabled={newName.trim() === '' || creating}
               onClick={() => create()}
-              className="rounded-lg bg-card2 px-3 py-2 text-sm text-iron disabled:opacity-30"
+              className="rounded-xl border border-iron/40 px-3.5 py-2 text-sm font-semibold text-iron disabled:opacity-30 active:scale-95"
             >
               新建
             </button>

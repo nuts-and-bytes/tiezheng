@@ -27,7 +27,8 @@ function renderProfile() {
   );
 }
 
-/** 昨天：卧推 100×5 + 80×10；今天：深蹲 60×10 → 2 天 / 3 组 / 1300kg / 最长连续 2 */
+/** 昨天：卧推 100×5 + 80×10；今天：深蹲 60×10
+ *  → 2 天 / 3 组 / 100×5 + 80×10 + 60×10 = 1900kg / 最长连续 2 */
 async function seedTraining() {
   const today = todayStr();
   const [bench] = await listByPart('chest'); // 卧推
@@ -53,7 +54,7 @@ test('顶部战绩：总打卡 / 最长连续 / 总组数 / 累计容量', async
   expect(within(await statCell('最长连续')).getByText('2')).toBeInTheDocument();
   expect(within(await statCell('总组数')).getByText('3')).toBeInTheDocument();
   const vol = await statCell('累计容量');
-  expect(within(vol).getByText('1.3')).toBeInTheDocument();
+  expect(within(vol).getByText('1.9')).toBeInTheDocument();
   expect(within(vol).getByText('t')).toBeInTheDocument();
 });
 
