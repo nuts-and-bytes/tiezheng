@@ -1,0 +1,100 @@
+<!-- @dsCard group="Screens" -->
+<style>
+:root{--bg:#0A0A0B;--raised:#141416;--ink:#F2F0EB;--mute:#8B8B85;--iron:#FF5C1F;--amber:#FFB340;--line:rgba(255,255,255,.07)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;justify-content:center;padding:24px;font-family:-apple-system,'PingFang SC',sans-serif;-webkit-font-smoothing:antialiased}
+.phone{width:390px;background:var(--bg);color:var(--ink);border-radius:40px;border:1px solid rgba(255,255,255,.12);overflow:hidden;position:relative;display:flex;flex-direction:column;min-height:760px}
+.grain{position:absolute;inset:0;pointer-events:none;opacity:.05;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E")}
+.display{font-family:Impact,'Arial Narrow',sans-serif;letter-spacing:.5px;font-variant-numeric:tabular-nums}
+.etch{height:1px;background:rgba(255,255,255,.06);box-shadow:0 1px 0 rgba(0,0,0,.65)}
+.body{flex:1;padding:54px 24px 0;position:relative}
+.brand{display:flex;align-items:center;gap:16px;padding:8px 0 20px}
+.stamp{width:64px;height:64px;border:3px solid var(--iron);border-radius:14px;transform:rotate(-6deg);display:flex;align-items:center;justify-content:center;color:var(--iron);font-size:32px;font-weight:900;box-shadow:0 0 24px rgba(255,92,31,.3),inset 0 0 12px rgba(255,92,31,.15);position:relative;flex-shrink:0}
+.stamp::after{content:'';position:absolute;inset:4px;border:1px dashed rgba(255,92,31,.45);border-radius:9px}
+.brand h1{font-size:20px;font-weight:800;letter-spacing:1px}
+.brand .en{font-size:10px;color:var(--mute);letter-spacing:3px}
+.brand .age{margin-top:6px;font-size:12px;color:var(--amber)}
+.stats{display:flex;text-align:center;padding:14px 0 18px}
+.stats div{flex:1}
+.stats .n{font-size:30px}
+.stats .n.hot{background:linear-gradient(135deg,#FF5C1F,#FFB340);-webkit-background-clip:text;background-clip:text;color:transparent}
+.stats .l{font-size:11px;color:var(--mute);margin-top:3px}
+.stats .sep{flex:0;width:1px;background:var(--line);margin:6px 12px}
+.row{display:flex;align-items:center;gap:14px;padding:16px 2px}
+.row .ic{width:36px;height:36px;border-radius:10px;background:var(--raised);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.row b{font-size:15px;font-weight:600}
+.row p{font-size:12px;color:var(--mute);margin-top:2px}
+.row .end{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--mute);font-size:14px}
+.row .val{color:var(--ink);font-weight:700}
+.row .chev{color:var(--mute);font-size:18px}
+.tag{font-size:10px;color:var(--mute);border:1px solid var(--line);border-radius:99px;padding:3px 9px}
+.foot{text-align:center;padding:18px 0 14px;font-size:11px;color:var(--mute);letter-spacing:1px}
+.tabbar{display:flex;justify-content:space-around;padding:12px 8px 26px;border-top:1px solid var(--line);background:rgba(20,20,22,.9)}
+.tab{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;color:var(--mute)}
+.tab.on{color:var(--iron)}
+</style>
+<div class="phone"><div class="grain"></div>
+  <div class="body">
+    <div class="brand">
+      <div class="stamp">铁</div>
+      <div>
+        <h1>铁证 <span class="en">IRONPROOF</span></h1>
+        <p style="font-size:12px;color:var(--mute);margin-top:3px">你练过的，都有铁证。</p>
+        <p class="age">⚒ 铁龄 128 天</p>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div><span class="display n hot">64</span><p class="l">总打卡</p></div>
+      <div class="sep"></div>
+      <div><span class="display n">5</span><p class="l">当前连续</p></div>
+      <div class="sep"></div>
+      <div><span class="display n">48.2<span style="font-size:15px">t</span></span><p class="l">累计容量</p></div>
+    </div>
+    <div class="etch"></div>
+
+    <div class="row">
+      <span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FF5C1F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></span>
+      <div><b>每周目标</b></div>
+      <span class="end"><span class="val">4 练/周</span><span class="chev">›</span></span>
+    </div>
+    <div class="etch" style="opacity:.6"></div>
+    <div class="row">
+      <span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4F8EF7" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12h3m11 0h3M8 8.5v7m8-7v7M8 12h8"/><rect x="5" y="8.5" width="3" height="7" rx="1"/><rect x="16" y="8.5" width="3" height="7" rx="1"/></svg></span>
+      <div><b>动作库</b><p>自定义你的训练动作</p></div>
+      <span class="end"><span class="val">21 个</span><span class="chev">›</span></span>
+    </div>
+    <div class="etch" style="opacity:.6"></div>
+    <div class="row">
+      <span class="ic" style="border-color:rgba(255,92,31,.4)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FFB340" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M8.5 8h7M8.5 11.5h7M8.5 15h4"/></svg></span>
+      <div><b>月度训练海报</b><p>生成本月钢印海报 · 保存到相册</p></div>
+      <span class="end"><span class="tag" style="color:var(--iron);border-color:rgba(255,92,31,.4)">NEW</span><span class="chev">›</span></span>
+    </div>
+    <div class="etch" style="opacity:.6"></div>
+    <div class="row">
+      <span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2FD6C3" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v11m0 0-3.5-3.5m3.5 3.5 3.5-3.5"/><path d="M4.5 16v2.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V16"/></svg></span>
+      <div><b>数据导出</b><p>CSV / JSON · 数据主权归你</p></div>
+      <span class="end"><span class="chev">›</span></span>
+    </div>
+    <div class="etch" style="opacity:.6"></div>
+    <div class="row">
+      <span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8B8B85" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 19.5c-2.2-1.2-3.5-3.3-3.5-6C3 8.9 7 5.5 12 5.5s9 3.4 9 8c0 2.7-1.3 4.8-3.5 6"/><path d="M12 12v7.5"/></svg></span>
+      <div><b>云同步</b><p>换手机不丢数据</p></div>
+      <span class="end"><span class="tag">Phase 2</span></span>
+    </div>
+    <div class="etch" style="opacity:.6"></div>
+    <div class="row">
+      <span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8B8B85" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.5v.5"/></svg></span>
+      <div><b>关于铁证</b><p>照片只存本机 · 无广告无推销</p></div>
+      <span class="end"><span class="chev">›</span></span>
+    </div>
+
+    <p class="foot">IRONPROOF v2 · 你练过的，都有铁证</p>
+  </div>
+  <div class="tabbar">
+    <div class="tab"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="14" rx="3" transform="rotate(-6 12 11)"/><path d="M9.2 10.5l2 2 3.8-4" transform="rotate(-6 12 11)"/><path d="M7 21h10"/></svg>今日</div>
+    <div class="tab"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2v3m10-3v3M3.5 9h17M5 4.5h14A1.5 1.5 0 0 1 20.5 6v13a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V6A1.5 1.5 0 0 1 5 4.5Z"/></svg>日历</div>
+    <div class="tab"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11m5.3 9V4m5.4 16v-6m5.3 6V8"/></svg>数据</div>
+    <div class="tab on"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="3" width="8" height="11" rx="4"/><path d="M12 14v3m-3.5 4a3.5 3.5 0 0 1 7 0"/></svg>我的</div>
+  </div>
+</div>

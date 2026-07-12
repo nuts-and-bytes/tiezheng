@@ -1,0 +1,84 @@
+<!-- @dsCard group="Screens" -->
+<style>
+:root{--bg:#0A0A0B;--raised:#141416;--ink:#F2F0EB;--mute:#8B8B85;--iron:#FF5C1F;--amber:#FFB340;--line:rgba(255,255,255,.07)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;padding:28px;font-family:-apple-system,'PingFang SC',sans-serif;-webkit-font-smoothing:antialiased;color:var(--ink)}
+h1{font-size:20px;margin-bottom:4px}
+.sub{color:var(--mute);font-size:13px;margin-bottom:24px}
+.flow{display:flex;gap:16px;flex-wrap:wrap}
+.mini{width:232px;min-height:420px;background:var(--bg);border:1px solid rgba(255,255,255,.12);border-radius:26px;padding:28px 20px 20px;position:relative;overflow:hidden;display:flex;flex-direction:column}
+.mini .grain{position:absolute;inset:0;pointer-events:none;opacity:.05;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E")}
+.step{position:absolute;top:16px;left:20px;font-size:10px;color:var(--mute);letter-spacing:2px}
+.skip{position:absolute;top:14px;right:18px;font-size:11px;color:var(--mute)}
+.display{font-family:Impact,'Arial Narrow',sans-serif;letter-spacing:.5px}
+.stamp{width:84px;height:84px;border:3px solid var(--iron);border-radius:16px;transform:rotate(-6deg);display:flex;align-items:center;justify-content:center;color:var(--iron);font-size:44px;font-weight:900;box-shadow:0 0 30px rgba(255,92,31,.35),inset 0 0 14px rgba(255,92,31,.16);position:relative;margin:36px auto 22px}
+.stamp::after{content:'';position:absolute;inset:5px;border:1px dashed rgba(255,92,31,.45);border-radius:10px}
+.mini h2{font-size:17px;text-align:center;line-height:1.5}
+.mini .d{font-size:11px;color:var(--mute);text-align:center;margin-top:8px;line-height:1.7}
+.dots{display:flex;gap:5px;justify-content:center;margin-top:auto;padding-top:18px}
+.dots i{width:5px;height:5px;border-radius:99px;background:rgba(255,255,255,.15)}
+.dots .on{background:var(--iron);width:14px}
+.threestep{margin:30px 0 0;display:flex;flex-direction:column;gap:14px}
+.ts{display:flex;align-items:center;gap:11px}
+.ts .n{width:26px;height:26px;border-radius:8px;background:rgba(255,92,31,.14);color:var(--iron);font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.ts b{font-size:13px}
+.ts p{font-size:10px;color:var(--mute);margin-top:1px}
+.posterthumb{margin:22px auto 0;width:118px;background:#0D0D0F;border:1px solid rgba(255,92,31,.3);border-radius:12px;padding:12px 10px;text-align:center;box-shadow:0 8px 26px rgba(255,92,31,.18)}
+.posterthumb .pm{font-size:8px;color:var(--mute);letter-spacing:2px}
+.posterthumb .pn{font-size:34px;line-height:1.1;background:linear-gradient(135deg,#FF5C1F,#FFB340);-webkit-background-clip:text;background-clip:text;color:transparent}
+.posterthumb .pl{font-size:7px;color:var(--mute)}
+.posterthumb .prow{display:flex;justify-content:space-between;margin-top:8px;font-size:7px;color:var(--mute)}
+.posterthumb .prow b{display:block;font-size:11px;color:var(--ink);font-family:Impact,'Arial Narrow',sans-serif}
+.posterthumb .pst{width:20px;height:20px;border:1.5px solid var(--iron);border-radius:5px;transform:rotate(-6deg);color:var(--iron);font-size:10px;font-weight:900;display:flex;align-items:center;justify-content:center;margin:8px auto 0}
+.goals{display:flex;gap:8px;justify-content:center;margin-top:24px}
+.goals span{width:44px;height:44px;border-radius:12px;background:var(--raised);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700}
+.goals .on{background:var(--iron);border-color:var(--iron);color:#fff;box-shadow:0 4px 18px rgba(255,92,31,.4)}
+.cta{margin-top:18px;border-radius:14px;padding:13px;text-align:center;font-size:13px;font-weight:800;color:#fff;background:linear-gradient(135deg,#FF5C1F,#FF8C42);box-shadow:0 6px 22px rgba(255,92,31,.35)}
+</style>
+<h1>首次引导 · 4 步 <span style="color:var(--iron)">可随时跳过</span></h1>
+<p class="sub">砸下钢印开场 → 30 秒学会打卡 → 亮出海报卖点 → 定目标直接开练。每屏一句话，不啰嗦。</p>
+<div class="flow">
+
+  <div class="mini"><div class="grain"></div>
+    <span class="step">1 / 4</span>
+    <div class="stamp">铁</div>
+    <h2>你练过的<br>都有铁证。</h2>
+    <p class="d">钢印带辉光砸落 + 轻震动<br>数据只存你手机本地<br>无广告 · 无推销</p>
+    <div class="dots"><i class="on"></i><i></i><i></i><i></i></div>
+  </div>
+
+  <div class="mini"><div class="grain"></div>
+    <span class="step">2 / 4</span><span class="skip">跳过</span>
+    <h2 style="margin-top:34px">30 秒，盖下今天的印</h2>
+    <div class="threestep">
+      <div class="ts"><span class="n">1</span><div><b>选部位</b><p>胸 / 背 / 腿…7 个部位各有图标</p></div></div>
+      <div class="ts"><span class="n">2</span><div><b>记几组</b><p>重量 × 次数，加减号快速输入</p></div></div>
+      <div class="ts"><span class="n">3</span><div><b>盖钢印</b><p>可顺手拍一张，只存本机</p></div></div>
+    </div>
+    <div class="dots"><i></i><i class="on"></i><i></i><i></i></div>
+  </div>
+
+  <div class="mini"><div class="grain"></div>
+    <span class="step">3 / 4</span><span class="skip">跳过</span>
+    <h2 style="margin-top:34px">月底，领你的海报</h2>
+    <p class="d">每月训练数据一键生成钢印海报<br>保存到相册，发不发圈你说了算</p>
+    <div class="posterthumb">
+      <p class="pm">IRONPROOF · 2026.07</p>
+      <p class="display pn">12</p>
+      <p class="pl">天 · 打卡</p>
+      <div class="prow"><span><b>86</b>组</span><span><b>12.4t</b>容量</span><span><b>5</b>连续</span></div>
+      <div class="pst">铁</div>
+    </div>
+    <div class="dots"><i></i><i></i><i class="on"></i><i></i></div>
+  </div>
+
+  <div class="mini"><div class="grain"></div>
+    <span class="step">4 / 4</span>
+    <h2 style="margin-top:34px">每周想练几次？</h2>
+    <p class="d">定个能坚持的数，随时可改</p>
+    <div class="goals"><span>3</span><span class="on">4</span><span>5</span></div>
+    <div class="cta">开始第一次打卡</div>
+    <div class="dots"><i></i><i></i><i></i><i class="on"></i></div>
+  </div>
+
+</div>

@@ -1,0 +1,71 @@
+{
+  "sharedEngine": "## 目录：`src/lib/poster/`（月度/年度共用一套引擎，版式各一份常量表）\n\n```\nsrc/lib/poster/\n  tokens.ts        海报专用 token（与 index.css 同值，Canvas 不能读 CSS 变量，必须硬编码一份）\n  fonts.ts         ensurePosterFonts(timeoutMs = 3000): Promise<boolean>  // document.fonts.load('88px Anton') 等；超时 false → 回退 Impact/Arial Narrow，不阻塞\n  canvas.ts        渲染/导出外壳（唯一碰 DOM 的文件）\n  layers.ts        全部绘制原语（纯 ctx 函数，可单测）\n  monthlyPoster.ts drawMonthlyPoster(ctx, data)  // 只是 layers 的一串调用 + 月度 y 常量\n  yearlyPoster.ts  drawYearlyPoster(ctx, data)   // 同上 + 年度 y 常量\n  data.ts          buildMonthlyPosterData / buildYearlyPosterData（纯函数，输入 repo 结果，不碰 Dexie）\n```\n\n## canvas.ts — 共用外壳（月/年唯一差异是 spec）\n\n```ts\nexport interface PosterSpec {\n  width: number;   // 逻辑像素：月 390 / 年 390\n  height: number;  // 月 693 / 年 780\n  scale: number;   // 3\n  paint(ctx: CanvasRenderingContext2D): void;\n}\n\nexport function monthlySpec(data: MonthlyPosterData): PosterSpec;\nexport function yearlySpec(data: YearlyPosterData): PosterSpec;\n\n/** 唯一渲染入口：设 canvas.width = width*scale，ctx.setTransform(scale,0,0,scale,0,0)，\n *  再 spec.paint(ctx)。paint 内部一律用逻辑 px，完全不感知 3x。 */\nexport function renderPoster(canvas: HTMLCanvasElement, spec: PosterSpec): void;\n\n/** 导出：toBlob('image/png') → navigator.canShare({files}) 则 share，否则 <a download>。\n *  3x toBlob 返回 null（低端机内存）时自动以 scale=2 重渲染重试一次。 */\nexport function exportPoster(canvas: HTMLCanvasElement, spec: PosterSpec, filename: string): Promise<'shared' | 'downloaded' | 'cancelled'>;\n```\n\nPosterScreen 只调 `ensurePosterFonts()` → `renderPoster(canvasRef, kind === 'year' ? yearlySpec(d) : monthlySpec(d))` → 「保存图片」调 `exportPoster`。切月/切年只是换 spec 重绘同一个 canvas。\n\n## layers.ts — 绘制原语（月/年 100% 共用；每个函数返回它占用的底部 y，便于版式表连排）\n\n```ts\ndrawBackdrop(ctx, w, h): void\n  // #0A0A0B 底 + 顶部径向光 radial(120% 70% at 50% -10%, rgba(255,92,31,.16) → transparent 60%)\n  // + drawGrain + 1px rgba(255,255,255,.1) 内描边\ndrawGrain(ctx, w, h, alpha = 0.06): void\n  // 120x120 离屏随机灰度 tile，模块级缓存一次，createPattern 平铺\ndrawHeader(ctx, { y, left, right }): void            // 10px / letterSpacing 3 / mute；左「铁证 IRONPROOF」右「MONTHLY PROOF」|「ANNUAL PROOF」\ndrawTitle(ctx, { x, baseline, text, size }): number  // Anton size px + heat 线性渐变填充（按 measureText 的 bbox 建 135° 渐变），返回文本宽度\ndrawEtch(ctx, x, y, w): void                         // 1px rgba(255,255,255,.06) + 其下 1px rgba(0,0,0,.65)\ndrawHero(ctx, { x, baseline, value, unit }): number  // Anton 120px ink + 15px mute 单位，返回数字宽度\ndrawMetrics(ctx, { x, y, w, items }): void\n  // items: [{ value: string, label: string, accent?: 'amber' }] 长度固定 3；等分列 + 1px 竖分隔\ndrawSplit(ctx, { x, y, w, mode, parts, total }): number\n  // mode:'rows'  → 月度：top5 横条（6px 轨道 + 部位色填充 + 右侧组数）\n  // mode:'stacked'→ 年度：一根 12px 100% 堆叠条 + 下方色点图例（省 ~40px 高度）\ndrawMonthGrid(ctx, { x, y, w, ym, cells }): number   // 月度 7 列 × 5~6 行\ndrawYearGrid(ctx, { x, y, w, year, cells, maxSets }): number  // 年度 53/54 列 × 7 行（GitHub 式）\ndrawFooter(ctx, { x, sloganBaseline, subBaseline, slogan, sub }): void\ndrawStamp(ctx, { x, y, size = 74, char = '铁' }): void  // rotate(-6°) + 3px iron 圆角矩形 + inset 4 虚线 + shadowBlur 26 iron glow\n```\n\n**关键点：月度海报的 `drawMonthlyPoster` 与年度的 `drawYearlyPoster` 都只是「一串 layers 调用 + 一张 y 常量表」**，没有任何自己的低层绘制代码。热力图是唯一的分叉（drawMonthGrid vs drawYearGrid），二者内部共用同一个 `cellFill(part, sets, maxSets)` 上色规则，保证视觉同源。\n\n## tokens.ts\n\n```ts\nexport const C = { bg:'#0A0A0B', ink:'#F2F0EB', mute:'#8B8B85', iron:'#FF5C1F', amber:'#FFB340',\n                   line:'rgba(255,255,255,.07)', etch:'rgba(255,255,255,.06)', empty:'rgba(255,255,255,.045)' };\nexport const F = { display:(px:number)=>`${px}px Anton, Impact, \"Arial Narrow\", sans-serif`,\n                   text:(px:number,w=500)=>`${w} ${px}px -apple-system, \"PingFang SC\", sans-serif` };\nexport function heatGradient(ctx, x, y, w, h): CanvasGradient; // #FF5C1F → #FFB340\n```",
+  "yearlyLayout": [
+    "画布：390 × 780 逻辑像素（导出 3x = 1170 × 2340）。左右内边距 36，内容宽 318（x = 36 … 354）。比例 1:2，比月度 693 高 87px，正好容下年度热力图 + 最猛的一天两块新内容；不用 844 是因为 844 会在 iOS 全屏预览里被压得更小、且底部会出现空场。所有 x 坐标与月度完全一致 → 除热力图外全部原语零改动复用。",
+    "BACKDROP：#0A0A0B 满铺 + 顶部径向光 radial(120% 70% at 50% -10%, rgba(255,92,31,.16) → transparent 60%) + 6% 噪点 + 1px rgba(255,255,255,.1) 内描边。与月度同。",
+    "HEADER（y 38–50）：10px / 字距 3 / #8B8B85，基线 y=48。左 x=36「铁证 IRONPROOF」；右对齐 x=354「ANNUAL PROOF」。",
+    "YEAR 标题（y 96–166）：Anton 88px、heat 渐变填充（135°，#FF5C1F→#FFB340），文本「2026」，x=36，基线 y=160。右侧配铁龄两行（右对齐 x=354）：11px mute 字距2「铁龄 IRON AGE」基线 y=140；Anton 26px ink「421」+ 13px mute「天」基线 y=164。（必须先 measureText('2026') 确认右边界 < 铁龄左边界，Anton 88px 下「2026」约 150–165px，安全。）",
+    "ETCH #1：y=182，x=36，w=318。",
+    "HERO 打卡天数（y 214–302）：Anton 120px ink，值 = 全年打卡天数，x=36，基线 y=300。右接 15px mute「天 · 全年钢印」，x = 36 + heroWidth + 12，基线 y=300。行尾右对齐 x=354、10px mute：「占全年 39%」（= days / 该年总天数，四舍五入整数），基线 y=300。",
+    "METRICS 三数（y 326–372）：三等分列，列宽 106，x0=36 / x1=142 / x2=248；竖分隔线 1px #line 位于 x=141 与 x=247，y 330–372。数字 Anton 28px 基线 y=352；标签 10px mute 字距1 基线 y=368。① 值=总组数，标签「总组数 SETS」；② 值=总容量（吨，1 位小数，单位 t 用 16px 小字，如 128.4t），标签「总容量 VOLUME」；③ 值=最长连续（amber #FFB340），标签「最长连续 STREAK」。",
+    "ETCH #2：y=390。",
+    "HEATMAP 标题（y 402–416）：10px mute 字距2「全年热力图 THE YEAR IN IRON」，x=36，基线 y=412。",
+    "HEATMAP 月份刻度（y 424–432）：9px mute，基线 y=430；第 m 月标签「1」…「12」的 x = 36 + colOf(该月 1 日) * pitch。",
+    "HEATMAP 网格（y 438–479）：GitHub 式 53 列 × 7 行（闰年/跨周边界时 cols 可能 54，列数动态算）。gap=1.2；cell = (318 − (cols−1)×1.2) / cols ≈ 4.79（cols=53）；pitch = cell + 1.2 ≈ 5.99。列 = 该日所在周（周一起）相对 1 月 1 日所在周的序号；行 = 星期（周一=0 … 周日=6）。格子圆角 1px。网格总高 = 7×cell + 6×1.2 ≈ 40.8 → 底 y≈478.8。",
+    "HEATMAP 上色（唯一新规则，其余全复用）：未练格 = rgba(255,255,255,.045)。已练格 = 当日『主练部位』颜色（组数最多的部位；并列取 BODY_PARTS 数组顺序靠前者，保证确定性可测），透明度 = 0.35 + 0.65 × min(1, sets / maxSets)，maxSets = 该年单日组数的 P90（用 P90 而非 max，避免一个 40 组的极端日把其余全压成暗色；P90 上限封顶 1.0）。已练格再叠 0.5px 同色 rgba .5 描边，抵消 4.8px 小格在暗底上的辨识度损失。年份外的补白格（首周/末周溢出的日期）不画。",
+    "HEATMAP 图例（y 486–496）：9px mute，x=36，基线 y=494：「格子颜色 = 当日主练部位 · 深浅 = 组数」。用文字说明编码，而不是画色块 legend（7 色 + 4 档深浅的色块图例会占两行且很花，破坏克制感）。",
+    "ETCH #3：y=510。",
+    "SPLIT 部位分布（y 522–600）：标题 10px mute 字距2「部位分布 SPLIT」x=36 基线 y=532。年度用 **堆叠条**（月度用 5 行横条）：x=36, y=544, w=318, h=12, 圆角 6，按组数占比横向切 7 段（只画组数 > 0 的部位，按组数降序），段间不留缝，段色 = 部位色（不透明）；占比 < 2% 的部位并入最后一段但仍保留 3px 最小宽度以免消失。图例：两行色点，第 1 行基线 y=572、第 2 行基线 y=590，每行最多 4 项，项间距 80px（x = 36 + i×80）：5px 圆点（部位色，圆心偏移 y−4）+ 6px 间隙 + 10px ink 部位名 + 4px + 10px mute 百分比。堆叠条比 7 行横条省 ~40px，且更像「这一年你的身体构成」。",
+    "ETCH #4：y=612。",
+    "PEAK DAY 最猛的一天（y 624–670）：标题 10px mute 字距2「最猛的一天 PEAK DAY」x=36 基线 y=634。主值 Anton 34px ink，x=36，基线 y=668：容量吨数（如「3.2t」，单位 t 用 15px）。右接 12px mute「· 24 组 · 8 个动作」x = 36 + w + 10 基线 y=666。右对齐 x=354、11px：先画 5px 部位色圆点（x=354 − textWidth − 12），再画 mute 文本「10月18日 · 腿」基线 y=666。降级：全年 volumeKg = 0（用户从不填重量）时，主值改为组数「24」+ 15px「组」，右侧改为「· 8 个动作」。",
+    "FOOTER（y 674–750）：钢印 drawStamp 于 x=280, y=674, size=74（rotate −6°、3px #FF5C1F 圆角 14、inset 4 的 1px 虚线内框、shadowBlur 26 iron glow、中央「铁」38px 900）。左侧署名：15px 800 ink「你练过的，都有铁证。」x=36 基线 y=730；9px mute 字距2「TIEZHENG.PAGES.DEV · 本地生成 · 照片不上传」x=36 基线 y=748。底边留白 32px。",
+    "为什么英雄数字是『打卡天数』而不是吨数：年度的情绪是「这一年我成了什么样的人」——身份由『出现的次数』定义，不由力学功定义。吨数是战绩（放 metrics 行），天数是身份（放 120px 位）。而且与月度同构（同一个 drawHero），月/年海报并排看是同一个人的两张证。差异化靠 hero 右侧的『占全年 39%』——这句只有年度成立，一眼给出「一年里有近四成的日子我在铁下面」。"
+  ],
+  "yearlyDataFields": [
+    "打卡天数 days（英雄数字）= new Set(listWorkoutDates(`${y}-01-01`, `${y}-12-31`)).size —— 现成 totals() 已返回 days，直接复用。",
+    "占全年百分比 = Math.round(days / daysInYear(y) * 100)，daysInYear 判闰年（新写 3 行，放 src/lib/dates.ts: `export function daysInYear(year: number): number`）。",
+    "总组数 sets = totals(items, dates).sets（现成）。items 来自 `listItemsInRange(`${y}-01-01`, `${y}-12-31`)`（现成 workoutRepo API）。",
+    "总容量 volumeKg = totals(...).volumeKg（现成，Σ weight×reps，只在两者都填时计入）→ 显示 `(volumeKg/1000).toFixed(1) + 't'`；volumeKg === 0 时显示「—」。",
+    "最长连续 longestStreak —— stats.ts 目前只有 currentStreak（从今天回溯），年度必须新增：`export function longestStreak(dates: Set<string>): { length: number; endDate: string | null }`（把日期排序后线性扫描连续段，O(n log n)，无外部依赖，易单测）。",
+    "铁龄 ironAgeDays = 从『有史以来第一次打卡』到今天的天数（含首日）= daysBetween(firstEverDate, today) + 1。firstEverDate = `(await listAllWorkoutDates())[0] ?? null`（现成 API，已排序）。需新增 `export function daysBetween(a: string, b: string): number` 到 dates.ts。firstEverDate 为 null 时铁龄显示「—」。",
+    "部位分布 partSets: Record<BodyPart, number> = 遍历 items，把 item.sets.length 累加到 `partOfExercise.get(item.exerciseId)` 上。现成 countByBodyPart() 是按『次数』计的（传 BodyPart[]），年度按组数加权更准 → 在 poster/data.ts 内自算，不改 stats.ts 现有签名（避免动 117 个已有测试）。",
+    "每日格子 cells: DayCell[]（热力图数据）：`interface DayCell { date: string; sets: number; volumeKg: number; part: BodyPart | null; exerciseCount: number }`。按 date 分组 items → sets = Σ item.sets.length；part = 该日组数最多的部位（并列取 BODY_PARTS 数组顺序靠前者）；volumeKg = Σ weight×reps。",
+    "maxSets（深浅归一化基准）= cells 中 sets>0 的 P90（sorted[floor(0.9 × (n−1))]），并 `Math.max(1, p90)` 防 0 除。用 P90 而非 max，防单个极端日压暗全年。",
+    "最猛的一天 bestDay = cells 中 volumeKg 最大者；若全年 volumeKg 全为 0，退化为 sets 最大者（并让 UI 用组数展示）。并列取日期靠后者（更近的胜利更有说服力）。",
+    "主数据构造函数（新增 src/lib/poster/data.ts）：`export function buildYearlyPosterData(input: { year: number; today: string; items: RangeItem[]; workoutDates: string[]; partOfExercise: Map<string, BodyPart>; firstEverDate: string | null }): YearlyPosterData` —— 纯函数、不碰 Dexie、可 100% 单测。`YearlyPosterData = { year, days, daysPercent, sets, volumeKg, longestStreak, ironAgeDays, partSets, cells, maxSets, bestDay }`。",
+    "调用侧（PosterScreen 里一次性拉数，全部是现成 repo API）：`listItemsInRange(y-01-01, y-12-31)` + `listWorkoutDates(同上)` + `listAllWorkoutDates()[0]` + `db.exercises.toArray()` 建 exerciseId → bodyPart 的 Map（或新增 `exerciseRepo.listBodyPartMap(): Promise<Map<string, BodyPart>>`，一行，避免 screen 直接摸 db）。零网络。",
+    "可选年份列表（切换用）：`export function yearsWithData(allDates: string[]): number[]` —— 从 listAllWorkoutDates() 取 slice(0,4) 去重，降序。"
+  ],
+  "differencesFromMonthly": [
+    "画布：390×693（9:16）→ 390×780（1:2）。左右 padding 与所有 x 坐标不变，只是 y 序列更长；月度海报不动一行代码。",
+    "标题：88px 的『07』（月）→ 88px 的『2026』（年），同一个 drawTitle + heat 渐变。年度在标题右侧新增『铁龄 IRON AGE / 421 天』——铁龄是跨年概念，月度没有位置放，年度天然是它的家。",
+    "Hero 单位文案：『天 · 盖下钢印』→『天 · 全年钢印』，并新增右对齐的『占全年 39%』（月度不需要，因为「12/31 天」没有身份含义，「142/365 天」有）。",
+    "热力图：月度是 7×5 的小月历（drawMonthGrid，格子 ~40px 间距、二值 on/half）；年度是 53×7 的 GitHub 式全年格（drawYearGrid，4.8px 格、部位色 + 组数深浅）。这是两张海报最大的形态差异，也是年度唯一新增的绘制原语。",
+    "部位分布：月度 top5 横条（mode:'rows'）→ 年度 100% 堆叠条 + 色点图例（mode:'stacked'）。同一个 drawSplit，靠 mode 分叉。年度画全 7 个部位（有数据的），月度只画 top5。",
+    "新增区块：『最猛的一天 PEAK DAY』（月度没有——一个月里的最猛日不稀奇；一年里的最猛日是一个故事）。",
+    "页眉右字：MONTHLY PROOF → ANNUAL PROOF。",
+    "不做的差异：不换配色、不换字体、不换钢印、不换 slogan、不加边框花纹。年度海报必须一眼认出是同一个品牌的同一套证——把差异全部押在『信息密度』上，而不是『装饰强度』上。",
+    "【明确否决】吨数具象化『相当于 3 辆 SUV / 21 头非洲象』：这是廉价营销腔，直接违背锻造工业风的克制。工业语汇的力量来自『它就是一个不解释的量』——『128.4 t』本身已经是物理单位，观者会自己完成换算，替他换算等于替他惊叹，反而把姿态从『铁证』降成『Keep 年度报告』。如果产品侧坚持要，也只能作为 9px mute 的一行副文案挂在 metrics 下方（y≈378），绝不能进 hero 位，并且默认关闭。"
+  ],
+  "entryPoints": [
+    "路由复用同一个页面：`/poster?kind=month&period=2026-07` 与 `/poster?kind=year&period=2026`。PosterScreen 内顶部一个 segmented control「月度 / 年度」+ 期数左右切换，切换即换 spec 重绘同一个 canvas（不重建组件）。",
+    "数据页（StatsScreen）顶部 banner「导出训练海报」：点进去默认 kind=month、period=当月。banner 右上角一枚小胶囊「年度」直达 kind=year&period=今年（一个 banner 两个入口，避免多加一块卡片破坏蚀刻线结构）。",
+    "我的页（ProfileScreen）列表行「训练海报」→ 同一个 /poster，默认 month。",
+    "年终强入口：12 月 25 日 – 次年 1 月 31 日期间，数据页顶部 banner 文案与目标替换为「{year} 年度铁证 · 已就绪」，点击直达 kind=year&period={该年度}。过了 1/31 回退成普通月度 banner，年度仍可从 segmented control 进入（不隐藏）。",
+    "可见/可用条件：kind=month 且当月 0 打卡 → 月度 tab 置灰，文案「本月还没有钢印」；kind=year 且该年 0 打卡 → 年度 tab 置灰，文案「今年还没有钢印」；两者都为 0 → banner 整体置灰不可点。",
+    "年份切换只列出真正有数据的年份（yearsWithData()），没有「2019」这种空年可选；月份切换限当月/上月（与原规格一致）。",
+    "全年打卡 1–2 天也允许生成（不置灰）——海报会诚实地显示 1 天、几乎全空的热力图。这不是 bug，是『铁证』的立场：证据可以很少，但不能不是证据。"
+  ],
+  "risks": [
+    "【辨识度】4.8px 的格子在 #0A0A0B 上，7 个部位色里 cardio(#8FAE9B 灰绿) 和 mute(#8B8B85) 几乎同色，低组数（alpha 0.35）时会看不出『练过』。缓解：最低 alpha 不低于 0.35 + 已练格加 0.5px 同色 rgba(.5) 描边；真机（尤其 OLED 低亮度）必须实拍验证一次，否则考虑把 cardio 提亮到 #9FC4AC（需同步改 bodyParts.ts，会动到现有颜色断言测试）。",
+    "【花】7 色 × 4 档深浅 + 堆叠条 + 部位圆点，年度海报的彩色元素比月度多得多，有把『锻造工业风的克制』做成『年度报告的花哨』的真实风险。硬约束：除热力图、堆叠条、图例圆点、streak 的 amber 之外，全篇严格无彩（ink/mute/iron 三色）；不加任何额外分隔装饰。做完第一版必须整体缩略图（1/4 尺寸）自检——缩小后如果像调色盘而不像一块烧过的钢，就把已练格上限 alpha 降到 0.85 并把未练格提到 .06 提高整体灰度基底。",
+    "【列数】闰年 + 首尾周对齐会让列数在 53/54 之间跳（1 月 1 日是周日、且闰年时可到 54 列）。必须动态算 cols，cell 宽由 318 反推，不能硬编码 53，否则某些年份右侧溢出或留白。写单测覆盖 2024(闰)/2023/2026/2028。",
+    "【字宽重叠】Anton 是压缩体，但『2026』4 位数在 88px 下约 150–165px，加上右侧铁龄『421 天』可能挤到。必须 measureText 后断言 titleRight + 24 < ironAgeLeft；铁龄 ≥ 1000 天（4 位）时把铁龄字号降到 22px。字体回退到 Impact/Arial Narrow 时宽度还会变，所以这个检查要在运行时做，不能靠设计稿目测。",
+    "【内存】3x 导出 = 1170×2340 ≈ 11MB 位图，旧 iPhone (SE2 / 内存吃紧的 PWA) 上 canvas.toBlob 可能返回 null 或整页白屏。必须：toBlob 回调判 null → 以 scale=2 重渲染重试一次 → 仍失败才 toast「生成失败，请重试」。",
+    "【时区】所有日期一律走现成的 toDateStr/parseDate 本地字符串体系，热力图列/行索引绝不能用 Date.toISOString()（UTC 偏移会让 UTC+8 的当天格子错位一格，跨年边界甚至错列）。",
+    "【空数据】全年 0 打卡 → 入口置灰，不进渲染（但 drawYearlyPoster 仍必须能安全画出空海报：hero=0、堆叠条全空轨道、bestDay=null 时 PEAK DAY 区块整块跳过并把 footer 上移 46px，不能留一块空洞）。全年有天数但 volumeKg=0（从不填重量）→ 容量显示「—」、PEAK DAY 切组数口径，不能出现「0.0t」和「NaN」。",
+    "【P90 归一化】年度只练 3 天时 P90 退化成接近 max，深浅几乎无意义。这是可接受的（3 个格子本来也不需要梯度），但要保证 `Math.max(1, p90)` 防 0 除、且 sets>0 的格子 alpha 一定 ≥ 0.35（不会因为 sets/maxSets 极小而隐形）。",
+    "【隐私】铁律 7：workout.note 是用户私人文字，绝不能出现在海报任何位置；照片同理不进 canvas。code review 时明确检查 YearlyPosterData 类型里没有 note / blob 字段。",
+    "【范围蔓延】年度海报是本次新增范围（原规格写的是 Phase 3），会带来 ~1 个新原语（drawYearGrid）+ 3 个新纯函数（longestStreak / daysBetween / buildYearlyPosterData）+ PosterScreen 的 segmented control。必须同步更新设计规格 §5 与验收标准，否则 §8『8 张 design 卡片视觉一致』这条会因为没有年度卡片而无法验收——建议先补一张 docs/design-cards/poster/yearly.html 母版（用与 monthly.html 同一套 CSS token），把它作为年度海报的视觉验收基准。"
+  ]
+}

@@ -1,0 +1,86 @@
+<!-- @dsCard group="Screens" -->
+<style>
+:root{--bg:#0A0A0B;--raised:#141416;--ink:#F2F0EB;--mute:#8B8B85;--iron:#FF5C1F;--amber:#FFB340;--line:rgba(255,255,255,.07)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;justify-content:center;padding:24px;font-family:-apple-system,'PingFang SC',sans-serif;-webkit-font-smoothing:antialiased}
+.phone{width:390px;background:var(--bg);color:var(--ink);border-radius:40px;border:1px solid rgba(255,255,255,.12);overflow:hidden;position:relative;display:flex;flex-direction:column;min-height:760px}
+.grain{position:absolute;inset:0;pointer-events:none;opacity:.05;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E")}
+.display{font-family:Impact,'Arial Narrow',sans-serif;letter-spacing:.5px;font-variant-numeric:tabular-nums}
+.etch{height:1px;background:rgba(255,255,255,.06);box-shadow:0 1px 0 rgba(0,0,0,.65)}
+.body{flex:1;padding:54px 24px 0;position:relative}
+h1{font-size:22px;font-weight:800}
+.range{display:inline-flex;background:var(--raised);border:1px solid var(--line);border-radius:10px;padding:3px;margin:14px 0 4px;font-size:12px}
+.range span{padding:6px 14px;border-radius:8px;color:var(--mute)}
+.range .on{background:rgba(255,92,31,.16);color:var(--iron);font-weight:600}
+.hero{display:flex;text-align:left;gap:0;padding:16px 0 18px}
+.hero div{flex:1}
+.hero .n{font-size:40px;line-height:1}
+.hero .n.hot{background:linear-gradient(135deg,#FF5C1F,#FFB340);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero .l{font-size:11px;color:var(--mute);margin-top:4px}
+.hero .sep{flex:0;width:1px;background:var(--line);margin:6px 16px}
+.sec{font-size:11px;color:var(--mute);letter-spacing:2px;text-transform:uppercase;margin:18px 0 12px}
+.chart{position:relative}
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.bar-row .pic{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.bar-row .nm{font-size:13px;width:34px}
+.bar-row .track{flex:1;height:9px;border-radius:5px;background:rgba(255,255,255,.05);overflow:hidden}
+.bar-row .fill{height:100%;border-radius:5px}
+.bar-row .v{font-size:12px;color:var(--mute);width:44px;text-align:right;font-variant-numeric:tabular-nums}
+.poster{margin:20px 0;border:1px solid rgba(255,92,31,.35);background:linear-gradient(135deg,rgba(255,92,31,.12),rgba(255,179,64,.05));border-radius:18px;padding:16px 18px;display:flex;align-items:center;gap:14px}
+.poster .st{width:44px;height:44px;border:2.5px solid var(--iron);border-radius:11px;transform:rotate(-6deg);display:flex;align-items:center;justify-content:center;color:var(--iron);font-size:22px;font-weight:900;box-shadow:0 0 18px rgba(255,92,31,.3);flex-shrink:0}
+.poster b{font-size:15px}
+.poster p{font-size:12px;color:var(--mute);margin-top:2px}
+.poster .go{margin-left:auto;color:var(--iron);font-size:20px}
+.tabbar{display:flex;justify-content:space-around;padding:12px 8px 26px;border-top:1px solid var(--line);background:rgba(20,20,22,.9)}
+.tab{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;color:var(--mute)}
+.tab.on{color:var(--iron)}
+</style>
+<div class="phone"><div class="grain"></div>
+  <div class="body">
+    <h1>数据</h1>
+    <div class="range"><span>周</span><span class="on">月</span><span>年</span></div>
+
+    <div class="hero">
+      <div><span class="display n hot">12</span><p class="l">打卡天数</p></div>
+      <div class="sep"></div>
+      <div><span class="display n">86</span><p class="l">总组数</p></div>
+      <div class="sep"></div>
+      <div><span class="display n">12.4<span style="font-size:18px">t</span></span><p class="l">总容量</p></div>
+    </div>
+    <div class="etch"></div>
+
+    <p class="sec">容量趋势 · 7月</p>
+    <div class="chart">
+      <svg width="342" height="130" viewBox="0 0 342 130">
+        <defs>
+          <linearGradient id="hot" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#FF5C1F"/><stop offset="1" stop-color="#FFB340"/></linearGradient>
+          <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgba(255,92,31,.28)"/><stop offset="1" stop-color="rgba(255,92,31,0)"/></linearGradient>
+        </defs>
+        <g stroke="rgba(255,255,255,.05)"><line x1="0" y1="10" x2="342" y2="10"/><line x1="0" y1="50" x2="342" y2="50"/><line x1="0" y1="90" x2="342" y2="90"/></g>
+        <path d="M0 96 C30 90 45 72 70 74 C100 76 115 52 145 55 C175 58 190 70 215 62 C245 52 260 26 290 24 C310 22 328 30 342 26 L342 130 L0 130 Z" fill="url(#fade)"/>
+        <path d="M0 96 C30 90 45 72 70 74 C100 76 115 52 145 55 C175 58 190 70 215 62 C245 52 260 26 290 24 C310 22 328 30 342 26" fill="none" stroke="url(#hot)" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="290" cy="24" r="4" fill="#FFB340"/>
+        <g font-size="9" fill="#8B8B85" font-family="-apple-system,sans-serif"><text x="0" y="126">1</text><text x="80" y="126">8</text><text x="160" y="126">15</text><text x="240" y="126">22</text><text x="330" y="126">31</text></g>
+      </svg>
+    </div>
+
+    <p class="sec">部位分布</p>
+    <div class="bar-row"><span class="pic" style="background:#E8483F26"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#E8483F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 4h13l1 5.5c0 4.5-3.2 8-7.5 8s-7.5-3.5-7.5-8L5.5 4Z"/><path d="M7.2 9.6c1.5 1.7 3 2.3 4.8 2.3s3.3-.6 4.8-2.3"/></svg></span><span class="nm">胸</span><div class="track"><div class="fill" style="width:82%;background:#E8483F"></div></div><span class="v">28 组</span></div>
+    <div class="bar-row"><span class="pic" style="background:#4F8EF726"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4F8EF7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5l1.7 10L12 20l4.3-6.5 1.7-10"/><path d="M12 7.5V16"/></svg></span><span class="nm">背</span><div class="track"><div class="fill" style="width:64%;background:#4F8EF7"></div></div><span class="v">22 组</span></div>
+    <div class="bar-row"><span class="pic" style="background:#A06BFF26"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#A06BFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3c-.3 3.4-1.9 5.4-1.9 8.4 0 3.4 1.5 5.6 2.7 8.6M15 3c.3 3.4 1.9 5.4 1.9 8.4 0 3.4-1.5 5.6-2.7 8.6"/></svg></span><span class="nm">腿</span><div class="track"><div class="fill" style="width:47%;background:#A06BFF"></div></div><span class="v">16 组</span></div>
+    <div class="bar-row"><span class="pic" style="background:#2FD6C326"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2FD6C3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 19.5c-1.8 0-3.2-1.4-3.2-3.2 0-1.5 1.1-2.9 2.7-3.3C9.8 12 11.8 10.4 11.8 7.4V4.2L16.4 6v5.2c0 4.6-3.7 8.3-8.3 8.3H7Z"/></svg></span><span class="nm">手臂</span><div class="track"><div class="fill" style="width:38%;background:#2FD6C3"></div></div><span class="v">13 组</span></div>
+    <div class="bar-row"><span class="pic" style="background:#FF5C8A26"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FF5C8A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7.5" y="4" width="9" height="16" rx="3.6"/><path d="M7.5 9.5h9M7.5 14.5h9"/></svg></span><span class="nm">核心</span><div class="track"><div class="fill" style="width:20%;background:#FF5C8A"></div></div><span class="v">7 组</span></div>
+
+    <div class="poster">
+      <div class="st">铁</div>
+      <div><b>生成 7 月训练海报</b><p>把这个月的汗水盖上钢印，保存到相册</p></div>
+      <span class="go">›</span>
+    </div>
+  </div>
+  <div class="tabbar">
+    <div class="tab"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="14" rx="3" transform="rotate(-6 12 11)"/><path d="M9.2 10.5l2 2 3.8-4" transform="rotate(-6 12 11)"/><path d="M7 21h10"/></svg>今日</div>
+    <div class="tab"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2v3m10-3v3M3.5 9h17M5 4.5h14A1.5 1.5 0 0 1 20.5 6v13a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V6A1.5 1.5 0 0 1 5 4.5Z"/></svg>日历</div>
+    <div class="tab on"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11m5.3 9V4m5.4 16v-6m5.3 6V8"/></svg>数据</div>
+    <div class="tab"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="3" width="8" height="11" rx="4"/><path d="M12 14v3m-3.5 4a3.5 3.5 0 0 1 7 0"/></svg>我的</div>
+  </div>
+</div>

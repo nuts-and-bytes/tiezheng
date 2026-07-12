@@ -1,0 +1,80 @@
+<!-- @dsCard group="Poster" -->
+<style>
+:root{--bg:#0A0A0B;--ink:#F2F0EB;--mute:#8B8B85;--iron:#FF5C1F;--amber:#FFB340;--line:rgba(255,255,255,.07)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;display:flex;justify-content:center;padding:28px;font-family:-apple-system,'PingFang SC',sans-serif;-webkit-font-smoothing:antialiased}
+.poster{width:390px;min-height:693px;background:radial-gradient(120% 70% at 50% -10%,rgba(255,92,31,.16),transparent 60%),#0A0A0B;color:var(--ink);border:1px solid rgba(255,255,255,.1);border-radius:6px;padding:44px 36px 30px;position:relative;overflow:hidden;display:flex;flex-direction:column}
+.grain{position:absolute;inset:0;pointer-events:none;opacity:.06;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E")}
+.display{font-family:Impact,'Arial Narrow',sans-serif;letter-spacing:.5px;font-variant-numeric:tabular-nums}
+.etch{height:1px;background:rgba(255,255,255,.06);box-shadow:0 1px 0 rgba(0,0,0,.65)}
+.top{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--mute);letter-spacing:3px}
+.month{margin:26px 0 4px}
+.month .m{font-size:88px;line-height:.9;background:linear-gradient(135deg,#FF5C1F,#FFB340);-webkit-background-clip:text;background-clip:text;color:transparent}
+.month .y{font-size:13px;color:var(--mute);letter-spacing:4px;margin-left:6px}
+.hero{margin:18px 0 6px;display:flex;align-items:baseline;gap:12px}
+.hero .n{font-size:120px;line-height:.9;color:var(--ink)}
+.hero .u{font-size:15px;color:var(--mute)}
+.metrics{display:flex;gap:0;margin:22px 0;text-align:left}
+.metrics div{flex:1}
+.metrics .n{font-size:28px}
+.metrics .l{font-size:10px;color:var(--mute);margin-top:3px;letter-spacing:1px}
+.metrics .sep{flex:0;width:1px;background:var(--line);margin:4px 14px}
+.dist{margin:16px 0 6px}
+.dist .lab{font-size:10px;color:var(--mute);letter-spacing:2px;margin-bottom:10px}
+.drow{display:flex;align-items:center;gap:8px;margin-bottom:7px;font-size:11px}
+.drow .nm{width:26px;color:var(--mute)}
+.drow .track{flex:1;height:6px;border-radius:3px;background:rgba(255,255,255,.05);overflow:hidden}
+.drow .fill{height:100%;border-radius:3px}
+.drow .v{width:36px;text-align:right;color:var(--mute);font-variant-numeric:tabular-nums}
+.mini-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin:14px 0 4px}
+.mg{aspect-ratio:1;border-radius:3px;background:rgba(255,255,255,.045)}
+.mg.on{background:linear-gradient(135deg,#FF5C1F,#FF8C42)}
+.mg.half{background:rgba(255,92,31,.35)}
+.bottom{margin-top:auto;display:flex;align-items:flex-end;justify-content:space-between;padding-top:20px}
+.stamp{width:74px;height:74px;border:3px solid var(--iron);border-radius:14px;transform:rotate(-6deg);display:flex;align-items:center;justify-content:center;color:var(--iron);font-size:38px;font-weight:900;box-shadow:0 0 26px rgba(255,92,31,.4),inset 0 0 12px rgba(255,92,31,.18);position:relative}
+.stamp::after{content:'';position:absolute;inset:4px;border:1px dashed rgba(255,92,31,.5);border-radius:9px}
+.sig .sl{font-size:15px;font-weight:800;letter-spacing:1px}
+.sig .su{font-size:9px;color:var(--mute);letter-spacing:2px;margin-top:4px}
+</style>
+<div class="poster"><div class="grain"></div>
+  <div class="top"><span>铁证 IRONPROOF</span><span>MONTHLY PROOF</span></div>
+
+  <div class="month"><span class="display m">07</span><span class="y">2026 JULY</span></div>
+  <div class="etch"></div>
+
+  <div class="hero"><span class="display n">12</span><span class="u">天 · 盖下钢印</span></div>
+
+  <div class="metrics">
+    <div><span class="display n">86</span><p class="l">总组数 SETS</p></div>
+    <div class="sep"></div>
+    <div><span class="display n">12.4<span style="font-size:16px">t</span></span><p class="l">总容量 VOLUME</p></div>
+    <div class="sep"></div>
+    <div><span class="display n" style="color:var(--amber)">5</span><p class="l">最长连续 STREAK</p></div>
+  </div>
+  <div class="etch"></div>
+
+  <div class="dist">
+    <p class="lab">部位分布 SPLIT</p>
+    <div class="drow"><span class="nm">胸</span><div class="track"><div class="fill" style="width:82%;background:#E8483F"></div></div><span class="v">28</span></div>
+    <div class="drow"><span class="nm">背</span><div class="track"><div class="fill" style="width:64%;background:#4F8EF7"></div></div><span class="v">22</span></div>
+    <div class="drow"><span class="nm">腿</span><div class="track"><div class="fill" style="width:47%;background:#A06BFF"></div></div><span class="v">16</span></div>
+    <div class="drow"><span class="nm">手臂</span><div class="track"><div class="fill" style="width:38%;background:#2FD6C3"></div></div><span class="v">13</span></div>
+    <div class="drow"><span class="nm">核心</span><div class="track"><div class="fill" style="width:20%;background:#FF5C8A"></div></div><span class="v">7</span></div>
+  </div>
+
+  <div class="mini-grid">
+    <div class="mg"></div><div class="mg"></div><div class="mg on"></div><div class="mg"></div><div class="mg on"></div><div class="mg"></div><div class="mg on"></div>
+    <div class="mg on"></div><div class="mg"></div><div class="mg on"></div><div class="mg on"></div><div class="mg on"></div><div class="mg on"></div><div class="mg"></div>
+    <div class="mg"></div><div class="mg half"></div><div class="mg on"></div><div class="mg"></div><div class="mg on"></div><div class="mg"></div><div class="mg"></div>
+    <div class="mg"></div><div class="mg on"></div><div class="mg"></div><div class="mg"></div><div class="mg"></div><div class="mg"></div><div class="mg"></div>
+    <div class="mg"></div><div class="mg"></div><div class="mg"></div><div class="mg"></div><div class="mg"></div><div class="mg"></div><div class="mg"></div>
+  </div>
+
+  <div class="bottom">
+    <div class="sig">
+      <p class="sl">你练过的，都有铁证。</p>
+      <p class="su">TIEZHENG.PAGES.DEV · 本地生成 · 照片不上传</p>
+    </div>
+    <div class="stamp">铁</div>
+  </div>
+</div>

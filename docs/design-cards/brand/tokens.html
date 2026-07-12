@@ -1,0 +1,76 @@
+<!-- @dsCard group="Brand" -->
+<style>
+:root{--bg:#0A0A0B;--raised:#141416;--card:#1A1A1D;--ink:#F2F0EB;--mute:#8B8B85;--iron:#FF5C1F;--amber:#FFB340;--line:rgba(255,255,255,.07)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:-apple-system,'PingFang SC',sans-serif;-webkit-font-smoothing:antialiased;padding:32px;position:relative}
+.grain{position:fixed;inset:0;pointer-events:none;opacity:.05;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E")}
+.display{font-family:Impact,'Arial Narrow',sans-serif;letter-spacing:.5px;font-variant-numeric:tabular-nums}
+h1{font-size:22px;margin-bottom:4px}
+.sub{color:var(--mute);font-size:13px;margin-bottom:28px}
+h2{font-size:13px;color:var(--mute);text-transform:uppercase;letter-spacing:2px;margin:32px 0 14px;font-weight:600}
+.row{display:flex;gap:14px;flex-wrap:wrap}
+.sw{width:150px;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.sw .c{height:72px}
+.sw .t{padding:10px 12px;background:var(--raised)}
+.sw .t b{display:block;font-size:13px}
+.sw .t span{font-size:11px;color:var(--mute);font-family:ui-monospace,monospace}
+.etch{height:1px;background:rgba(255,255,255,.06);box-shadow:0 1px 0 rgba(0,0,0,.65);margin:20px 0}
+.part{display:flex;align-items:center;gap:8px;background:var(--raised);border:1px solid var(--line);border-radius:999px;padding:7px 14px 7px 9px;font-size:13px}
+.dot{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+.stamp{width:96px;height:96px;border:3.5px solid var(--iron);border-radius:18px;display:flex;align-items:center;justify-content:center;transform:rotate(-6deg);color:var(--iron);font-size:52px;font-weight:900;box-shadow:0 0 34px rgba(255,92,31,.35),inset 0 0 18px rgba(255,92,31,.18);position:relative}
+.stamp::after{content:'';position:absolute;inset:5px;border:1px dashed rgba(255,92,31,.45);border-radius:12px}
+.type-demo{display:flex;align-items:baseline;gap:28px;flex-wrap:wrap}
+</style>
+<div class="grain"></div>
+<h1>铁与暗 · 锻造工业风 <span style="color:var(--iron)">Design Tokens</span></h1>
+<p class="sub">铁证 IRONPROOF — 你练过的，都有铁证。质感靠纹理与蚀刻层次，不靠一块块卡片。</p>
+
+<h2>基底 · 三层暗面（带 4% 噪点纹理）</h2>
+<div class="row">
+  <div class="sw"><div class="c" style="background:#0A0A0B"></div><div class="t"><b>bg 基底</b><span>#0A0A0B</span></div></div>
+  <div class="sw"><div class="c" style="background:#141416"></div><div class="t"><b>raised 抬升面</b><span>#141416</span></div></div>
+  <div class="sw"><div class="c" style="background:#1A1A1D"></div><div class="t"><b>card 容器（少用）</b><span>#1A1A1D</span></div></div>
+  <div class="sw"><div class="c" style="background:#F2F0EB"></div><div class="t"><b>ink 暖白文字</b><span>#F2F0EB</span></div></div>
+</div>
+
+<h2>灼热强调 · 全局唯一热源</h2>
+<div class="row">
+  <div class="sw"><div class="c" style="background:#FF5C1F"></div><div class="t"><b>iron 铁橙</b><span>#FF5C1F</span></div></div>
+  <div class="sw"><div class="c" style="background:linear-gradient(135deg,#FF5C1F,#FFB340)"></div><div class="t"><b>heat 热处理渐变</b><span>#FF5C1F → #FFB340</span></div></div>
+  <div class="sw"><div class="c" style="background:radial-gradient(circle at 50% 60%,rgba(255,92,31,.55),transparent 70%),#0A0A0B"></div><div class="t"><b>glow 成就辉光</b><span>iron 55% radial</span></div></div>
+</div>
+
+<h2>蚀刻分隔线 · 取代卡片描边</h2>
+<div style="max-width:480px;background:var(--bg);padding:4px 0">
+  <p style="font-size:14px;padding:10px 0">区块之间用「机加工蚀刻线」分隔</p>
+  <div class="etch"></div>
+  <p style="font-size:14px;padding:10px 0;color:var(--mute)">上亮下暗 1px，像金属表面刻出来的槽</p>
+  <div class="etch"></div>
+</div>
+
+<h2>部位七色（胸不再与品牌橙撞色，改锻红）</h2>
+<div class="row">
+  <span class="part"><span class="dot" style="background:#E8483F33;color:#E8483F">●</span>胸 #E8483F</span>
+  <span class="part"><span class="dot" style="background:#FFB34033;color:#FFB340">●</span>肩 #FFB340</span>
+  <span class="part"><span class="dot" style="background:#4F8EF733;color:#4F8EF7">●</span>背 #4F8EF7</span>
+  <span class="part"><span class="dot" style="background:#A06BFF33;color:#A06BFF">●</span>腿 #A06BFF</span>
+  <span class="part"><span class="dot" style="background:#2FD6C333;color:#2FD6C3">●</span>手臂 #2FD6C3</span>
+  <span class="part"><span class="dot" style="background:#FF5C8A33;color:#FF5C8A">●</span>核心 #FF5C8A</span>
+  <span class="part"><span class="dot" style="background:#8FAE9B33;color:#8FAE9B">●</span>有氧 #8FAE9B</span>
+</div>
+
+<h2>字体 · 数字用压缩重型展示体（正式实现打包 Anton 数字子集）</h2>
+<div class="type-demo">
+  <span class="display" style="font-size:96px;line-height:1;background:linear-gradient(135deg,#FF5C1F,#FFB340);-webkit-background-clip:text;background-clip:text;color:transparent">128</span>
+  <span class="display" style="font-size:48px">12.4t</span>
+  <div>
+    <p style="font-size:17px;font-weight:700">正文标题 PingFang SC Bold 17</p>
+    <p style="font-size:14px;color:var(--mute)">辅助说明 PingFang SC 14 · mute</p>
+  </div>
+</div>
+
+<h2>钢印 Motif · 打卡 = 盖下铁证</h2>
+<div style="display:flex;gap:36px;align-items:center;padding:16px 0 8px">
+  <div class="stamp">铁</div>
+  <p style="max-width:320px;font-size:13px;color:var(--mute);line-height:1.8">打卡成功时钢印落下（缩放+辉光+震动 200ms）；海报、启动页、成就时刻复用同一枚印。倾斜 -6°，永远只有一个热源。</p>
+</div>

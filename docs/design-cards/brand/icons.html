@@ -1,0 +1,44 @@
+<!-- @dsCard group="Brand" -->
+<style>
+:root{--bg:#0A0A0B;--raised:#141416;--ink:#F2F0EB;--mute:#8B8B85;--iron:#FF5C1F;--line:rgba(255,255,255,.07)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:-apple-system,'PingFang SC',sans-serif;padding:32px}
+h1{font-size:22px;margin-bottom:4px}
+.sub{color:var(--mute);font-size:13px;margin-bottom:28px}
+h2{font-size:13px;color:var(--mute);text-transform:uppercase;letter-spacing:2px;margin:28px 0 16px;font-weight:600}
+.row{display:flex;gap:18px;flex-wrap:wrap}
+.ico{display:flex;flex-direction:column;align-items:center;gap:8px;width:88px}
+.ico .box{width:64px;height:64px;border-radius:16px;background:var(--raised);border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+.ico span{font-size:12px;color:var(--mute)}
+svg{display:block}
+.tab{display:flex;flex-direction:column;align-items:center;gap:4px;width:80px;font-size:11px;color:var(--mute)}
+.tab.on{color:var(--iron)}
+</style>
+<h1>部位图标系统 <span style="color:var(--iron)">7 + 4</span></h1>
+<p class="sub">统一 1.8px 圆头描边 · 每个部位一个符号一种颜色，日历/记录流/数据页/海报全局复用</p>
+
+<h2>训练部位 · 7 枚</h2>
+<div class="row">
+  <div class="ico"><div class="box"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#E8483F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 4h13l1 5.5c0 4.5-3.2 8-7.5 8s-7.5-3.5-7.5-8L5.5 4Z"/><path d="M7.2 9.6c1.5 1.7 3 2.3 4.8 2.3s3.3-.6 4.8-2.3"/><path d="M12 5.2v6.6"/></svg></div><span>胸 chest</span></div>
+  <div class="ico"><div class="box"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FFB340" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5.3" r="2.2"/><path d="M4 18.5c0-4.8 3.6-8.6 8-8.6s8 3.8 8 8.6"/><path d="M4 18.5c0-3.2 1.1-5.2 2.9-6.5M20 18.5c0-3.2-1.1-5.2-2.9-6.5"/></svg></div><span>肩 shoulder</span></div>
+  <div class="ico"><div class="box"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#4F8EF7" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5l1.7 10L12 20l4.3-6.5 1.7-10"/><path d="M12 7.5V16"/><path d="M8.2 8.6c1.2 1 2.4 1.4 3.8 1.4s2.6-.4 3.8-1.4"/></svg></div><span>背 back</span></div>
+  <div class="ico"><div class="box"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#A06BFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3c-.3 3.4-1.9 5.4-1.9 8.4 0 3.4 1.5 5.6 2.7 8.6"/><path d="M15 3c.3 3.4 1.9 5.4 1.9 8.4 0 3.4-1.5 5.6-2.7 8.6"/><path d="M12 3v5.5"/></svg></div><span>腿 leg</span></div>
+  <div class="ico"><div class="box"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#2FD6C3" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 19.5c-1.8 0-3.2-1.4-3.2-3.2 0-1.5 1.1-2.9 2.7-3.3C9.8 12 11.8 10.4 11.8 7.4V4.2L16.4 6v5.2c0 4.6-3.7 8.3-8.3 8.3H7Z"/></svg></div><span>手臂 arm</span></div>
+  <div class="ico"><div class="box"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FF5C8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7.5" y="4" width="9" height="16" rx="3.6"/><path d="M12 4v16M7.5 9.5h9M7.5 14.5h9"/></svg></div><span>核心 core</span></div>
+  <div class="ico"><div class="box"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#8FAE9B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.4-7-9.8A4 4 0 0 1 12 7.6 4 4 0 0 1 19 10.2C19 15.6 12 20 12 20Z"/><path d="M5.6 11.2h2.9l1.4-2.3 2 4.2 1.5-2.6h5"/></svg></div><span>有氧 cardio</span></div>
+</div>
+
+<h2>底部导航 · 4 枚（今日 = 钢印锤落）</h2>
+<div class="row" style="background:var(--raised);border:1px solid var(--line);border-radius:16px;padding:14px 8px;max-width:400px;justify-content:space-around">
+  <div class="tab on"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="14" rx="3" transform="rotate(-6 12 11)"/><path d="M9.2 10.5l2 2 3.8-4" transform="rotate(-6 12 11)"/><path d="M7 21h10"/></svg>今日</div>
+  <div class="tab"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2v3m10-3v3M3.5 9h17M5 4.5h14A1.5 1.5 0 0 1 20.5 6v13a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V6A1.5 1.5 0 0 1 5 4.5Z"/><path d="M8 13h2.5v2.5H8z" fill="currentColor" stroke="none"/></svg>日历</div>
+  <div class="tab"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11m5.3 9V4m5.4 16v-6m5.3 6V8"/></svg>数据</div>
+  <div class="tab"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="3" width="8" height="11" rx="4"/><path d="M12 14v3m-3.5 4a3.5 3.5 0 0 1 7 0"/></svg>我的</div>
+</div>
+
+<h2>应用示例 · 记录流部位选择</h2>
+<div class="row">
+  <span style="display:inline-flex;align-items:center;gap:8px;border:1.5px solid #E8483F;color:#E8483F;background:#E8483F1a;border-radius:14px;padding:10px 18px;font-size:15px;font-weight:600"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 4h13l1 5.5c0 4.5-3.2 8-7.5 8s-7.5-3.5-7.5-8L5.5 4Z"/><path d="M7.2 9.6c1.5 1.7 3 2.3 4.8 2.3s3.3-.6 4.8-2.3"/><path d="M12 5.2v6.6"/></svg>胸</span>
+  <span style="display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);color:var(--ink);background:var(--raised);border-radius:14px;padding:10px 18px;font-size:15px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4F8EF7" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5l1.7 10L12 20l4.3-6.5 1.7-10"/><path d="M12 7.5V16"/><path d="M8.2 8.6c1.2 1 2.4 1.4 3.8 1.4s2.6-.4 3.8-1.4"/></svg>背</span>
+  <span style="display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);color:var(--ink);background:var(--raised);border-radius:14px;padding:10px 18px;font-size:15px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#A06BFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3c-.3 3.4-1.9 5.4-1.9 8.4 0 3.4 1.5 5.6 2.7 8.6"/><path d="M15 3c.3 3.4 1.9 5.4 1.9 8.4 0 3.4-1.5 5.6-2.7 8.6"/><path d="M12 3v5.5"/></svg>腿</span>
+</div>

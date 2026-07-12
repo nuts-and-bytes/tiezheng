@@ -1,0 +1,21 @@
+{
+  "card": "brand/tokens.html — 「铁与暗 · 锻造工业风 Design Tokens」(DesignSync group=\"Brand\", project c67bcd2e-01b3-45c6-9d93-b9657e920bfd)。铁证 IRONPROOF 的品牌 token 卡：三层暗面底色 + 4~5% 噪点纹理、单一热源铁橙、蚀刻分隔线取代卡片描边、部位七色、压缩重型数字展示体、钢印 Motif。原样落盘 5927 字节。",
+  "savedTo": "/Users/ericlu/fitness-app-v2/docs/design-cards/brand/tokens.html",
+  "keySpecs": [
+    "核心色 token（照抄进 @theme）：--bg:#0A0A0B（基底）/ --raised:#141416（抬升面）/ --card:#1A1A1D（容器，明确标注「少用」）/ --ink:#F2F0EB（暖白文字，非纯白）/ --mute:#8B8B85（灰文）/ --iron:#FF5C1F（铁橙，全局唯一热源）/ --amber:#FFB340 / --line:rgba(255,255,255,.07)",
+    "热处理渐变 heat：linear-gradient(135deg,#FF5C1F,#FFB340)，135° 固定；成就辉光 glow：radial-gradient(circle at 50% 60%, rgba(255,92,31,.55), transparent 70%) 叠在 #0A0A0B 之上",
+    "噪点纹理 .grain：position:fixed;inset:0;pointer-events:none;opacity:.05；背景为内联 SVG data URI，<svg width='120' height='120'> + <feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'>（标题文案说 4%，CSS 实际 .05，以 CSS 为准）",
+    "蚀刻分隔线 .etch（取代卡片描边）：height:1px; background:rgba(255,255,255,.06); box-shadow:0 1px 0 rgba(0,0,0,.65); margin:20px 0 —— 上亮下暗双层，模拟金属刻槽",
+    "色板卡片 .sw：width:150px; border-radius:10px; overflow:hidden; border:1px solid var(--line)；色块 .c height:72px；标签区 .t padding:10px 12px; background:var(--raised)；标签名 13px block；hex 值 11px、color:var(--mute)、font-family:ui-monospace,monospace",
+    "部位七色（必须改：胸从铁橙改为锻红以避开品牌色）：胸 #E8483F / 肩 #FFB340 / 背 #4F8EF7 / 腿 #A06BFF / 手臂 #2FD6C3 / 核心 #FF5C8A / 有氧 #8FAE9B",
+    "部位胶囊 .part：display:flex; align-items:center; gap:8px; background:var(--raised); border:1px solid var(--line); border-radius:999px; padding:7px 14px 7px 9px; font-size:13px；内部圆点 .dot 22×22px、border-radius:50%、背景为该部位色 + 20% alpha（hex 后缀 33，如 #E8483F33），前景为该部位色实色",
+    "数字展示体 .display：font-family:Impact,'Arial Narrow',sans-serif（正式实现打包 Anton 数字子集）；letter-spacing:.5px；font-variant-numeric:tabular-nums。大数字 96px/line-height:1，填充为 heat 渐变 + -webkit-background-clip:text; background-clip:text; color:transparent；次级数字 48px 用 ink 实色",
+    "正文字体栈：-apple-system,'PingFang SC',sans-serif + -webkit-font-smoothing:antialiased。层级：正文标题 17px/700；辅助说明 14px/color:var(--mute)；小节标题 h2 13px、color:var(--mute)、text-transform:uppercase、letter-spacing:2px、font-weight:600、margin:32px 0 14px；页面主标题 h1 22px，其中「Design Tokens」部分用 var(--iron) 上色",
+    "钢印 .stamp：96×96px；border:3.5px solid #FF5C1F；border-radius:18px；transform:rotate(-6deg)；color:#FF5C1F；font-size:52px；font-weight:900；flex 居中；box-shadow:0 0 34px rgba(255,92,31,.35), inset 0 0 18px rgba(255,92,31,.18)",
+    "钢印内圈 .stamp::after：position:absolute; inset:5px; border:1px dashed rgba(255,92,31,.45); border-radius:12px（外圆角 18px / 内圆角 12px 成套）",
+    "钢印动效：打卡成功时钢印落下 = 缩放 + 辉光 + 震动，时长 200ms；同一枚印复用于海报、启动页、成就时刻",
+    "布局间距：body padding:32px；.row 为 flex + gap:14px + flex-wrap:wrap；副标题 .sub 13px/mute/margin-bottom:28px；钢印说明区 display:flex; gap:36px; align-items:center; padding:16px 0 8px，说明文字 max-width:320px; font-size:13px; line-height:1.8",
+    "全局设计原则（影响组件写法，不只是配色）：质感来自纹理 + 蚀刻层次，不是一块块卡片；--card 容器色明确「少用」；页面中永远只有一个热源（iron 橙），其余元素不得抢焦"
+  ],
+  "notes": "卡片已成功取回并原样落盘（5927 字节，未改一字）。与现有代码的差异（都需要改，改动集中在 src/styles/theme.css 和 src/data/bodyParts.ts）：\\n\\n1. src/styles/theme.css 的 @theme 与卡片不一致：--color-card 现为 #1c1c1e（卡片要求 raised #141416 + card #1A1A1D 两层）；--color-card2 #2c2c2e 卡片中不存在；--color-line 现为实色 #3a3a3c（应为 rgba(255,255,255,.07)）；--color-ink 现为冷白 #f5f5f7（应为暖白 #F2F0EB）；--color-mute 现为 #8e8e93（应为 #8B8B85）；--color-iron2 #ff8c42（应为 amber #FFB340）。只有 --color-bg #0a0a0b 和 --color-iron #ff5c1f 是对的。\\n\\n2. src/data/bodyParts.ts:10 胸 = '#FF5C1F'，与品牌铁橙撞色；卡片明确要求改为锻红 #E8483F。其余六色与卡片完全一致。\\n\\n3. src/screens/Onboarding.tsx:28 的渐变写死 linear-gradient(135deg, #FF5C1F, #FF8C42)，卡片的 heat 渐变终点应为 #FFB340。src/components/ProgressRing.tsx、src/screens/stats/StatsScreen.tsx 也硬编码了 #FF5C1F，应改为读 token。\\n\\n4. 代码中完全缺失的四个卡片元素：.grain 噪点覆盖层、.etch 蚀刻分隔线（当前 UI 用的是卡片描边，卡片明确要求「取代卡片描边」）、Anton 数字展示体、钢印 Motif 及其 200ms 落印动效。\\n\\n5. 卡片自身的一处小矛盾：小节标题写「4% 噪点纹理」，但 .grain 的 CSS 是 opacity:.05。实现以 CSS（.05）为准。"
+}

@@ -1,0 +1,95 @@
+{
+  "risks": [
+    {
+      "area": "tokens / 文件路径",
+      "claim": "§6「修改：src/index.css（tokens/@theme/noise/etch/display）」",
+      "whyItBreaks": "仓库里根本没有 src/index.css（`ls src/*.css` → no matches）。真正被 main.tsx import 的是 src/styles/theme.css（main.tsx 第 6 行 `import './styles/theme.css'`）。并行 agent 照规格新建 src/index.css 后没人 import 它 → @theme 新 token、.etch、.display、噪点样式全部静默不生效；而 jsdom 测试不解析 CSS，`npm test` 依然全绿，`npm run build` 也通过，只有真机上看到一片没有样式的黑页。",
+      "mitigation": "规格里把所有 src/index.css 改成 src/styles/theme.css；实现前先跑 `grep -rn \"styles/theme.css\" src/main.tsx` 确认唯一入口；禁止新建任何 .css 文件，所有改动落在 theme.css。",
+      "severity": "blocker"
+    },
+    {
+      "area": "tokens / Tailwind 4",
+      "claim": "§1.1 token 表只列 bg/raised/card/ink/mute/iron/amber/line，「现有类名（bg-card 等）保留可用」",
+      "whyItBreaks": "表里没有 --color-card2 和 --color-iron2，但 bg-card2 / text-iron2 目前在 9 个文件里用着：TodayScreen(输入框 bg-card2、记录按钮)、DayDetailScreen、StatsScreen、LogFlow、ProfileScreen(± 按钮、导出按钮)、ExerciseManager、PhotoCard、SetRows。Tailwind 4 里 @theme 删掉 --color-card2 后，`bg-card2` 不会报错、不会构建失败——它只是不生成任何 utility，class 静默变成空。结果：记组数页的重量/次数输入框、我的页 ± 按钮、导出按钮全部变成透明背景贴在 #0A0A0B 上（暗底暗字，用户看不见输入框）。测试也全绿，因为 jsdom 不算 CSS。",
+      "mitigation": "@theme 里保留 --color-card2/--color-iron2 作为别名（指向 raised/amber）直到最后一步；实现完成后跑 `grep -rn \"card2\\|iron2\" src` 必须为 0 才允许从 @theme 删除；再跑一遍 `grep -roh \"\\b\\(bg\\|text\\|border\\)-[a-z0-9]*\\b\" src --include=*.tsx | sort -u` 对照 @theme 键名做一次「类名是否有对应 token」的白名单校验。",
+      "severity": "blocker"
+    },
+    {
+      "area": "测试破坏面 / Onboarding",
+      "claim": "§4「替换现单屏 Onboarding.tsx 为 4 步横滑」，§6「现有 117 测试必须保持全绿」",
+      "whyItBreaks": "src/App.test.tsx 里 5 个测试有 3 个直接依赖单屏结构：①「新用户先看到首次引导」`await screen.findByText('开始第一次打卡')`（CTA 在第 4 步，第 1 步渲染时若条件渲染 → 直接 fail）；②「未引导用户直连 #/log 仍被引导门拦截」同样 findByText('开始第一次打卡')；③「点击「开始第一次打卡」落库 onboarded 并进入记录流」`await user.click(await screen.findByText('开始第一次打卡'))` —— 4 步流程下这个按钮在第 4 屏，测试没有翻页动作，必挂。另外测试还断言 `weeklyGoal === 4`，规格的「跳过」默认 4 与之兼容，但「跳过」按钮出现在 2-4 步，测试压根走不到。所以「117 全绿」与「重写 Onboarding」是互斥的，规格没写要改哪几个测试。",
+      "mitigation": "先改测试再改实现（TDD）：把 App.test 三处改成 helper `await completeOnboarding(user)`（点 3 次「下一步」再点「开始第一次打卡」，或直接点第 1 步右上「跳过」→ 落到第 4 步）；同时新增一个 Onboarding.test.tsx 覆盖「跳过 = weeklyGoal 4 且 onboarded」。四屏建议全部挂载 + translateX 位移（而非条件渲染），并给非当前屏加 `inert`/`aria-hidden` —— 否则 getByText 会命中隐藏屏，测试假绿。",
+      "severity": "blocker"
+    },
+    {
+      "area": "测试破坏面 / 今日页 + 功能静默删除",
+      "claim": "§3.1 今日页只列了「品牌抬头 / 英雄区 / 今日已练 / CTA」，并说「数据来源不变」",
+      "whyItBreaks": "现 TodayScreen.tsx 还有两个规格完全没提的模块：<WeightQuickEntry>（今日体重输入 + 校验）和 <PhotoCard>（当日照片）。按规格字面重写 → 体重录入和照片入口从今日页消失，用户失去唯一的体重录入口（DayDetail 只展示）。同时 TodayScreen.test.tsx 6 个测试里有 3 个是体重的（findByPlaceholderText('体重 kg')、'体重需在 20–300kg 之间'、'62.5 kg'），全挂。另外 3 个也挂：CTA 文案 '+ 开始今日训练'/'+ 继续加练' 被规格改成「开始打卡/继续打卡」，'今天，留证。' 抬头被品牌 wordmark 取代，'本周目标' 被「本周打卡」取代。→ TodayScreen.test 6/6 全红。",
+      "mitigation": "规格补一节「今日页保留模块」：WeightQuickEntry 与 PhotoCard 用蚀刻线样式重排但 DOM 文案/placeholder 一字不改（'体重 kg'、'记录'、错误文案）；CTA 文案要么保持 '+ 开始今日训练'/'+ 继续加练'，要么同 PR 里同步改 TodayScreen.test 的 3 处断言并在规格里显式列出。数据页同理：§3.3 没提 PhotoTimeline 和体重趋势图，别让 agent 顺手删掉。",
+      "severity": "blocker"
+    },
+    {
+      "area": "字体 / PWA 离线（铁律 7）",
+      "claim": "§1.4「打包 Anton（@fontsource/anton + unicode-range 子集化）」+ §8「零新增网络请求」",
+      "whyItBreaks": "两个坑：(a) @fontsource/anton 的 CSS 是 `src: url(./files/anton-latin-400-normal.woff2)`，Vite 会把它 emit 到 dist/assets/*.woff2 —— 这是同源资源，但**不会进 Service Worker 预缓存**：workbox 默认 globPatterns 是 `**/*.{js,wasm,css,html}`（node_modules/workbox-build/build/types.d.ts:382），本仓库 vite.config.ts 没覆盖它。实测 dist/sw.js 的 precache 列表只有 index.html / assets/*.js / *.css / 几个 icon / manifest —— 没有任何字体扩展名。装成 PWA 后离线打开，woff2 请求走网络 → 失败 → 所有 .display 数字回退，海报也变字体。(b) unicode-range 不减小文件体积，只控制触发；真「数字子集」需要 pyftsubset（Python）—— Cloudflare Pages 构建只跑 `npm run build`，没有 Python 工具链，子集化步骤不可复现。",
+      "mitigation": "不用 @fontsource 的 url 引用：把 Anton 的数字子集（0-9 . , : / t k g）预先 pyftsubset 成 woff2（本地一次性产物，约 3–8KB），base64 内联进 theme.css 的 @font-face `src: url(data:font/woff2;base64,...)`，把字体资产 commit 进仓库。这样彻底零网络请求、离线必然可用、Cloudflare Pages 的 MIME/缓存问题一并消失。若坚持 @fontsource，必须在 vite.config VitePWA 里加 `workbox: { globPatterns: ['**/*.{js,css,html,woff2,ico,png,svg}'] }` 并写一个断言 dist/sw.js 含 woff2 的构建后检查。",
+      "severity": "blocker"
+    },
+    {
+      "area": "海报 / iOS 分享",
+      "claim": "§5.3「canvas.toBlob('image/png') → iOS Safari 用 navigator.share({files}) 优先，降级 <a download>」",
+      "whyItBreaks": "(a) WebKit 要求 navigator.share() 在用户手势的 transient activation 内调用。`onClick → await new Promise(r => canvas.toBlob(r)) → navigator.share({files})` 这条链在 toBlob 回调（宏任务）之后 activation 已失效 → iOS 抛 NotAllowedError: 'must be triggered by user activation'，且是概率性的（快机器偶尔过），真机才会暴露。(b) 降级 `<a download>` 在 iOS Safari（尤其 standalone PWA）不产生「存到相册」：blob URL 的 download 属性被忽略/在 PWA 里可能什么都不发生，用户拿不到图。规格的降级方案对最主要的目标平台是假的。(c) 还要先 `navigator.canShare({files:[f]})` 判定，iOS 15+ 才支持 share files。",
+      "mitigation": "进海报预览页时就异步生成好 blob 并存 state（预览 <img> 直接用 URL.createObjectURL 展示）；「保存图片」的 onClick 里**同步**拿已存在的 blob 调 `navigator.share({files:[new File([blob],'tiezheng-2026-07.png',{type:'image/png'})]})`，调用栈里不出现任何 await。降级路径改成：把 dataURL 塞进一个全屏 <img>，配文案「长按图片 → 存储到照片」（iOS 唯一可靠的存相册路径）；桌面/Android 才用 <a download>。canShare 不存在时直接走长按方案。",
+      "severity": "blocker"
+    },
+    {
+      "area": "海报 / 噪点实现空洞",
+      "claim": "§1.3 噪点 = SVG feTurbulence data-URI；§5.2 海报「6% 噪点」；§5.3「噪点：离屏 canvas 生成一次随机灰度贴上」",
+      "whyItBreaks": "Canvas 2D 没有 feTurbulence，两处噪点是两套完全不同的实现，规格把它们当成同一件事。若按「离屏 canvas 逐像素」在 1170×2079 的 3x 尺寸上做：一个 ImageData 就是 1170*2079*4 ≈ 9.7MB，加上 2.4M 次 JS 随机数循环（旧 iPhone 上 200–500ms 主线程卡死），再叠上主 canvas 的 9.7MB backing store 和 PNG 编码峰值 → 在 iPhone 8/SE2 这类 2GB 机器上是白屏/页面被 WebKit 杀掉的典型剖面（不是「canvas 超上限」，iOS 上限约 16.7Mpx，这里没超，是多块大位图叠加 + 编码峰值）。",
+      "mitigation": "噪点只生成一块 128×128 离屏 canvas（16K 次循环，<2ms），`ctx.createPattern(tile,'repeat')` + `globalAlpha=0.06` 铺满；页面噪点同理改成把这块 tile 导出成 base64 PNG（约 3KB）作为 background-image + background-repeat，彻底不用 feTurbulence（SVG filter 全屏栅格化在 iOS 滚动/地址栏收放时会整层重绘）。海报导出改 2x（780×1386，≈4.3MB backing store）就够微信/相册清晰度，3x 作为「高清」可选项且先 try/catch。",
+      "severity": "high"
+    },
+    {
+      "area": "测试基建 / 海报可测性",
+      "claim": "§5.3「新建 src/lib/poster/monthlyPoster.ts，纯函数 drawMonthlyPoster(canvas, data)」+ §6「不动测试基建」+ 仓库 TDD 规范",
+      "whyItBreaks": "vitest 环境是 jsdom，没装 `canvas` 包：jsdom 的 HTMLCanvasElement.getContext('2d') 返回 null 并打 'Not implemented' 错误，toBlob 也未实现；document.fonts 未定义（§5.3 要 `document.fonts.load`）；navigator.share / navigator.canShare / navigator.vibrate 全部 undefined。所以 drawMonthlyPoster 与 PosterScreen 在当前测试基建下一行都测不了，而项目规范要求 TDD、验收要求 117+ 全绿——直接冲突。同样地，§1.5 打卡动效里的 `navigator.vibrate(200)` 若不做 `typeof navigator.vibrate === 'function'` 判空，会在 LogFlow「完成打卡」测试里抛 TypeError，连带 7 个 LogFlow 测试红。",
+      "mitigation": "把 monthlyPoster.ts 拆成两层：`buildPosterModel(rawData) → PosterModel`（纯数据，jsdom 可测，覆盖 0 打卡、跨月、部位 >5、超长数字）+ `paint(ctx, model)`（只碰 ctx，测试里传一个 mock ctx spy，断言调用了 fillText/月份数字正确）。setup.ts 里补 vibrate/share/canShare/document.fonts 的存在性 stub。所有平台 API 调用点统一走 `src/lib/platform.ts` 的能力探测函数，便于 mock。",
+      "severity": "high"
+    },
+    {
+      "area": "统计函数缺口",
+      "claim": "§3.1「streak 行（连续天数 + 个人纪录）」、§3.4「铁龄 N 天」、§5.3「data 来自现有统计纯函数（…最长连续 / 部位分布 / 已练日期集合）」",
+      "whyItBreaks": "src/lib/stats.ts 只导出 countByBodyPart / weeklyCounts / movingAverage / maxWeightSeries / totals / currentStreak / weekProgress。没有：最长连续（个人纪录 / 海报「最长连续」）、按月过滤的部位分布、月度已练日期集合、首次打卡日（铁龄）。`totals(items, dates)` 也不接受日期范围，海报要的是「本月」聚合。所以「数据来源不变 / 用现有纯函数」是假的，实现 agent 会各自在 screen 里内联一坨聚合逻辑（今日页一份、海报一份），口径必然不一致（例如 currentStreak 的「今天没练不算断」规则如果在海报里被重写成严格版，同一个数字两页对不上）。",
+      "mitigation": "先补 stats.ts 并配单测：`longestStreak(dates: Set<string>): number`、`firstWorkoutDate(dates): string | undefined`、`monthSummary(items, dates, ym)`（复用 totals + countByBodyPart，返回 days/sets/volumeKg/longestStreak/partCounts/dateSet）。今日页「个人纪录」、我的页「铁龄」、海报三数全部只调这些函数。",
+      "severity": "high"
+    },
+    {
+      "area": "并行实现 / 文件争抢",
+      "claim": "§6 组件与文件计划（多 agent 并行改五页 + TabBar + App + Onboarding）",
+      "whyItBreaks": "真正会被多方同时写的是四个文件，不是五个 screen：(1) **src/styles/theme.css** —— 每个 screen agent 都要往里加 .etch/.display/.noise/keyframes，最高冲突面；(2) **src/App.tsx** —— 噪点层 + /poster 路由，两个不同任务同时改同一个 return；(3) **src/data/bodyParts.ts** —— 改胸色的 agent 与 PartIcon agent（若把 icon key 写进去）；(4) **src/App.test.tsx** —— Onboarding agent 和路由 agent 都要改。另外 PartIcon.tsx / Stamp.tsx / ForgeRing.tsx 是 5 个 screen 的前置依赖：并行的话每个 agent 会各造一个本地版本或 import 一个还不存在的模块，typecheck 直接炸。还有 ProgressRing 被 ForgeRing 取代后，ProgressRing.test.tsx 的 4 个测试变成孤儿（删组件=测试红，留组件=死代码）。",
+      "mitigation": "强制两阶段：**串行阶段 0**（单 agent）—— theme.css 全部 token/utility/keyframes 一次写完 + bodyParts 改色 + Stamp/PartIcon/ForgeRing 三个组件 + stats.ts 新函数 + App.tsx（噪点层 + /poster 路由占位）+ 保留 ProgressRing（ForgeRing 内部复用其 dashoffset 计算，ProgressRing.test 4 个测试原样保留）。阶段 0 合并跑通 typecheck 后，**并行阶段 1** 才分给 Today/Calendar/Stats/Profile/Log/Onboarding+Poster 六个 agent，每个 agent 只允许改自己的 screen 目录 + 对应 test 文件，禁止碰 theme.css/App.tsx/bodyParts.ts（要加 utility 就回阶段 0 的 owner）。",
+      "severity": "high"
+    },
+    {
+      "area": "字体 / 中英混排",
+      "claim": "§1.4「.display = Anton + tabular-nums，回退 Impact,'Arial Narrow',sans-serif」，用于「日历月份、统计三数、海报大字、铁龄」",
+      "whyItBreaks": "Anton 只有 Latin 字形。规格列举的用法里多处是中英混排：铁龄「N 天」、统计「总容量 1.2t」旁的中文标签、日历页副标题「2026 七月」、海报「打卡天数」。如果 .display 加在包含中文的元素上，中文逐字 fallback → 中文用 PingFang、数字用 Anton，基线和字重完全不匹配（Anton 是压缩体，x-height 高），88px 大字下肉眼可见错位。更糟的是回退链：iOS 和 Android 都没有 Impact，也没有 Arial Narrow（Android 只有 Roboto/Noto）→ 字体加载失败时直接掉到 sans-serif（非压缩体），88px 的『07』宽度增加 ~40%，日历抬头换行/溢出。另外 font-variant-numeric: tabular-nums 依赖字体有 tnum feature，Anton 未必带 —— 写了也可能无效。",
+      "mitigation": ".display 只允许包在纯数字/单位的 <span> 上，中文文案一律另起 span 用默认字体（在规格里写死这条约束，并在 code review 时 grep .display 元素的 children 是否含 CJK）；回退链改成 `Anton, 'Arial Narrow', 'Helvetica Neue Condensed', system-ui, sans-serif` 并给 .display 加 `font-stretch: condensed`（无效也无害）；关键的大字容器给 min-width + `overflow: hidden` 或用 SVG text 固定宽度，避免 fallback 时溢出；@font-face 加 `font-display: block` + 3s 超时（规格 §7 已提，但 block 才是「宁可空白也不跳字」的正确值，swap 会导致可见的字体跳变）。",
+      "severity": "medium"
+    },
+    {
+      "area": "测试破坏面 / 日历页 + 我的页 + 可访问性",
+      "claim": "§3.2「抬头：84px .display 月份数字（07）+ 右下「2026 七月」」；§3.4 我的页改成蚀刻列表行",
+      "whyItBreaks": "CalendarScreen.test.tsx 唯一的测试断言 `findByText(\\`${y}年${Number(m)}月\\`)`（现在是 h1「2026年7月」）——改成「07 / 2026 七月」后必挂；同时页面的唯一 h1 变成一个纯数字「07」，屏幕阅读器读作「零七」，a11y 退化。ProfileScreen.test.tsx 断言 `findByText('导出 CSV')` 并点击——§3.4 把数据导出降级为「蚀刻列表行」，如果 CSV/JSON 按钮改成需要先点开行才出现，getByText('导出 CSV') 拿不到 → 挂；导出失败文案 '导出失败，请重试' 也必须保留。CalendarScreen 的 `aria-label=\"上个月\"/\"下个月\"` 按钮在「保留左右滑/箭头切月」里没被明确点名，重写时容易丢。",
+      "mitigation": "日历抬头用 `<h1 className=\"sr-only\">2026年7月</h1>` + `aria-hidden` 的视觉大字组合（测试断言不变、a11y 不退化），或同 PR 更新测试断言并在规格中写明新文案；我的页导出行默认展开（CSV/JSON 两个按钮直接可见），保留 aria-label「上个月/下个月」「减少目标/增加目标」（ProfileScreen 的 ± 按钮 aria-label 也别丢）。",
+      "severity": "medium"
+    },
+    {
+      "area": "改造范围遗漏",
+      "claim": "§3「五页改造」+ §6 修改清单",
+      "whyItBreaks": "应用其实有 6 个可见界面：Today / Calendar / **DayDetail** / Stats / Profile / Log。DayDetailScreen（日历格点进去的详情页）不在改造清单里，但它是日历页的直接下游，仍是 rounded-2xl bg-card + bg-card2 堆叠 + 老部位色 —— 用户从新日历点进去会看到一个旧世界。同理未列入的 ExerciseManager（嵌在我的页里，用户点开就看到旧卡片）、SetRows（记录流核心输入）、PhotoCard/PhotoTimeline、InstallHint、UpdateToast 全部用老 token。§1.1 一旦把 --color-line 从 #3a3a3c 改成 rgba(255,255,255,.07)，这些组件的 border-line 会几乎消失（TabBar 顶边、DayDetail 分隔线），视觉上「碎掉」。",
+      "mitigation": "把 DayDetailScreen、ExerciseManager、SetRows、PhotoCard、PhotoTimeline、InstallHint、UpdateToast 显式加进修改清单（至少做 token 对齐 pass：bg-card2→bg-raised、border-line 处补 .etch）；DayDetail 单独给一个 agent，它的 5 个测试（'编辑'/'删除'/'保存'/'取消'/'60×8'/'这天没有训练记录'）文案必须逐字保留。",
+      "severity": "medium"
+    }
+  ]
+}
