@@ -83,3 +83,19 @@ test('非法 date 参数渲染优雅空态不崩溃', async () => {
   expect(await screen.findByText('这天没有训练记录')).toBeInTheDocument();
   expect(screen.getByText('garbage')).toBeInTheDocument();
 });
+
+test('每条记录带部位图标与部位名，一眼看出练的是哪儿', async () => {
+  await addWorkoutItem('2026-07-10', 'p-bench', [{ weight: 60, reps: 8 }]);
+  const { container } = renderDay('2026-07-10');
+  expect(await screen.findByText('卧推')).toBeInTheDocument();
+  expect(container.querySelector('[data-part="chest"]')).toBeTruthy();
+  expect(screen.getByText('胸')).toBeInTheDocument();
+});
+
+test('不再使用废弃别名 card2 / iron2', async () => {
+  await addWorkoutItem('2026-07-10', 'p-bench', [{ weight: 60, reps: 8 }]);
+  const user = userEvent.setup();
+  const { container } = renderDay('2026-07-10');
+  await user.click(await screen.findByText('编辑')); // 编辑态才会露出取消/删除两个按钮
+  expect(container.innerHTML).not.toMatch(/card2|iron2/);
+});

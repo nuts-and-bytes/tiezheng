@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { PartIcon } from '../../components/PartIcon';
 import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
 import { bodyPartInfo } from '../../data/bodyParts';
@@ -14,34 +15,61 @@ export function DayDetailScreen() {
   const items = useLiveQuery(() => getDayItems(date), [date]);
   const weight = useLiveQuery(() => getWeight(date), [date]);
 
+  const totalSets = items?.reduce((n, i) => n + i.sets.length, 0) ?? 0;
+
   return (
-    <div className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pb-8 pt-[max(env(safe-area-inset-top),16px)]">
+    <div className="mx-auto flex min-h-dvh max-w-md flex-col px-5 pb-10 pt-[max(env(safe-area-inset-top),16px)]">
       <header className="flex items-center gap-3">
-        <button type="button" onClick={() => nav(-1)} className="py-2 pr-2 text-mute">
+        <button
+          type="button"
+          onClick={() => nav(-1)}
+          className="-ml-1 py-2 pr-2 text-sm text-mute active:scale-95"
+        >
           返回
         </button>
-        <h1 className="text-xl font-bold">{date}</h1>
       </header>
 
-      {items && items.length === 0 && <p className="py-8 text-center text-mute">这天没有训练记录</p>}
+      <div className="mt-2 flex items-baseline justify-between">
+        {/* Anton 无中文字形：这里只有数字和连字符，安全 */}
+        <h1 className="display text-[34px] leading-none">{date}</h1>
+        {totalSets > 0 && (
+          <span className="text-[11px] text-mute">
+            <span className="display text-sm text-ink">{totalSets}</span> 组
+          </span>
+        )}
+      </div>
 
-      {items?.map((item) => (
-        <ItemCard key={item.id} item={item} />
+      <div className="etch" />
+
+      {items && items.length === 0 && (
+        <p className="py-10 text-center text-sm text-mute">这天没有训练记录</p>
+      )}
+
+      {items?.map((item, i) => (
+        <div key={item.id}>
+          {i > 0 && <div className="etch" />}
+          <ItemRow item={item} />
+        </div>
       ))}
 
       {weight && (
-        <div className="flex items-center justify-between rounded-2xl bg-card p-4">
-          <span className="text-sm text-mute">当日体重</span>
-          <span className="text-xl font-bold">{weight.weightKg.toFixed(1)} kg</span>
-        </div>
+        <>
+          <div className="etch" />
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm text-mute">当日体重</span>
+            <span className="display text-xl text-ink">{weight.weightKg.toFixed(1)} kg</span>
+          </div>
+        </>
       )}
+
+      <div className="etch" />
 
       <PhotoCard date={date} />
     </div>
   );
 }
 
-function ItemCard({ item }: { item: DayItem }) {
+function ItemRow({ item }: { item: DayItem }) {
   const [editing, setEditing] = useState(false);
   const [sets, setSets] = useState(item.sets);
   const info = bodyPartInfo(item.exercise.bodyPart);
@@ -51,10 +79,13 @@ function ItemCard({ item }: { item: DayItem }) {
     .filter((s) => s !== null);
 
   return (
-    <div className="rounded-2xl bg-card p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <span className="h-2 w-2 rounded-full" style={{ background: info.color }} />
-        <span className="flex-1 font-semibold">{item.exercise.name}</span>
+    <div className="py-1">
+      <div className="flex items-center gap-2.5">
+        <span data-part={info.id} className="flex shrink-0">
+          <PartIcon part={info.id} size={18} />
+        </span>
+        <span className="flex-1 font-semibold text-ink">{item.exercise.name}</span>
+        <span className="text-[11px] text-mute">{info.name}</span>
         {!editing && (
           <button
             type="button"
@@ -62,19 +93,21 @@ function ItemCard({ item }: { item: DayItem }) {
               setSets(item.sets);
               setEditing(true);
             }}
-            className="text-sm text-iron"
+            className="pl-2 text-sm text-mute active:scale-95"
           >
             编辑
           </button>
         )}
       </div>
+
       {!editing && (
-        <p className="text-sm text-mute">
+        <p className="mt-1.5 pl-[30px] text-sm text-mute">
           {summary.length > 0 ? summary.join('  ') : `${item.sets.length} 组`}
         </p>
       )}
+
       {editing && (
-        <div className="flex flex-col gap-3">
+        <div className="mt-3 flex flex-col gap-3">
           <SetRows sets={sets} onChange={setSets} />
           <div className="flex gap-2">
             <button
@@ -83,27 +116,28 @@ function ItemCard({ item }: { item: DayItem }) {
                 await updateItemSets(item.id, sanitizeSets(sets));
                 setEditing(false);
               }}
-              className="flex-1 rounded-lg bg-iron py-2 text-sm font-semibold text-white active:scale-95"
+              className="heat flex-[2] rounded-xl py-2.5 text-sm font-extrabold text-white shadow-[0_6px_20px_rgba(255,92,31,.3)] active:scale-[.98]"
             >
               保存
             </button>
             <button
               type="button"
               onClick={() => setEditing(false)}
-              className="flex-1 rounded-lg bg-card2 py-2 text-sm text-ink active:scale-95"
+              className="flex-1 rounded-xl border border-line bg-raised py-2.5 text-sm text-ink active:scale-95"
             >
               取消
             </button>
-            <button
-              type="button"
-              onClick={async () => {
-                if (window.confirm('删除这个动作记录？')) await removeWorkoutItem(item.id);
-              }}
-              className="flex-1 rounded-lg bg-card2 py-2 text-sm text-iron active:scale-95"
-            >
-              删除
-            </button>
           </div>
+          {/* 破坏性操作压到最低视觉重量：不跟「取消」抢手感，误触靠 confirm 兜底 */}
+          <button
+            type="button"
+            onClick={async () => {
+              if (window.confirm('删除这个动作记录？')) await removeWorkoutItem(item.id);
+            }}
+            className="self-end py-1 text-xs text-mute underline underline-offset-4 active:scale-95"
+          >
+            删除
+          </button>
         </div>
       )}
     </div>

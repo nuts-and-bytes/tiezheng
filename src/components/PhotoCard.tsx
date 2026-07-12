@@ -34,9 +34,9 @@ export function PhotoCard({ date }: { date: string }) {
   }
 
   return (
-    <div className="rounded-2xl bg-card p-5">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-mute">体型铁证</h2>
+    <section>
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-[11px] tracking-[2px] text-mute uppercase">体型铁证</h2>
         <span className="text-[11px] text-mute">仅存本机</span>
       </div>
       <input
@@ -51,28 +51,30 @@ export function PhotoCard({ date }: { date: string }) {
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
-          className="w-full rounded-xl border border-dashed border-line py-6 text-mute active:scale-[.98]"
+          className="w-full rounded-2xl border border-dashed border-line py-8 text-sm text-mute active:scale-[.98]"
         >
           📷 拍一张，留下今天的证据
         </button>
       )}
+      {/* 照片是实体，允许浮起：bg-raised 表面 + 溢出裁切 */}
       {url && (
-        <div className="flex flex-col gap-2">
-          <img src={url} alt={`${date} 体型照片`} className="max-h-80 w-full rounded-xl object-cover" />
-          <div className="flex gap-2">
+        <div className="overflow-hidden rounded-2xl bg-raised">
+          <img src={url} alt={`${date} 体型照片`} className="max-h-80 w-full object-cover" />
+          <div className="flex border-t border-line">
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
-              className="flex-1 rounded-lg bg-card2 py-2 text-sm text-ink active:scale-95"
+              className="flex-1 py-3 text-sm text-ink active:scale-95"
             >
               重拍
             </button>
+            <span className="w-px bg-line" aria-hidden />
             <button
               type="button"
               onClick={async () => {
                 if (window.confirm('删除这张照片？')) await removePhoto(date);
               }}
-              className="flex-1 rounded-lg bg-card2 py-2 text-sm text-iron active:scale-95"
+              className="flex-1 py-3 text-sm text-iron active:scale-95"
             >
               删除
             </button>
@@ -80,6 +82,6 @@ export function PhotoCard({ date }: { date: string }) {
         </div>
       )}
       {error && <p className="mt-2 text-sm text-iron">照片处理失败，请重试或换一张</p>}
-    </div>
+    </section>
   );
 }

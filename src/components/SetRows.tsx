@@ -49,15 +49,20 @@ export function SetRows({ sets, onChange }: Props) {
   const patch = (index: number, entry: SetEntry) =>
     onChange(sets.map((s, i) => (i === index ? entry : s)));
 
+  const field = 'rounded-xl bg-raised px-3 py-2.5 text-ink tabular-nums placeholder:text-mute/50';
+  const step =
+    'flex h-9 w-9 items-center justify-center rounded-xl bg-raised text-lg text-ink disabled:opacity-25 active:scale-95';
+
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-3">
+    // 清单，不是卡片堆：每组一行，靠 line 分隔
+    <div>
+      <div className="flex items-center gap-3 pb-1">
         <button
           type="button"
           aria-label="减一组"
           disabled={sets.length <= LIMITS.sets.min}
           onClick={() => onChange(sets.slice(0, -1))}
-          className="h-9 w-9 rounded-lg bg-card2 text-lg text-ink disabled:opacity-30 active:scale-95"
+          className={step}
         >
           −
         </button>
@@ -67,20 +72,20 @@ export function SetRows({ sets, onChange }: Props) {
           aria-label="加一组"
           disabled={sets.length >= LIMITS.sets.max}
           onClick={() => onChange([...sets, {}])}
-          className="h-9 w-9 rounded-lg bg-card2 text-lg text-ink disabled:opacity-30 active:scale-95"
+          className={step}
         >
           ＋
         </button>
       </div>
       {sets.map((s, i) => (
-        <div key={i} className="flex items-center gap-2 text-sm">
-          <span className="w-8 text-mute">{i + 1}</span>
+        <div key={i} className="flex items-center gap-2.5 border-t border-line py-2.5 text-sm">
+          <span className="display w-6 text-xs text-mute">{i + 1}</span>
           <NumField
             inputMode="decimal"
             placeholder="重量kg"
             value={s.weight}
             onCommit={(weight) => patch(i, { ...s, weight })}
-            className="w-24 rounded-lg bg-card2 px-3 py-2 text-ink placeholder:text-mute/60"
+            className={`w-24 ${field}`}
           />
           <span className="text-mute">×</span>
           <NumField
@@ -88,7 +93,7 @@ export function SetRows({ sets, onChange }: Props) {
             placeholder="次数"
             value={s.reps}
             onCommit={(reps) => patch(i, { ...s, reps })}
-            className="w-20 rounded-lg bg-card2 px-3 py-2 text-ink placeholder:text-mute/60"
+            className={`w-20 ${field}`}
           />
         </div>
       ))}
