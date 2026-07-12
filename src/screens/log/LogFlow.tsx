@@ -1,15 +1,34 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { PartIcon } from '../../components/PartIcon';
 import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
+import { Stamp } from '../../components/Stamp';
 import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { todayStr } from '../../lib/dates';
+import { vibrate } from '../../lib/platform';
 import { sanitizeSets } from '../../lib/validation';
 import type { BodyPart, Exercise } from '../../lib/types';
 import { addCustomExercise, getExercisesByIds, listByPart, seedPresets } from '../../repos/exerciseRepo';
 import { commitDraft, listRecentExerciseIds } from '../../repos/workoutRepo';
 import { useLogDraft } from '../../stores/logDraftStore';
+
+/** 主 CTA：热源渐变是 CTA 的唯一上色方式（tokens.html） */
+const CTA =
+  'heat rounded-[20px] py-[19px] text-lg font-extrabold text-white shadow-[0_8px_32px_rgba(255,92,31,.35)] disabled:opacity-30 disabled:shadow-none active:scale-[.98]';
+/** 次级按钮：不是卡片，只有一条发丝线 */
+const GHOST =
+  'rounded-[20px] border border-line py-[19px] font-semibold text-mute active:scale-[.98]';
+
+function StepTitle({ step, children }: { step: number; children: string }) {
+  return (
+    <>
+      <p className="display text-[11px] tracking-[.22em] text-mute">STEP {step} / 3</p>
+      <h1 className="mt-1 text-[34px] leading-none font-black tracking-tight">{children}</h1>
+    </>
+  );
+}
 
 export function LogFlow() {
   const nav = useNavigate();
@@ -38,6 +57,8 @@ export function LogFlow() {
         sets: sanitizeSets(i.sets),
       }));
       await commitDraft(items, todayStr());
+      // 钢印落下：震动 200ms（design card: 缩放 + 辉光 + 震动）
+      vibrate(200);
       setDone({
         moves: items.filter((i) => i.sets.length > 0).length,
         sets: items.reduce((n, i) => n + i.sets.length, 0),
@@ -53,7 +74,7 @@ export function LogFlow() {
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col px-4 pb-8 pt-[max(env(safe-area-inset-top),16px)]">
-      <header className="mb-4 flex items-center justify-between">
+      <header className="mb-6 flex items-center justify-between">
         <button type="button" onClick={() => nav(-1)} className="py-2 pr-4 text-mute">
           关闭
         </button>
@@ -71,20 +92,29 @@ function PickParts({ onNext }: { onNext: () => void }) {
   const togglePart = useLogDraft((s) => s.togglePart);
   return (
     <div className="flex flex-1 flex-col">
-      <h1 className="mb-6 text-3xl font-bold">今天练哪儿？</h1>
-      <div className="grid grid-cols-2 gap-3">
+      <StepTitle step={1}>今天练哪儿？</StepTitle>
+      <div className="etch" />
+      <div className="grid grid-cols-2 gap-2.5">
         {BODY_PARTS.map((p) => {
           const selected = parts.includes(p.id);
           return (
             <button
               key={p.id}
               type="button"
+              aria-pressed={selected}
               onClick={() => togglePart(p.id)}
-              className={`flex items-center gap-3 rounded-2xl border p-4 text-left text-lg font-semibold active:scale-[.97] ${
-                selected ? 'border-iron bg-iron/10' : 'border-line bg-card'
-              }`}
+              className="flex items-center gap-2.5 rounded-[14px] px-4 py-3.5 text-left text-[15px] font-semibold active:scale-[.97]"
+              style={
+                selected
+                  ? { border: `1.5px solid ${p.color}`, color: p.color, background: `${p.color}1a` }
+                  : {
+                      border: '1px solid var(--color-line)',
+                      background: 'var(--color-raised)',
+                      color: 'var(--color-ink)',
+                    }
+              }
             >
-              <span className="h-3 w-3 rounded-full" style={{ background: p.color }} />
+              <PartIcon part={p.id} size={20} color={p.color} />
               {p.name}
             </button>
           );
@@ -94,7 +124,7 @@ function PickParts({ onNext }: { onNext: () => void }) {
         type="button"
         disabled={parts.length === 0}
         onClick={onNext}
-        className="mt-auto rounded-2xl bg-iron py-4 text-lg font-bold text-white disabled:opacity-30 active:scale-[.98]"
+        className={`mt-auto pt-0 ${CTA}`}
       >
         下一步 · 选动作
       </button>
@@ -107,29 +137,24 @@ function PickExercises({ onBack, onNext }: { onBack: () => void; onNext: () => v
   const parts = useLogDraft((s) => s.parts);
   const itemCount = useLogDraft((s) => s.items.length);
   return (
-    <div className="flex flex-1 flex-col gap-4">
-      <h1 className="text-3xl font-bold">选动作</h1>
+    <div className="flex flex-1 flex-col">
+      <StepTitle step={2}>选动作</StepTitle>
       <input
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="搜索动作…"
-        className="rounded-xl bg-card px-4 py-3 text-ink placeholder:text-mute/60"
+        className="mt-5 rounded-xl border border-line bg-raised px-4 py-3 text-ink placeholder:text-mute/60"
       />
-      <div className="flex flex-col gap-5 overflow-y-auto">
+      <div className="flex flex-col overflow-y-auto">
         {parts.map((part) => (
           <PartSection key={part} part={part} query={query} />
         ))}
       </div>
-      <div className="mt-auto flex gap-3">
-        <button type="button" onClick={onBack} className="flex-1 rounded-2xl bg-card py-4 font-semibold text-ink active:scale-[.98]">
+      <div className="mt-auto flex gap-3 pt-8">
+        <button type="button" onClick={onBack} className={`flex-1 ${GHOST}`}>
           上一步
         </button>
-        <button
-          type="button"
-          disabled={itemCount === 0}
-          onClick={onNext}
-          className="flex-[2] rounded-2xl bg-iron py-4 text-lg font-bold text-white disabled:opacity-30 active:scale-[.98]"
-        >
+        <button type="button" disabled={itemCount === 0} onClick={onNext} className={`flex-[2] ${CTA}`}>
           下一步 · 记组数（{itemCount}）
         </button>
       </div>
@@ -172,9 +197,11 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
 
   return (
     <section>
-      <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-mute">
-        <span className="h-2 w-2 rounded-full" style={{ background: info.color }} />
-        {info.name}
+      {/* 发丝线取代卡片：区块靠线和留白分开，不靠一层灰底 */}
+      <div className="etch" />
+      <h2 className="mb-3 flex items-center gap-2 text-[13px] font-bold tracking-wide">
+        <PartIcon part={part} size={18} />
+        <span style={{ color: info.color }}>{info.name}</span>
       </h2>
       <div className="flex flex-wrap gap-2">
         {shown.map((e) => {
@@ -183,28 +210,41 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
             <button
               key={e.id}
               type="button"
+              aria-pressed={chosen}
               onClick={() => (chosen ? removeItemByExercise(e.id) : addItem(e.id))}
-              className={`rounded-full px-4 py-2 text-sm active:scale-95 ${
-                chosen ? 'bg-iron font-semibold text-white' : 'bg-card text-ink'
-              }`}
+              className="rounded-full px-4 py-2 text-sm active:scale-95"
+              style={
+                chosen
+                  ? {
+                      border: `1.5px solid ${info.color}`,
+                      color: info.color,
+                      background: `${info.color}1a`,
+                      fontWeight: 600,
+                    }
+                  : {
+                      border: '1px solid var(--color-line)',
+                      background: 'var(--color-raised)',
+                      color: 'var(--color-ink)',
+                    }
+              }
             >
               {e.name}
             </button>
           );
         })}
       </div>
-      <div className="mt-2 flex gap-2">
+      <div className="mt-3 flex gap-2">
         <input
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder={`新建${info.name}动作…`}
-          className="flex-1 rounded-lg bg-card2 px-3 py-2 text-sm text-ink placeholder:text-mute/60"
+          className="flex-1 rounded-lg border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute/60"
         />
         <button
           type="button"
           disabled={newName.trim() === '' || creating}
           onClick={() => create()}
-          className="rounded-lg bg-card2 px-3 py-2 text-sm text-iron disabled:opacity-30"
+          className="rounded-lg border border-line bg-raised px-3 py-2 text-sm font-semibold text-iron disabled:opacity-30"
         >
           新建
         </button>
@@ -230,14 +270,18 @@ function EditSets({
     [items.length],
   );
   return (
-    <div className="flex flex-1 flex-col gap-4">
-      <h1 className="text-3xl font-bold">记组数</h1>
-      <div className="flex flex-col gap-4 overflow-y-auto">
+    <div className="flex flex-1 flex-col">
+      <StepTitle step={3}>记组数</StepTitle>
+      <div className="flex flex-col overflow-y-auto">
         {items.map((item, index) => (
-          <div key={item.exerciseId} className="rounded-2xl bg-card p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <span className="font-semibold">{names?.get(item.exerciseId)?.name ?? '…'}</span>
-              <button type="button" onClick={() => removeItem(index)} className="text-sm text-mute">
+          // 一动作一张卡 → 一动作一段：发丝线分隔，重量靠字号/字重立起来
+          <div key={item.exerciseId}>
+            <div className="etch" />
+            <div className="mb-3 flex items-baseline justify-between">
+              <span className="text-xl font-bold tracking-tight">
+                {names?.get(item.exerciseId)?.name ?? '…'}
+              </span>
+              <button type="button" onClick={() => removeItem(index)} className="text-xs text-mute">
                 移除
               </button>
             </div>
@@ -245,15 +289,15 @@ function EditSets({
           </div>
         ))}
       </div>
-      <div className="mt-auto flex gap-3">
-        <button type="button" onClick={onBack} className="flex-1 rounded-2xl bg-card py-4 font-semibold text-ink active:scale-[.98]">
+      <div className="mt-auto flex gap-3 pt-8">
+        <button type="button" onClick={onBack} className={`flex-1 ${GHOST}`}>
           上一步
         </button>
         <button
           type="button"
           disabled={items.length === 0 || submitting}
           onClick={onFinish}
-          className="flex-[2] rounded-2xl bg-iron py-4 text-lg font-bold text-white disabled:opacity-30 active:scale-[.98]"
+          className={`flex-[2] ${CTA}`}
         >
           完成打卡
         </button>
@@ -265,20 +309,21 @@ function EditSets({
 function DoneScreen({ moves, sets }: { moves: number; sets: number }) {
   const nav = useNavigate();
   return (
-    <div className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-4 px-8 text-center">
-      <span className="text-6xl">🔥</span>
-      <h1 className="text-3xl font-bold">已留下铁证</h1>
-      <p className="text-mute">
-        {moves} 个动作 · {sets} 组
+    <div className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center px-8 pb-8 text-center">
+      {/* 打卡 = 盖钢印。这是全 App 唯一一次让钢印落下的时刻 */}
+      <Stamp size={112} animate />
+      <h1 className="mt-8 text-[32px] leading-none font-black tracking-tight">已留下铁证</h1>
+      <p className="mt-4 flex items-baseline gap-2 text-sm text-mute">
+        <span className="display heat-text text-3xl">{moves}</span>
+        个动作
+        <span className="text-line">·</span>
+        <span className="display heat-text text-3xl">{sets}</span>
+        组
       </p>
-      <div className="w-full">
+      <div className="mt-8 w-full">
         <PhotoCard date={todayStr()} />
       </div>
-      <button
-        type="button"
-        onClick={() => nav('/')}
-        className="mt-4 w-full rounded-2xl bg-iron py-4 text-lg font-bold text-white active:scale-[.98]"
-      >
+      <button type="button" onClick={() => nav('/')} className={`mt-8 w-full ${CTA}`}>
         回到今日
       </button>
     </div>

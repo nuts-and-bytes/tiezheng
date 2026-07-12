@@ -23,20 +23,51 @@ function renderToday() {
   );
 }
 
-test('空状态显示开始训练 CTA 与目标环', async () => {
+test('第一屏出现品牌标识（钢印 + wordmark）', async () => {
   renderToday();
-  expect(await screen.findByText('+ 开始今日训练')).toBeInTheDocument();
-  expect(screen.getByText('今天，留证。')).toBeInTheDocument();
-  expect(screen.getByText('本周目标')).toBeInTheDocument();
+  expect(await screen.findByText('IRONPROOF')).toBeInTheDocument();
+  expect(screen.getByText('铁证')).toBeInTheDocument();
 });
 
-test('今日已有训练时展示已练列表且 CTA 为继续加练', async () => {
+test('空状态显示开始训练 CTA 与本周锻造环', async () => {
+  renderToday();
+  expect(await screen.findByText('开始今日训练')).toBeInTheDocument();
+  expect(screen.getByText('今天，留证。')).toBeInTheDocument();
+  // 未打卡：环显示本周进度（ForgeRing 环心文案）与还差几练
+  expect(screen.getByText('/ 4 练')).toBeInTheDocument();
+  expect(screen.getByText('还差 4 练')).toBeInTheDocument();
+  // 未打卡 → 钢印不落下
+  expect(screen.queryByRole('img', { name: '今日铁证' })).not.toBeInTheDocument();
+});
+
+test('今日已练时钢印落下，取代本周进度环', async () => {
   await addWorkoutItem(todayStr(), 'p-bench', [{}, {}, {}]);
   renderToday();
-  expect(await screen.findByText('+ 继续加练')).toBeInTheDocument();
+  expect(await screen.findByRole('img', { name: '今日铁证' })).toBeInTheDocument();
+  expect(screen.getByText('今天，铁证已落。')).toBeInTheDocument();
+  expect(screen.queryByText('/ 4 练')).not.toBeInTheDocument();
+});
+
+test('今日已有训练时展示已练摘要（部位图标 + 部位名 + 组数）且 CTA 为继续打卡', async () => {
+  await addWorkoutItem(todayStr(), 'p-bench', [{}, {}, {}]);
+  const { container } = renderToday();
+  expect(await screen.findByText('继续打卡')).toBeInTheDocument();
   expect(screen.getByText('今日已练')).toBeInTheDocument();
   expect(screen.getByText('卧推')).toBeInTheDocument();
   expect(screen.getByText('3 组')).toBeInTheDocument();
+  // 一眼看出练的是哪个部位：部位名 + 对应部位图标
+  expect(screen.getByText('胸')).toBeInTheDocument();
+  expect(container.querySelector('[data-part="chest"] svg')).not.toBeNull();
+});
+
+test('同部位的多个动作合并为一行，组数累加', async () => {
+  await addWorkoutItem(todayStr(), 'p-bench', [{}, {}, {}]);
+  await addWorkoutItem(todayStr(), 'p-incline-db', [{}, {}]);
+  const { container } = renderToday();
+  expect(await screen.findByText('卧推')).toBeInTheDocument();
+  expect(screen.getByText('上斜哑铃卧推')).toBeInTheDocument();
+  expect(screen.getByText('5 组')).toBeInTheDocument();
+  expect(container.querySelectorAll('[data-part="chest"]')).toHaveLength(1);
 });
 
 test('存在未完成草稿且今日未练时 CTA 为继续记录', async () => {

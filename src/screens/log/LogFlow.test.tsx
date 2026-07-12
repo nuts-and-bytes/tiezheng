@@ -3,12 +3,14 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { db } from '../../lib/db';
 import { todayStr } from '../../lib/dates';
+import { vibrate } from '../../lib/platform';
 import { addCustomExercise, seedPresets } from '../../repos/exerciseRepo';
 import { resetDb } from '../../test/dbTestUtils';
 import { useLogDraft } from '../../stores/logDraftStore';
 import { LogFlow } from './LogFlow';
 
 vi.mock('../../repos/exerciseRepo', { spy: true });
+vi.mock('../../lib/platform', { spy: true });
 
 beforeEach(async () => {
   localStorage.clear();
@@ -54,6 +56,38 @@ test('第一步展示 7 个部位，选中后可进下一步', async () => {
   await waitFor(() => {
     expect(screen.getByText('下一步 · 选动作')).toBeEnabled();
   });
+});
+
+test('每个部位按钮都带一枚 PartIcon 图形', async () => {
+  const { container } = renderFlow();
+  await screen.findByText('今天练哪儿？');
+
+  const partButtons = Array.from(container.querySelectorAll('button')).filter((b) =>
+    ['胸', '肩', '背', '腿', '手臂', '核心', '有氧'].includes(b.textContent?.trim() ?? ''),
+  );
+  expect(partButtons).toHaveLength(7);
+  for (const btn of partButtons) {
+    expect(btn.querySelector('svg')).not.toBeNull();
+  }
+});
+
+test('记组数步骤用 etch 线分隔，不再一动作一张卡片', async () => {
+  presetDraftAtStep2([{ weight: 60, reps: 10 }]);
+  const { container } = renderFlow();
+
+  await screen.findByText('记组数');
+  expect(container.querySelectorAll('.bg-card')).toHaveLength(0);
+  expect(container.querySelectorAll('.etch').length).toBeGreaterThan(0);
+});
+
+test('完成打卡落下钢印并震动（打卡 = 盖钢印）', async () => {
+  presetDraftAtStep2([{ weight: 60, reps: 10 }]);
+  renderFlow();
+
+  fireEvent.click(await screen.findByText('完成打卡'));
+
+  expect(await screen.findByRole('img', { name: '铁证' })).toBeInTheDocument();
+  expect(vibrate).toHaveBeenCalledWith(200);
 });
 
 test('记录流端到端主链路：选部位→选动作→记组数→完成落库', async () => {

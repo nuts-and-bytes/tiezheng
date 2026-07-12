@@ -12,7 +12,8 @@ export function UpdateToast() {
     <button
       type="button"
       onClick={() => updateServiceWorker(true)}
-      className="fixed left-1/2 top-[max(env(safe-area-inset-top),12px)] z-50 -translate-x-1/2 rounded-full bg-iron px-4 py-2 text-sm font-semibold text-white shadow-lg active:scale-95"
+      // 浮层用 raised + 发丝线，iron 只留给那一个字：热源必须稀缺
+      className="fixed left-1/2 top-[max(env(safe-area-inset-top),12px)] z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-line bg-raised px-4 py-2 text-sm font-semibold text-ink shadow-[0_12px_40px_rgba(0,0,0,.55)] active:scale-95"
     >
       新版本已就绪 · 点击更新
     </button>
