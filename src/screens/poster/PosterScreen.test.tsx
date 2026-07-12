@@ -16,6 +16,18 @@ import { PosterScreen } from './PosterScreen';
 
 let drawn: string[] = [];
 
+/** 和 poster.test.ts 同一个字宽模型：Anton 0.51em、拉丁 0.55em、全角 1em。
+    字号无关的假宽度会让排版函数误判「放不下」，把 footer 那句截断掉。 */
+const FULLWIDTH = /[⺀-鿿　-〿＀-￯]/u;
+
+function fakeMeasure(s: string, font: string): number {
+  const size = Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? 10);
+  const anton = /Anton/i.test(font);
+  let w = 0;
+  for (const ch of s) w += size * (anton ? 0.51 : FULLWIDTH.test(ch) ? 1 : 0.55);
+  return w;
+}
+
 function fakeCtx(): CanvasRenderingContext2D {
   const noop = () => {};
   const gradient = { addColorStop: noop };
@@ -37,7 +49,7 @@ function fakeCtx(): CanvasRenderingContext2D {
     clearRect: noop,
     setLineDash: noop,
     fillText: (s: string) => drawn.push(String(s)),
-    measureText: (s: string) => ({ width: String(s).length * 8 }),
+    measureText: (s: string) => ({ width: fakeMeasure(String(s), String(ctx.font)) }),
     createLinearGradient: () => gradient,
     createRadialGradient: () => gradient,
     fillStyle: '',
@@ -143,6 +155,48 @@ describe('预览', () => {
 
     await waitFor(() => expect(drawn).toContain('YEARLY PROOF'));
     expect(drawn).toContain(String(new Date().getFullYear()));
+  });
+
+  /** 分享出去的图是标准件：月度、年度、任何月份，都得是同一张 9:16 的 1080×1920。
+      之前高度跟着内容走（3 月 1170×2853、7 月 1170×2715），社交平台裁得乱七八糟。 */
+  test('导出画布恒为 1080×1920（9:16），和内容多少无关', async () => {
+    await seed();
+    const user = userEvent.setup();
+    renderPoster();
+    await waitReady();
+
+    const canvas = screen.getByRole('img', { name: /海报/ }) as HTMLCanvasElement;
+    expect([canvas.width, canvas.height]).toEqual([1080, 1920]);
+    expect(canvas.width / canvas.height).toBeCloseTo(9 / 16, 10);
+
+    await user.click(screen.getByRole('button', { name: '年度' }));
+    await waitFor(() => expect(drawn).toContain('YEARLY PROOF'));
+    expect([canvas.width, canvas.height]).toEqual([1080, 1920]);
+  });
+
+  /** 导出的位图是 9:16 了，但**屏幕上看到的**也得是 9:16——用户是照着预览决定要不要分享的。
+      canvas 是 replaced element，放进 flex 行里会吃 align-items:stretch，交叉轴被拉满整行高，
+      固有比例（width/height 属性）拦不住。一旦 max-w 先于 max-h 触底（平板 1024×1366 实测
+      280×710，比 9:16 长了 30%），预览就是变形的。align-self:center 让它退回按比例缩放。
+
+      jsdom 没有排版引擎，量不出这个（改坏了 49 个测试照样全绿——它就是这么溜过去的）。
+      所以这里退而求其次锁 class：把不变量钉在 canvas 自己身上，父容器怎么改都带得走。 */
+  test('预览画布不被 flex 拉伸（self-center 是承重的，不是装饰）', async () => {
+    await seed();
+    renderPoster();
+    await waitReady();
+
+    const canvas = screen.getByRole('img', { name: /海报/ });
+    expect(canvas).toHaveClass('self-center');
+    // 宽高都得是 auto + 上限，任何一边写死都会毁掉固有比例
+    expect(canvas).toHaveClass('h-auto', 'w-auto');
+  });
+
+  test('footer 那句隐私承诺整句都在（排版让位靠降级，不靠截断）', async () => {
+    await seed();
+    renderPoster();
+    await waitReady();
+    expect(drawn).toContain('TIEZHENG.PAGES.DEV · 本地生成 · 照片不上传');
   });
 
   test('一次铁证都没有：给空态，不给一张空海报', async () => {

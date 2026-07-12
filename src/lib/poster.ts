@@ -32,11 +32,20 @@ import type { BodyPart } from './types';
 
 /* ── 画布尺寸 ─────────────────────────────────────────────────────────── */
 
+/** 内容坐标系的宽度 = 设计卡宽度。所有区块的坐标都活在这个坐标系里。 */
 export const POSTER_W = 390;
-/** 设计卡的 min-height。内容长了就往下长（卡上 .bottom 是 margin-top:auto）。 */
-export const POSTER_MIN_H = 693;
-/** 导出倍率：390×~900 的 3 倍 = 1170×~2700，够朋友圈/IG 清晰。 */
-export const POSTER_SCALE = 3;
+
+/**
+ * 相框：540×960 = 精确 9:16。
+ *
+ * 海报的**成品尺寸必须是常数**。之前是「高度随内容长」，结果 3 月导出 1170×2853、
+ * 7 月 1170×2715——同一个人分享两个月，社交平台裁出来的边不一样，还都不是 9:16。
+ * 现在内容照旧按自然高度排，画完整块居中放进这个固定相框里，多出来的地方是衬边。
+ */
+export const FRAME_W = 540;
+export const FRAME_H = 960;
+/** 导出倍率：540×960 的 2 倍 = 1080×1920，朋友圈/IG Story 的原生画幅。 */
+export const POSTER_SCALE = 2;
 
 const PAD_X = 36;
 const PAD_T = 44;
@@ -282,9 +291,219 @@ function yearlyContentH(d: YearlyPosterData): number {
   );
 }
 
-export function posterSize(d: PosterData): { w: number; h: number } {
-  const content = d.kind === 'monthly' ? monthlyContentH(d) : yearlyContentH(d);
-  return { w: POSTER_W, h: Math.max(POSTER_MIN_H, Math.ceil(content)) };
+/** 内容的自然高度（不含衬边）。海报画多高由它说了算，但**画布多大跟它无关**。 */
+export function contentH(d: PosterData): number {
+  return Math.ceil(d.kind === 'monthly' ? monthlyContentH(d) : yearlyContentH(d));
+}
+
+/** 画布尺寸恒定：稀疏月、6 周月、年度、空数据，都是同一张 9:16 的相框。 */
+export function posterSize(_d?: PosterData): { w: number; h: number } {
+  return { w: FRAME_W, h: FRAME_H };
+}
+
+/* ── 排版不变量（纯函数，注入 measure）───────────────────────────────────
+   标题小标溢出、footer 两行重叠，本质都是「排版结果没人量过」。把量文字这件事
+   抽成注入的 measure，布局就成了可测的纯函数——测试直接断言几何，不用去 mock
+   一整个 CanvasRenderingContext2D。 */
+
+/** (文字, CSS font) → 宽度。绘制时接 ctx.measureText，测试里接确定性假字宽。 */
+export type Measure = (text: string, font: string) => number;
+
+type Step = readonly [size: number, track: number];
+
+interface Fit {
+  text: string;
+  size: number;
+  track: number;
+  width: number;
+  /** 原文完整放下了吗（false = 连最小档都不够，只能截断/换行） */
+  ok: boolean;
+}
+
+/** letterSpacing 在每个字后面都补一次，所以宽度要按字数把 track 加回来。 */
+function lineW(measure: Measure, s: string, font: string, track: number): number {
+  return measure(s, font) + track * [...s].length;
+}
+
+/**
+ * 按阶梯降级把一行文字塞进 avail：先收字距，再收字号。
+ * 到最小档还是放不下才截断——截断是最后一招，因为 footer 那句是隐私承诺，
+ * 掉字等于承诺缺一半。
+ */
+function fitLine(
+  measure: Measure,
+  s: string,
+  avail: number,
+  steps: readonly Step[],
+  font: (size: number) => string,
+): Fit {
+  for (const [size, track] of steps) {
+    const w = lineW(measure, s, font(size), track);
+    if (w <= avail) return { text: s, size, track, width: w, ok: true };
+  }
+
+  const [size, track] = steps[steps.length - 1]!;
+  const chars = [...s];
+  while (chars.length > 1) {
+    chars.pop();
+    const t = `${chars.join('')}…`;
+    const w = lineW(measure, t, font(size), track);
+    if (w <= avail) return { text: t, size, track, width: w, ok: false };
+  }
+  return { text: s, size, track, width: lineW(measure, s, font(size), track), ok: false };
+}
+
+/* ── 标题块 ─────────────────────────────────────────────────────────── */
+
+const BIG_SIZE = 88;
+const BIG_BASELINE = 26 + 70;
+const TITLE_H = 26 + 79 + 4;
+const SUB_GAP = 6;
+/** 小标降级阶梯：设计值 13/4 打头，一路收到 10/0 为止。 */
+const SUB_STEPS: readonly Step[] = [
+  [13, 4],
+  [13, 3],
+  [13, 2],
+  [12, 2],
+  [12, 1],
+  [11, 1],
+  [11, 0],
+  [10, 0],
+];
+/** 换行到大字下面时最多 11px：再大就会顶穿标题块下沿的蚀刻线。 */
+const WRAP_STEPS = SUB_STEPS.filter(([size]) => size <= 11);
+
+export interface TitleLayout {
+  /** 小标的 x（未换行时跟在大字后面，换行后回到左边距） */
+  x: number;
+  /** 小标基线，相对标题块顶部 */
+  y: number;
+  text: string;
+  size: number;
+  track: number;
+  wrapped: boolean;
+  /** 整块内容的右边缘——这个值必须恒 ≤ X1，否则就是溢出画布 */
+  right: number;
+  /** 标题块高度：恒定。换行也不许把它撑高，否则底部会被挤出相框 */
+  height: number;
+}
+
+/**
+ * 大字 + 小标。'2026' + 'THE YEAR IN IRON' 按设计值要占到 x≈398——画布只有 390 宽，
+ * 年度海报的小标从来就是被切掉半截的。所以这里不再假设「反正放得下」：
+ * 量一次，放不下就降级，再放不下就换行到大字下面。
+ */
+export function titleLayout(measure: Measure, big: string, sub: string): TitleLayout {
+  const bigW = measure(big, display(BIG_SIZE));
+  const inlineX = X0 + bigW + SUB_GAP;
+
+  const inline = fitLine(measure, sub, X1 - inlineX, SUB_STEPS, (s) => ui(s));
+
+  if (inline.ok) {
+    return {
+      x: inlineX,
+      y: BIG_BASELINE,
+      text: inline.text,
+      size: inline.size,
+      track: inline.track,
+      wrapped: false,
+      right: Math.max(X0 + bigW, inlineX + inline.width),
+      height: TITLE_H,
+    };
+  }
+
+  const wrap = fitLine(measure, sub, CW, WRAP_STEPS, (s) => ui(s));
+  return {
+    x: X0,
+    y: BIG_BASELINE + 11,
+    text: wrap.text,
+    size: wrap.size,
+    track: wrap.track,
+    wrapped: true,
+    right: Math.max(X0 + bigW, X0 + wrap.width),
+    height: TITLE_H,
+  };
+}
+
+/* ── footer ──────────────────────────────────────────────────────────── */
+
+const TAGLINE = '你练过的，都有铁证。';
+const META = 'TIEZHENG.PAGES.DEV · 本地生成 · 照片不上传';
+const TAGLINE_SIZE = 15;
+const LINE_GAP = 8;
+/** 小字降级阶梯：先收字距（2→0），再掉一号字。 */
+const META_STEPS: readonly Step[] = [
+  [9, 2],
+  [9, 1],
+  [9, 0],
+  [8, 1],
+  [8, 0],
+];
+/** 文字和钢印之间的呼吸 */
+const STAMP_GUTTER = 12;
+
+export interface FooterLine {
+  text: string;
+  x: number;
+  /** 绘制时传给 fillText 的 y（tagline 是 top 基线，meta 是 bottom 基线） */
+  y: number;
+  size: number;
+  track: number;
+  top: number;
+  bottom: number;
+  right: number;
+}
+
+export interface FooterLayout {
+  tagline: FooterLine;
+  meta: FooterLine;
+  stamp: { cx: number; cy: number; size: number; left: number };
+}
+
+/**
+ * 底部两行 + 钢印。原来两行都压在 base 附近（一个 top 基线 -15、一个 bottom 基线 0），
+ * 在 base-9..base 这 9px 里整个叠在一起——小字直接糊在标语上。
+ * 现在两行明确垂直堆叠，且都不许伸进钢印的地盘。
+ */
+export function footerLayout(measure: Measure, h: number): FooterLayout {
+  const base = h - PAD_B;
+  const stampLeft = X1 - BOTTOM_H;
+  const avail = stampLeft - STAMP_GUTTER - X0;
+
+  const meta = fitLine(measure, META, avail, META_STEPS, (s) => ui(s));
+  const tagline = fitLine(measure, TAGLINE, avail, [[TAGLINE_SIZE, 1]], (s) => ui(s, 800));
+
+  const metaTop = base - meta.size;
+  const taglineTop = metaTop - LINE_GAP - TAGLINE_SIZE;
+
+  return {
+    tagline: {
+      text: tagline.text,
+      x: X0,
+      y: taglineTop, // baseline: 'top'
+      size: tagline.size,
+      track: tagline.track,
+      top: taglineTop,
+      bottom: taglineTop + TAGLINE_SIZE,
+      right: X0 + tagline.width,
+    },
+    meta: {
+      text: meta.text,
+      x: X0,
+      y: base, // baseline: 'bottom'
+      size: meta.size,
+      track: meta.track,
+      top: metaTop,
+      bottom: base,
+      right: X0 + meta.width,
+    },
+    stamp: {
+      cx: X1 - BOTTOM_H / 2,
+      cy: base - BOTTOM_H / 2,
+      size: BOTTOM_H,
+      left: stampLeft,
+    },
+  };
 }
 
 /* ── Canvas 原语 ──────────────────────────────────────────────────────── */
@@ -298,6 +517,14 @@ interface TextOpt {
   align?: CanvasTextAlign;
   baseline?: CanvasTextBaseline;
   track?: number;
+}
+
+/** 把 ctx 包成布局函数要的 Measure。（ctx.font 会被改写，但每次 text() 都会重设，无副作用） */
+function measureWith(ctx: CanvasRenderingContext2D): Measure {
+  return (s, font) => {
+    ctx.font = font;
+    return ctx.measureText(s).width;
+  };
 }
 
 function text(ctx: CanvasRenderingContext2D, s: string, x: number, y: number, o: TextOpt): void {
@@ -358,9 +585,11 @@ function grain(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     seed = (seed * 1664525 + 1013904223) >>> 0;
     return seed / 0x100000000;
   };
+  // 按面积撒点：换了相框尺寸，噪点密度还得是原来那个密度（约 142px²/点）
+  const dots = Math.round((w * h) / 142);
   ctx.save();
   ctx.globalAlpha = 0.06;
-  for (let i = 0; i < 2600; i++) {
+  for (let i = 0; i < dots; i++) {
     ctx.fillStyle = rand() > 0.5 ? '#FFFFFF' : '#000000';
     ctx.fillRect(Math.floor(rand() * w), Math.floor(rand() * h), 1, 1);
   }
@@ -400,17 +629,17 @@ function topRow(ctx: CanvasRenderingContext2D, right: string): void {
 
 /** 大号 + 小标：'07' / '2026 JULY'。大号走渐变（设计卡的 background-clip:text）。 */
 function titleBlock(ctx: CanvasRenderingContext2D, big: string, sub: string, y: number): number {
-  const baseline = y + 26 + 70;
+  const l = titleLayout(measureWith(ctx), big, sub);
+  const baseline = y + BIG_BASELINE;
+
   const g = ctx.createLinearGradient(X0, baseline - 70, X0 + 160, baseline);
   g.addColorStop(0, IRON);
   g.addColorStop(1, AMBER);
-  text(ctx, big, X0, baseline, { font: display(88), fill: g });
+  text(ctx, big, X0, baseline, { font: display(BIG_SIZE), fill: g });
 
-  // 小标和大号基线对齐（卡上是同一行的 inline）
-  const bigW = ctx.measureText(big).width;
-  text(ctx, sub, X0 + bigW + 6, baseline, { font: ui(13), fill: MUTE, track: 4 });
+  text(ctx, l.text, l.x, y + l.y, { font: ui(l.size), fill: MUTE, track: l.track });
 
-  return y + 26 + 79 + 4;
+  return y + l.height;
 }
 
 /** hero：120px 打卡天数 + 单位。天数是海报唯一的主角。 */
@@ -594,64 +823,80 @@ function stamp(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: numb
   ctx.restore();
 }
 
+/** h 是**内容的自然高度**，不是相框高度——footer 贴的是内容的底，不是衬边的底。 */
 function bottom(ctx: CanvasRenderingContext2D, h: number): void {
-  const base = h - PAD_B;
-  text(ctx, '你练过的，都有铁证。', X0, base - 15, {
-    font: ui(15, 800),
+  const f = footerLayout(measureWith(ctx), h);
+
+  text(ctx, f.tagline.text, f.tagline.x, f.tagline.y, {
+    font: ui(f.tagline.size, 800),
     fill: INK,
     baseline: 'top',
-    track: 1,
+    track: f.tagline.track,
   });
-  text(ctx, 'TIEZHENG.PAGES.DEV · 本地生成 · 照片不上传', X0, base, {
-    font: ui(9),
+  text(ctx, f.meta.text, f.meta.x, f.meta.y, {
+    font: ui(f.meta.size),
     fill: MUTE,
     baseline: 'bottom',
-    track: 2,
+    track: f.meta.track,
   });
-  stamp(ctx, X1 - BOTTOM_H / 2, base - BOTTOM_H / 2, BOTTOM_H);
+  stamp(ctx, f.stamp.cx, f.stamp.cy, f.stamp.size);
 }
 
 /* ── 对外的两个入口 ───────────────────────────────────────────────────── */
 
-export function drawMonthlyPoster(ctx: CanvasRenderingContext2D, d: MonthlyPosterData): void {
-  const { w, h } = posterSize(d);
+/**
+ * 相框铺满 → 内容整块居中 → 画内容。内容坐标系（宽 390）原样保留，
+ * 每个区块该在哪还在哪，只是整块被 translate 进了相框中央。
+ */
+function withFrame(
+  ctx: CanvasRenderingContext2D,
+  h: number,
+  draw: (ctx: CanvasRenderingContext2D) => void,
+): void {
   ctx.save();
   ctx.scale(POSTER_SCALE, POSTER_SCALE);
 
-  background(ctx, w, h);
-  topRow(ctx, 'MONTHLY PROOF');
+  background(ctx, FRAME_W, FRAME_H); // 噪点和暗角是整张相框的，衬边也得有
 
-  let y = titleBlock(ctx, pad2(d.month), `${d.year} ${MONTH_EN[d.month - 1]}`, PAD_T + 12);
-  etch(ctx, y);
-  y = hero(ctx, d.days, y + 1);
-  y = metrics(ctx, d, y);
-  etch(ctx, y);
-  y = distBlock(ctx, d.split, y + 1);
-  monthGridBlock(ctx, d, y);
-  bottom(ctx, h);
+  ctx.save();
+  ctx.translate((FRAME_W - POSTER_W) / 2, Math.round((FRAME_H - h) / 2));
+  draw(ctx);
+  ctx.restore();
 
   ctx.restore();
 }
 
+export function drawMonthlyPoster(ctx: CanvasRenderingContext2D, d: MonthlyPosterData): void {
+  const h = contentH(d);
+  withFrame(ctx, h, () => {
+    topRow(ctx, 'MONTHLY PROOF');
+
+    let y = titleBlock(ctx, pad2(d.month), `${d.year} ${MONTH_EN[d.month - 1]}`, PAD_T + 12);
+    etch(ctx, y);
+    y = hero(ctx, d.days, y + 1);
+    y = metrics(ctx, d, y);
+    etch(ctx, y);
+    y = distBlock(ctx, d.split, y + 1);
+    monthGridBlock(ctx, d, y);
+    bottom(ctx, h);
+  });
+}
+
 export function drawYearlyPoster(ctx: CanvasRenderingContext2D, d: YearlyPosterData): void {
-  const { w, h } = posterSize(d);
-  ctx.save();
-  ctx.scale(POSTER_SCALE, POSTER_SCALE);
+  const h = contentH(d);
+  withFrame(ctx, h, () => {
+    topRow(ctx, 'YEARLY PROOF');
 
-  background(ctx, w, h);
-  topRow(ctx, 'YEARLY PROOF');
-
-  let y = titleBlock(ctx, String(d.year), 'THE YEAR IN IRON', PAD_T + 12);
-  etch(ctx, y);
-  y = hero(ctx, d.days, y + 1);
-  y = metrics(ctx, d, y);
-  etch(ctx, y);
-  y = yearGridBlock(ctx, d, y + 1);
-  y = distBlock(ctx, d.split, y);
-  prBlock(ctx, d.prs, y);
-  bottom(ctx, h);
-
-  ctx.restore();
+    let y = titleBlock(ctx, String(d.year), 'THE YEAR IN IRON', PAD_T + 12);
+    etch(ctx, y);
+    y = hero(ctx, d.days, y + 1);
+    y = metrics(ctx, d, y);
+    etch(ctx, y);
+    y = yearGridBlock(ctx, d, y + 1);
+    y = distBlock(ctx, d.split, y);
+    prBlock(ctx, d.prs, y);
+    bottom(ctx, h);
+  });
 }
 
 export function drawPoster(ctx: CanvasRenderingContext2D, d: PosterData): void {

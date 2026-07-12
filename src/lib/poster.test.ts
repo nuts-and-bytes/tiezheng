@@ -1,21 +1,45 @@
 import { describe, expect, test } from 'vitest';
 import {
-  POSTER_MIN_H,
+  FRAME_H,
+  FRAME_W,
   POSTER_SCALE,
   POSTER_W,
+  contentH,
+  footerLayout,
   posterSize,
+  titleLayout,
   buildMonthly,
   buildYearly,
   drawMonthlyPoster,
+  drawPoster,
   drawYearlyPoster,
   formatVolume,
   posterFileName,
   posterTitle,
+  type MonthlyPosterData,
   type PosterInput,
+  type YearlyPosterData,
 } from './poster';
+import { BODY_PARTS } from '../data/bodyParts';
 import { EMPTY_HEAT, heatColor } from './heat';
 import type { ExMap, LoadItem } from './stats';
 import type { Exercise } from './types';
+
+/* ── 确定性字宽模型 ──────────────────────────────────────────────────────
+   jsdom 的 measureText 不存在，真字体又不该被测试依赖。这里给一个**注入**的假
+   measure：Anton 0.51em、拉丁 0.55em、全角 1em——量级贴着真字体，足够钉死
+   「不溢出 / 不重叠」这类几何不变量。海报的排版函数全部收 measure 参数，
+   就是为了能在这里被量出来（而不是 mock CanvasRenderingContext2D）。 */
+
+const FULLWIDTH = /[⺀-鿿　-〿＀-￯]/u;
+
+function fakeMeasure(s: string, font: string): number {
+  const size = Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? 10);
+  const anton = /Anton/i.test(font);
+  let w = 0;
+  for (const ch of s) w += size * (anton ? 0.51 : FULLWIDTH.test(ch) ? 1 : 0.55);
+  return w;
+}
 
 /* ── 录像机 ctx ──────────────────────────────────────────────────────────
    jsdom 没有 2D canvas 实现（package.json 里没装 canvas / vitest-canvas-mock），
@@ -98,7 +122,7 @@ function recorder(): Recorder {
     clearRect: rec('clearRect'),
     fillText: rec('fillText'),
     setLineDash: rec('setLineDash'),
-    measureText: (t: string) => ({ width: t.length * 8 }),
+    measureText: (t: string) => ({ width: fakeMeasure(t, String(state.font)) }),
     createLinearGradient: () => gradient,
     createRadialGradient: () => gradient,
   } as Record<string, unknown>;
@@ -168,38 +192,165 @@ function julyInput(): PosterInput {
   };
 }
 
-describe('尺寸', () => {
-  test('宽 390 逻辑像素（设计卡），高度随内容长，但不低于卡上的 min-height 693', () => {
-    expect(POSTER_W).toBe(390);
-    expect(POSTER_MIN_H).toBe(693);
-    expect(POSTER_SCALE).toBeGreaterThanOrEqual(2); // 至少 2x，否则分享出去糊
+/** 内容等量、只多一行网格的 8 月（8/1 是周六 → 6 行） */
+function augustSix(): MonthlyPosterData {
+  const items = julyInput()
+    .items.filter((i) => i.date.startsWith('2026-07'))
+    .map((i) => ({ ...i, date: i.date.replace('2026-07', '2026-08') }));
+  return buildMonthly('2026-08', { items, dates: items.map((i) => i.date), exMap: EX_MAP });
+}
 
-    const m = posterSize(buildMonthly('2026-07', julyInput()));
-    expect(m.w).toBe(390);
-    expect(m.h).toBeGreaterThanOrEqual(POSTER_MIN_H);
+const splitOf = (rows: number) =>
+  BODY_PARTS.slice(0, rows).map((p) => ({ part: p.id, name: p.name, sets: 10 }));
 
-    const y = posterSize(buildYearly(2026, julyInput()));
-    expect(y.w).toBe(390);
-    expect(y.h).toBeGreaterThanOrEqual(POSTER_MIN_H);
+/** 手搓最坏情况：build 出来的真数据碰不到「6 行网格 + 5 条分布」这种组合 */
+function monthlyOf(weeks: number, rows: number): MonthlyPosterData {
+  return {
+    kind: 'monthly',
+    year: 2026,
+    month: 8,
+    days: 26,
+    sets: 188,
+    volumeKg: 96000,
+    streak: 14,
+    split: splitOf(rows),
+    maxSets: 8,
+    weeks: Array.from({ length: weeks }, () => Array.from({ length: 7 }, () => null)),
+  };
+}
+
+function yearlyOf(rows: number, prs: number): YearlyPosterData {
+  return {
+    kind: 'yearly',
+    year: 2026,
+    days: 260,
+    sets: 1880,
+    volumeKg: 960000,
+    streak: 42,
+    split: splitOf(rows),
+    maxSets: 8,
+    columns: Array.from({ length: 53 }, () => Array.from({ length: 7 }, () => null)),
+    prs: Array.from({ length: prs }, (_, i) => ({
+      name: `动作${i}`,
+      weight: 100,
+      reps: 5,
+      e1rm: 116,
+    })),
+  };
+}
+
+/* ── B4：海报是标准件，尺寸不许随内容浮动 ────────────────────────────── */
+describe('尺寸：固定 9:16 相框', () => {
+  test('相框恒为 540×960（精确 9:16），导出恒为 1080×1920', () => {
+    expect(POSTER_W).toBe(390); // 内容坐标系（设计卡宽度）保持不变
+    expect(FRAME_W).toBe(540);
+    expect(FRAME_H).toBe(960);
+    expect(FRAME_W / FRAME_H).toBeCloseTo(9 / 16, 10);
+    expect(POSTER_SCALE).toBe(2);
+    expect(FRAME_W * POSTER_SCALE).toBe(1080);
+    expect(FRAME_H * POSTER_SCALE).toBe(1920);
   });
 
-  test('六行的月份比五行的高 —— 网格不许被裁掉', () => {
+  test('稀疏月 / 六行月 / 年度 / 空月 —— 四种输入，同一个尺寸', () => {
     const five = buildMonthly('2026-07', julyInput()); // 7/1 周三 → 5 行
-
-    // 把 7 月的训练原样搬到 8 月：内容等量，只有网格行数不同（8/1 周六 → 6 行）
-    const items = julyInput()
-      .items.filter((i) => i.date.startsWith('2026-07'))
-      .map((i) => ({ ...i, date: i.date.replace('2026-07', '2026-08') }));
-    const six = buildMonthly('2026-08', {
-      items,
-      dates: items.map((i) => i.date),
-      exMap: EX_MAP,
-    });
+    const six = augustSix();
+    const yearly = buildYearly(2026, julyInput());
+    const empty = buildMonthly('2026-02', { items: [], dates: [], exMap: EX_MAP });
 
     expect(five.weeks).toHaveLength(5);
-    expect(six.weeks).toHaveLength(6);
-    expect(six.split).toHaveLength(five.split.length); // 等量内容，只差一行网格
-    expect(posterSize(six).h).toBeGreaterThan(posterSize(five).h);
+    expect(six.weeks).toHaveLength(6); // 内容确实不一样，尺寸却必须一样
+    for (const d of [five, six, yearly, empty]) {
+      expect(posterSize(d)).toEqual({ w: FRAME_W, h: FRAME_H });
+    }
+  });
+
+  test('最坏情况的内容高度也塞得进相框 —— 谁再往海报上加一行，都会在这里红', () => {
+    for (let weeks = 4; weeks <= 6; weeks++) {
+      for (let rows = 0; rows <= 5; rows++) {
+        expect(contentH(monthlyOf(weeks, rows))).toBeLessThanOrEqual(FRAME_H);
+      }
+    }
+    for (let rows = 0; rows <= 5; rows++) {
+      for (let prs = 0; prs <= 3; prs++) {
+        expect(contentH(yearlyOf(rows, prs))).toBeLessThanOrEqual(FRAME_H);
+      }
+    }
+  });
+});
+
+/* ── B3：标题小标不许溢出画布 ────────────────────────────────────────── */
+describe('titleLayout', () => {
+  const X1 = 354; // POSTER_W - PAD_X
+
+  test('月度：设计值原样保留（13px / 4px 字距），小标跟在大字后面', () => {
+    const l = titleLayout(fakeMeasure, '07', '2026 JULY');
+    expect(l.wrapped).toBe(false);
+    expect(l.size).toBe(13);
+    expect(l.track).toBe(4);
+    expect(l.text).toBe('2026 JULY');
+    expect(l.right).toBeLessThanOrEqual(X1);
+  });
+
+  test('年度：2026 + THE YEAR IN IRON 会挤出画布 → 降级，而不是溢出，也不是截断', () => {
+    const l = titleLayout(fakeMeasure, '2026', 'THE YEAR IN IRON');
+    expect(l.right).toBeLessThanOrEqual(X1);
+    expect(l.text).toBe('THE YEAR IN IRON'); // 一个字母都不许掉
+    expect(l.size).toBeLessThanOrEqual(13);
+    expect(l.size).toBeGreaterThanOrEqual(10); // 降级有下限，不许缩成蚂蚁
+  });
+
+  test('任意 big/sub 组合都不溢出 —— 布局契约不该指望调用方的字符串恰好够短', () => {
+    const bigs = ['1', '07', '12', '2026', '88888'];
+    const subs = [
+      '',
+      'X',
+      '2026 JULY',
+      'THE YEAR IN IRON',
+      'THE YEAR IN IRON AND FIRE AND MORE IRON',
+      'A'.repeat(120),
+    ];
+    for (const big of bigs) {
+      for (const sub of subs) {
+        const l = titleLayout(fakeMeasure, big, sub);
+        expect(l.right).toBeLessThanOrEqual(X1 + 1e-6);
+        expect(l.x).toBeGreaterThanOrEqual(36);
+        // 换行也不许把标题块撑高：相框高度是钉死的，任何一块变高都会挤爆底部
+        expect(l.height).toBe(109);
+      }
+    }
+  });
+
+  test('实在放不下才换行到大字下面', () => {
+    const l = titleLayout(fakeMeasure, '2026', 'THE YEAR IN IRON AND FIRE AND MORE IRON');
+    expect(l.wrapped).toBe(true);
+    expect(l.x).toBe(36); // 回到左边距，不再跟在大字后面
+    expect(l.right).toBeLessThanOrEqual(X1);
+  });
+});
+
+/* ── B2：footer 两行不许叠在一起 ─────────────────────────────────────── */
+describe('footerLayout', () => {
+  test('标语在上、小字在下，两行的包围盒不相交', () => {
+    for (const h of [693, 800, 951, FRAME_H]) {
+      const f = footerLayout(fakeMeasure, h);
+      expect(f.tagline.bottom).toBeLessThanOrEqual(f.meta.top);
+      expect(f.meta.top - f.tagline.bottom).toBeGreaterThanOrEqual(6); // 中间得有呼吸
+      expect(f.meta.bottom).toBeLessThanOrEqual(h - 30); // 不许越过 PAD_B
+      expect(f.tagline.top).toBeGreaterThanOrEqual(h - 30 - 74); // 不许爬出 footer 区
+    }
+  });
+
+  test('文字给钢印让位：两行的右边缘都在钢印左边缘之外', () => {
+    const f = footerLayout(fakeMeasure, 951);
+    expect(f.stamp.left).toBe(354 - 74);
+    expect(f.tagline.right).toBeLessThanOrEqual(f.stamp.left);
+    expect(f.meta.right).toBeLessThanOrEqual(f.stamp.left);
+  });
+
+  test('隐私承诺那句必须整句画出来 —— 让位靠降级，不靠截断', () => {
+    const f = footerLayout(fakeMeasure, 951);
+    expect(f.tagline.text).toBe('你练过的，都有铁证。');
+    expect(f.meta.text).toBe('TIEZHENG.PAGES.DEV · 本地生成 · 照片不上传');
   });
 });
 
@@ -435,6 +586,43 @@ describe('drawYearlyPoster', () => {
     drawYearlyPoster(r.ctx, buildYearly(2026, julyInput()));
     const cjk = /[一-鿿]/;
     expect(r.textFonts.filter((c) => cjk.test(c.text) && /Anton/i.test(c.font))).toEqual([]);
+  });
+});
+
+/* ── B4 的绘制侧：内容在相框里居中，衬边是背景的一部分 ────────────────── */
+describe('相框与衬边', () => {
+  test('背景铺满整个 540×960，不是只铺内容那一块（否则衬边是块透明空白）', () => {
+    const r = recorder();
+    drawMonthlyPoster(r.ctx, buildMonthly('2026-07', julyInput()));
+    expect(r.calls.find((c) => c.fn === 'fillRect')!.args).toEqual([0, 0, FRAME_W, FRAME_H]);
+    expect(r.calls.find((c) => c.fn === 'strokeRect')!.args).toEqual([
+      0.5,
+      0.5,
+      FRAME_W - 1,
+      FRAME_H - 1,
+    ]);
+  });
+
+  test('内容整块居中：水平 75，垂直按自然高度居中', () => {
+    for (const d of [buildMonthly('2026-07', julyInput()), buildYearly(2026, julyInput())]) {
+      const r = recorder();
+      drawPoster(r.ctx, d);
+      const t = r.calls.find((c) => c.fn === 'translate')!; // 第一个 translate 就是内容整块的位移
+      expect(t.args[0]).toBe((FRAME_W - POSTER_W) / 2);
+      expect(t.args[1]).toBe(Math.round((FRAME_H - contentH(d)) / 2));
+      expect(t.args[1] as number).toBeGreaterThanOrEqual(0); // 内容不许被相框裁掉
+    }
+  });
+
+  test('footer 落在内容底部，不是相框底部（h 传错就会掉到衬边上）', () => {
+    const d = buildMonthly('2026-07', julyInput());
+    const r = recorder();
+    drawMonthlyPoster(r.ctx, d);
+
+    const tagline = r.calls.find((c) => c.fn === 'fillText' && c.args[0] === '你练过的，都有铁证。')!;
+    const expected = footerLayout(fakeMeasure, contentH(d)).tagline;
+    expect(tagline.args[2]).toBe(expected.y);
+    expect(contentH(d)).toBeLessThan(FRAME_H); // 前提：这个月的内容确实比相框矮
   });
 });
 

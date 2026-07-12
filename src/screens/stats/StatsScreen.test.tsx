@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { seedPresets } from '../../repos/exerciseRepo';
 import { setWeight } from '../../repos/weightRepo';
 import { addWorkoutItem } from '../../repos/workoutRepo';
+import { BODY_PARTS } from '../../data/bodyParts';
 import { heatColor } from '../../lib/heat';
 import { estimate1RM } from '../../lib/stats';
 import { resetDb } from '../../test/dbTestUtils';
@@ -13,11 +14,16 @@ import { StatsScreen } from './StatsScreen';
 // react-chartjs-2 会静默吞掉 "Failed to create chart"）。所以断言 canvas 内容是不可能的，
 // 真正的契约是「喂给图表的数据对不对」——把图表替换成把 data 摊平到 DOM 的探针。
 vi.mock('react-chartjs-2', () => ({
-  Line: ({ data }: { data: { labels?: unknown[]; datasets?: { data: number[] }[] } }) => (
+  Line: ({
+    data,
+  }: {
+    data: { labels?: unknown[]; datasets?: { data: number[]; pointRadius?: number }[] };
+  }) => (
     <div
       data-testid="line-chart"
       data-labels={JSON.stringify(data?.labels ?? [])}
       data-series={JSON.stringify(data?.datasets?.[0]?.data ?? [])}
+      data-point-radius={String(data?.datasets?.[0]?.pointRadius)}
     />
   ),
   Radar: () => null,
@@ -93,10 +99,24 @@ describe('顶部时间范围 + 环比', () => {
 
     await user.click(await screen.findByRole('button', { name: '全部' }));
 
-    // 三个大数字各挂一个「累计」——不是环比，因为「全部」没有上一期
-    expect(await screen.findAllByText('累计')).toHaveLength(3);
+    // 打卡天数 + 总组数各挂一个「累计」。总容量没有环比 → 没有第三个
+    expect(await screen.findAllByText('累计')).toHaveLength(2);
     expect(screen.queryByText('新增')).not.toBeInTheDocument();
     expect(pageText()).not.toMatch(/NaN|Infinity|%/);
+  });
+
+  test('总容量不显示环比：撞上一个怪物日就 ↓88% 的指标回答不了「我在变好吗」', async () => {
+    // 上一区间（07-10..07-12）一个 30 组的怪物日，本周只练了 1 组 → 旧版会红着箭头写 ↓
+    await addWorkoutItem('2026-07-11', 'p-bench', Array.from({ length: 30 }, () => ({ weight: 60, reps: 10 })));
+    await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    const volume = await screen.findByTestId('hero-volume');
+    expect(within(volume).getByText('总容量')).toBeInTheDocument();
+    expect(within(volume).queryByText(/%|新增|持平|累计/)).not.toBeInTheDocument();
+
+    // 组数是稳定指标，环比留着
+    expect(within(screen.getByTestId('hero-sets')).getByText(/%/)).toBeInTheDocument();
   });
 
   test('切换区间会重算数字（月含本周之外的记录）', async () => {
@@ -114,42 +134,136 @@ describe('顶部时间范围 + 环比', () => {
   });
 });
 
-describe('力量趋势', () => {
+describe('力量趋势（进步曲线：脱离上方的范围切换器）', () => {
+  const series = (el: HTMLElement) => JSON.parse(el.getAttribute('data-series') ?? '[]');
+
   test('默认动作是练得最多的那个，不是随手取的一个', async () => {
-    // 深蹲只练 1 天，卧推练 3 天 → 默认必须是卧推
+    // 深蹲只练 1 天，卧推练 3 天 → 默认必须是卧推。注意：全程停在默认的「周」上，
+    // 这些记录全在本周之外——曲线照样要画出来
     await addWorkoutItem('2026-07-01', 'p-squat', [{ weight: 100, reps: 5 }]);
     await addWorkoutItem('2026-07-02', 'p-bench', [{ weight: 60, reps: 10 }]);
     await addWorkoutItem('2026-07-03', 'p-bench', [{ weight: 62.5, reps: 8 }]);
     await addWorkoutItem('2026-07-04', 'p-bench', [{ weight: 65, reps: 8 }]);
-    const user = userEvent.setup();
     renderStats();
 
-    await user.click(await screen.findByRole('button', { name: '月' }));
-
     const chart = await screen.findByTestId('line-chart');
-    const series = JSON.parse(chart.getAttribute('data-series') ?? '[]');
-    expect(series).toEqual([
+    expect(series(chart)).toEqual([
       estimate1RM(60, 10),
       estimate1RM(62.5, 8),
       estimate1RM(65, 8),
     ]);
     // 深蹲那一天（100kg）绝不能混进卧推的曲线
-    expect(series).not.toContain(estimate1RM(100, 5));
+    expect(series(chart)).not.toContain(estimate1RM(100, 5));
+  });
+
+  test('本周只练过一次该动作，曲线依然完整——这是默认「周」的用户看到空图的根因', async () => {
+    // 卧推：5 月、6 月各一次，本周一次。旧版按「周」裁剪 → 只剩 1 个点 → 一张空图
+    await addWorkoutItem('2026-05-01', 'p-bench', [{ weight: 60, reps: 8 }]);
+    await addWorkoutItem('2026-06-01', 'p-bench', [{ weight: 70, reps: 8 }]);
+    await addWorkoutItem(TODAY, 'p-bench', [{ weight: 80, reps: 8 }]);
+    const user = userEvent.setup();
+    renderStats();
+
+    const chart = await screen.findByTestId('line-chart');
+    expect(series(chart)).toEqual([estimate1RM(60, 8), estimate1RM(70, 8), estimate1RM(80, 8)]);
+    // 语义写在脸上：这一块跟上方的范围切换器无关
+    expect(screen.getByText(/最近 12 次记录 · 不随上方范围变化/)).toBeInTheDocument();
+
+    // 切到「月」「全部」，曲线一个点都不能变
+    await user.click(screen.getByRole('button', { name: '月' }));
+    expect(series(screen.getByTestId('line-chart'))).toHaveLength(3);
+    await user.click(screen.getByRole('button', { name: '全部' }));
+    expect(series(screen.getByTestId('line-chart'))).toHaveLength(3);
+  });
+
+  test('只有 1 个数据点时不画空图表壳，而是把那个数值和下一步说清楚', async () => {
+    await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    expect(await screen.findByTestId('strength-single')).toBeInTheDocument();
+    // 空图表壳（画了坐标轴却一个像素数据都没有）是在骗人说「这里本该有东西」
+    expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
+    const single = screen.getByTestId('strength-single');
+    expect(within(single).getByText(estimate1RM(60, 8).toFixed(1))).toBeInTheDocument();
+    expect(within(single).getByText(/07-15/)).toBeInTheDocument();
+    expect(within(single).getByText(/再练一次/)).toBeInTheDocument();
+  });
+
+  test('单点降级态里仍能切换动作（切到有 2 个点的动作就长出曲线）', async () => {
+    await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }]); // 卧推 1 个点
+    await addWorkoutItem('2026-07-01', 'p-squat', [{ weight: 100, reps: 5 }]);
+    await addWorkoutItem('2026-07-08', 'p-squat', [{ weight: 105, reps: 5 }]);
+    const user = userEvent.setup();
+    renderStats();
+
+    // 深蹲 2 天 > 卧推 1 天 → 默认深蹲，有曲线
+    const chart = await screen.findByTestId('line-chart');
+    expect(series(chart)).toEqual([estimate1RM(100, 5), estimate1RM(105, 5)]);
+
+    await user.click(screen.getByRole('button', { name: '卧推' }));
+    expect(await screen.findByTestId('strength-single')).toBeInTheDocument();
+    expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
+  });
+
+  // weight: 0 是**合法输入** —— validLoad(0) === true（自重动作：引体、俯卧撑），SetRows 会真的存成 0。
+  // 但 estimate1RM(0, reps) === 0，e1rmSeries 把 e1rm===0 的组全丢掉 → 该动作的 series 是**空数组**。
+  // 而 hasWeightData / topExerciseIds 只判 `weight !== undefined`，0 照样通过 —— 于是自重动作被
+  // 选成力量趋势的主角，却永远画不出一个点。守卫必须在「1 个点」和「0 个点」上都站得住。
+  test('纯自重用户（重量记 0）打开数据页：不崩，走「还没有重量数据」空态', async () => {
+    await addWorkoutItem('2026-07-13', 'p-pullup', [{ weight: 0, reps: 10 }]);
+    await addWorkoutItem('2026-07-14', 'p-pullup', [{ weight: 0, reps: 12 }]);
+    await addWorkoutItem(TODAY, 'p-pullup', [{ weight: 0, reps: 10 }]);
+    renderStats();
+
+    expect(await screen.findByText(/记下重量和次数，这里就会画出你的力量曲线/)).toBeInTheDocument();
+    expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('strength-single')).not.toBeInTheDocument();
+  });
+
+  test('混合用户：练得最勤的是自重动作，力量趋势也不能选它当主角——它画不出曲线', async () => {
+    // 引体 3 天（自重，e1RM 恒 0）vs 卧推 2 天（有配重）→ topExerciseIds 会把引体排第一
+    await addWorkoutItem('2026-07-01', 'p-pullup', [{ weight: 0, reps: 10 }]);
+    await addWorkoutItem('2026-07-02', 'p-pullup', [{ weight: 0, reps: 10 }]);
+    await addWorkoutItem('2026-07-03', 'p-pullup', [{ weight: 0, reps: 10 }]);
+    await addWorkoutItem('2026-07-04', 'p-bench', [{ weight: 60, reps: 8 }]);
+    await addWorkoutItem('2026-07-05', 'p-bench', [{ weight: 62.5, reps: 8 }]);
+    renderStats();
+
+    const chart = await screen.findByTestId('line-chart');
+    expect(series(chart)).toEqual([estimate1RM(60, 8), estimate1RM(62.5, 8)]);
+    // 引体不该出现在动作选择器里——列出来只会让用户点进一个永远空着的图
+    expect(screen.queryByRole('button', { name: '引体向上' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '卧推' })).toBeInTheDocument();
+  });
+
+  test('最多只画最近 12 次，且点数少时点可见（否则单条线段两端空空如也）', async () => {
+    for (let i = 0; i < 14; i++) {
+      await addWorkoutItem(`2026-06-${String(i + 1).padStart(2, '0')}`, 'p-bench', [
+        { weight: 60 + i, reps: 8 },
+      ]);
+    }
+    renderStats();
+
+    const chart = await screen.findByTestId('line-chart');
+    expect(series(chart)).toHaveLength(12);
+    // 最早两天（06-01、06-02）被挤出去，最新一天必须在
+    expect(series(chart)).not.toContain(estimate1RM(60, 8));
+    expect(series(chart)).toContain(estimate1RM(73, 8));
+    expect(chart.getAttribute('data-point-radius')).toBe('3');
   });
 
   test('可以切换到别的动作', async () => {
     await addWorkoutItem('2026-07-02', 'p-bench', [{ weight: 60, reps: 10 }]);
     await addWorkoutItem('2026-07-03', 'p-bench', [{ weight: 65, reps: 8 }]);
     await addWorkoutItem('2026-07-04', 'p-squat', [{ weight: 100, reps: 5 }]);
+    await addWorkoutItem('2026-07-06', 'p-squat', [{ weight: 110, reps: 5 }]);
     const user = userEvent.setup();
     renderStats();
 
-    await user.click(await screen.findByRole('button', { name: '月' }));
     await user.click(await screen.findByRole('button', { name: '深蹲' }));
 
     const chart = await screen.findByTestId('line-chart');
-    const series = JSON.parse(chart.getAttribute('data-series') ?? '[]');
-    expect(series).toEqual([estimate1RM(100, 5)]);
+    expect(series(chart)).toEqual([estimate1RM(100, 5), estimate1RM(110, 5)]);
   });
 
   test('没有任何重量数据时不画空坐标轴，说人话', async () => {
@@ -172,6 +286,19 @@ describe('力量趋势', () => {
 });
 
 describe('部位均衡', () => {
+  test('副标题把两个时间语义标在脸上（柱长=范围内组数，右侧=全时段距上次训练）', async () => {
+    await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }]);
+    const user = userEvent.setup();
+    renderStats();
+
+    expect(await screen.findByText(/柱长 = 本周组数 · 右侧 = 距上次训练/)).toBeInTheDocument();
+
+    // 范围一换，柱长的口径也换了——文案必须跟着走，不能永远写「本周」
+    await user.click(screen.getByRole('button', { name: '月' }));
+    expect(await screen.findByText(/柱长 = 本月组数/)).toBeInTheDocument();
+    expect(screen.queryByText(/柱长 = 本周组数/)).not.toBeInTheDocument();
+  });
+
   test('显示每个部位的组数，以及久疏于练的天数', async () => {
     await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }, { weight: 60, reps: 8 }]);
     await addWorkoutItem('2026-07-03', 'p-pullup', [{ weight: 0, reps: 10 }]); // 12 天前练的背
@@ -204,6 +331,36 @@ describe('年度热力图', () => {
 
     const empty = await screen.findByTestId('heat-2026-07-14');
     expect(empty).not.toHaveStyle({ backgroundColor: heatColor('chest', 1, 1) });
+  });
+
+  test('有月份轴：不然用户根本不知道哪一列是几月', async () => {
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    const months = await screen.findByTestId('heat-months');
+    for (const m of [1, 4, 7, 12]) {
+      expect(within(months).getByText(`${m}月`)).toBeInTheDocument();
+    }
+  });
+
+  test('有部位图例：色块本身不自解释，日历页有的这里也得有', async () => {
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    const legend = await screen.findByTestId('heat-legend');
+    for (const p of BODY_PARTS) {
+      expect(within(legend).getByText(p.name)).toBeInTheDocument();
+    }
+  });
+});
+
+describe('海报入口', () => {
+  test('文案与「我的」页统一为「导出训练海报」', async () => {
+    await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    expect(await screen.findByText('导出训练海报')).toBeInTheDocument();
+    expect(screen.queryByText('生成训练海报')).not.toBeInTheDocument();
   });
 });
 

@@ -51,9 +51,24 @@ export function PhotoCard({ date }: { date: string }) {
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
-          className="w-full rounded-2xl border border-dashed border-line py-8 text-sm text-mute active:scale-[.98]"
+          className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-line py-8 text-sm text-mute active:scale-[.98]"
         >
-          📷 拍一张，留下今天的证据
+          {/* 这里原是相机 emoji：部分设备上直接渲染成豆腐块方块，换回全站的线描图标语言 */}
+          <svg
+            width={18}
+            height={18}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M3.5 8.8A1.8 1.8 0 0 1 5.3 7h2l1.2-2h7l1.2 2h2a1.8 1.8 0 0 1 1.8 1.8v8.4a1.8 1.8 0 0 1-1.8 1.8H5.3a1.8 1.8 0 0 1-1.8-1.8V8.8Z" />
+            <circle cx="12" cy="12.8" r="3.4" />
+          </svg>
+          拍一张，留下今天的证据
         </button>
       )}
       {/* 照片是实体，允许浮起：bg-raised 表面 + 溢出裁切 */}

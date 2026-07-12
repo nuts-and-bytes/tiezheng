@@ -4,7 +4,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { PartIcon } from '../../components/PartIcon';
 import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { monthGrid, shiftMonth, todayStr } from '../../lib/dates';
-import { EMPTY_HEAT, heatColor } from '../../lib/heat';
+import { EMPTY_HEAT, calendarHeatColor } from '../../lib/heat';
 import { dailyPartLoad, longestStreak, percentile } from '../../lib/stats';
 import type { BodyPart } from '../../lib/types';
 import { getExercisesByIds } from '../../repos/exerciseRepo';
@@ -29,6 +29,30 @@ const CN_MONTHS = [
 
 /** 格子里的数字/图标压在部位色上：亮到 amber 也得读得出。给暗投影，而不是换一套颜色。 */
 const ON_HEAT_SHADOW = 'drop-shadow(0 1px 1.5px rgba(0,0,0,.55))';
+
+/**
+ * 日期数字的四档颜色。写成 rgba 常量而不是 Tailwind 类：它要按「练没练 / 是不是本月」
+ * 逐格切换，而 --ink 压在热力块上必须是确定的值，不能靠类名叠加去猜。
+ */
+const DAY_INK = 'rgba(242, 240, 235, 1)'; // --ink
+const DAY_MUTE = 'rgba(139, 139, 133, 1)'; // --mute
+const DAY_IRON = '#FF5C1F'; // 今天且没练：空格子上唯一的热源
+
+/** 溢出格的两档整格浓度。练过的那档要留够余量：0.7 × DAY_INK 的有效 alpha 仍有 0.7，读得出。 */
+const OVERFLOW_TRAINED = 0.7;
+const OVERFLOW_EMPTY = 0.35;
+
+/** 热力块的浓淡被压到 0.6 封顶后色相会变弱——底部这条实色部位色把「练了哪个部位」钉回来。 */
+function HueBar({ part }: { part: BodyPart }) {
+  return (
+    <span
+      data-hue={part}
+      aria-hidden
+      className="absolute inset-x-0 bottom-0 h-[3px]"
+      style={{ backgroundColor: bodyPartInfo(part).color }}
+    />
+  );
+}
 
 function CameraGlyph({ size = 10 }: { size?: number }) {
   return (
@@ -136,10 +160,22 @@ export function CalendarScreen() {
         </div>
       </header>
 
-      <div data-testid="month-stats" className="mt-6 flex">
-        <Stat value={data?.days ?? 0} label="本月打卡" />
-        <Stat value={data?.streak ?? 0} label="最长连续" accent />
-        <Stat value={data?.sets ?? 0} label="总组数" last />
+      {/* data 未回来时先空着：宁可留白，也不闪一排 0 —— 那等于告诉新用户「你什么都没有」 */}
+      <div className="mt-6 min-h-[48px]">
+        {data &&
+          (data.days === 0 ? (
+            <p data-testid="month-empty" className="text-[13px] leading-[1.7] text-mute">
+              这个月还没有一条铁证。
+              <br />
+              练一次，这里就会落下第一枚钢印。
+            </p>
+          ) : (
+            <div data-testid="month-stats" className="flex">
+              <Stat value={data.days} label="本月打卡" />
+              <Stat value={data.streak} label="最长连续" accent />
+              <Stat value={data.sets} label="总组数" last />
+            </div>
+          ))}
       </div>
 
       <div className="etch" />
@@ -162,6 +198,12 @@ export function CalendarScreen() {
           const dayNum = Number(date.slice(8));
           const label = `${Number(date.slice(5, 7))}月${dayNum}日`;
 
+          // 溢出格要同时「读得出」和「看得出不是本月」，二元开关做不到——只能分两档浓度：
+          //   本月 1 ／ 溢出但练过 .7（明显退后，色块和数字都还在）／ 溢出且空 .35（那格没东西要读）
+          // 数字一律用满 DAY_INK：整格已经淡了，再叠一层 .72 会把有效 alpha 压到 0.5 以下。
+          const cellOpacity = inMonth ? 1 : day ? OVERFLOW_TRAINED : OVERFLOW_EMPTY;
+          const numColor = day ? DAY_INK : isToday ? DAY_IRON : DAY_MUTE;
+
           return (
             <Link
               key={date}
@@ -174,13 +216,16 @@ export function CalendarScreen() {
                   : `${label} 未训练`
               }
               style={{
-                backgroundColor: day ? heatColor(day.part, day.sets, data!.maxSets) : EMPTY_HEAT,
-                opacity: inMonth ? 1 : 0.35,
+                backgroundColor: day
+                  ? calendarHeatColor(day.part, day.sets, data!.maxSets)
+                  : EMPTY_HEAT,
+                opacity: cellOpacity,
               }}
-              className={`relative flex aspect-square flex-col items-center justify-center gap-[3px] rounded-[11px] text-[11px] active:scale-95 ${
-                day ? 'text-ink' : 'text-mute'
-              } ${isToday ? 'ring-1 ring-iron' : ''}`}
+              className={`relative flex aspect-square flex-col items-center justify-center gap-[3px] overflow-hidden rounded-[11px] text-[11px] active:scale-95 ${
+                isToday ? 'ring-1 ring-iron' : ''
+              }`}
             >
+              {day && <HueBar part={day.part} />}
               {hasPhoto && (
                 <span
                   data-photo
@@ -193,8 +238,9 @@ export function CalendarScreen() {
                 </span>
               )}
               <span
-                className={isToday ? 'font-bold text-iron' : undefined}
-                style={day && !isToday ? { filter: ON_HEAT_SHADOW } : undefined}
+                data-testid={`daynum-${date}`}
+                className={isToday ? 'font-bold' : undefined}
+                style={{ color: numColor, filter: day ? ON_HEAT_SHADOW : undefined }}
               >
                 {dayNum}
               </span>

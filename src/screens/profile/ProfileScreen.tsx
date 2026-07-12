@@ -56,6 +56,7 @@ export function ProfileScreen() {
 
   const t = totals(items, dates);
   const prs = prsByExercise(items, exMap);
+  const empty = items.length === 0 && dates.length === 0;
   // 铁龄：从第一条铁证那天算起（含当天）
   const ironAge = dates.length > 0 ? daysBetween(dates[0], today) + 1 : 0;
 
@@ -71,8 +72,9 @@ export function ProfileScreen() {
           </h1>
           <p className="mt-1 text-xs text-mute">你练过的，都有铁证。</p>
           {ironAge > 0 && (
-            <p className="mt-1.5 flex items-baseline gap-1 text-xs text-amber">
-              <span>⚒ 铁龄</span>
+            <p className="mt-1.5 flex items-center gap-1 text-xs text-amber">
+              <HammerGlyph />
+              <span>铁龄</span>
               {/* Anton 无中文字形：数字单独成 span，中文留在默认字体里 */}
               <span className="display text-sm leading-none">{ironAge}</span>
               <span>天</span>
@@ -81,17 +83,31 @@ export function ProfileScreen() {
         </div>
       </div>
 
-      {/* 战绩：四个大数字。它们是这一页的主角，字号必须压过下面所有设置项 */}
-      <div className="mt-7 grid grid-cols-2">
-        <Stat value={t.days} unit="天" label="总打卡" hot className="border-r border-b border-line pr-4" />
-        <Stat value={longestStreak(dates)} unit="天" label="最长连续" className="border-b border-line pl-5" />
-        <Stat value={t.sets} unit="组" label="总组数" className="border-r border-line pr-4" />
-        <Volume kg={t.volumeKg} className="pl-5" />
-      </div>
+      {/* 战绩：四个大数字。它们是这一页的主角，字号必须压过下面所有设置项。
+          零数据时不摆四个 0——那是在告诉新用户「你什么都没有」，跟数据页/PR 榜的空态口径也不一致 */}
+      {empty ? (
+        <p className="mt-7 rounded-xl border border-dashed border-line px-4 py-7 text-center text-xs leading-relaxed text-mute">
+          一条铁证都还没有。
+          <br />
+          练完第一次，这里立起四个数字：打卡 · 连续 · 组数 · 容量。
+        </p>
+      ) : (
+        <div className="mt-7 grid grid-cols-2">
+          <Stat value={t.days} unit="天" label="总打卡" hot className="border-r border-b border-line pr-4" />
+          <Stat value={longestStreak(dates)} unit="天" label="最长连续" className="border-b border-line pl-5" />
+          <Stat value={t.sets} unit="组" label="总组数" className="border-r border-line pr-4" />
+          <Volume kg={t.volumeKg} className="pl-5" />
+        </div>
+      )}
 
       <div className="etch" />
 
       <SectionTitle>个人纪录 · PR</SectionTitle>
+      {/* 榜首是 e1RM 外推值——用户从没真正举起来过那个数。
+          说明必须在他看到数字之前出现，放列表底部等于没放 */}
+      {prs.length > 0 && (
+        <p className="mb-1 text-[11px] text-mute">按预估 1RM（Epley）排名 · 越往上越硬</p>
+      )}
       {prs.length === 0 ? (
         <p className="rounded-xl border border-dashed border-line px-4 py-6 text-center text-xs leading-relaxed text-mute">
           还没有纪录。
@@ -125,9 +141,6 @@ export function ProfileScreen() {
             </li>
           ))}
         </ul>
-      )}
-      {prs.length > 0 && (
-        <p className="mt-2 text-[11px] text-mute">按预估 1RM（Epley）排名 · 越往上越硬</p>
       )}
 
       <div className="etch" />
@@ -240,6 +253,26 @@ export function ProfileScreen() {
 
 function SectionTitle({ children }: { children: ReactNode }) {
   return <p className="mb-2 text-[11px] tracking-[2px] text-mute uppercase">{children}</p>;
+}
+
+/** 铁龄前的锤形字标。这里原是锤子 emoji：设备字体不齐时掉成豆腐块，也不是全站的线描图标语言 */
+function HammerGlyph() {
+  return (
+    <svg
+      width={13}
+      height={13}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="4.5" y="4" width="13" height="5.5" rx="1.6" />
+      <path d="M11 9.5V20" />
+    </svg>
+  );
 }
 
 /** 设置行的线描图标框，图形取自 docs/design-cards/screens/profile.html */

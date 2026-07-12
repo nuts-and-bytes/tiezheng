@@ -142,9 +142,21 @@ function inRange<T extends { date: string }>(items: T[], from: string, to: strin
   return items.filter((i) => i.date >= from && i.date <= to);
 }
 
-/** 有没有可算容量的数据。只记「练了什么+几组」的用户返回 false → 全页降级为组数口径 */
+/**
+ * 有没有可算容量的数据。只记「练了什么+几组」的用户返回 false → 全页降级为组数口径。
+ *
+ * 为什么是 `weight > 0` 而不是 `weight !== undefined`：weight: 0 是合法输入（自重动作——
+ * 引体、俯卧撑，validLoad(0) === true）。但 0 既算不出容量（0×reps=0），也算不出 e1RM
+ * （Epley 乘的就是 weight）。把自重当成"有重量数据"，只会让页面显示无意义的「0 kg 容量」
+ * 和一条永远画不出来的力量曲线。
+ */
 export function hasWeightData(items: LoadItem[]): boolean {
-  return items.some((i) => i.sets.some((s) => s.weight !== undefined && s.reps !== undefined));
+  return items.some((i) => i.sets.some((s) => weighted(s.weight) && s.reps !== undefined));
+}
+
+/** 这组能不能产生非零的容量与 e1RM。全库判「有重量」只认这一个口径。 */
+function weighted(w: number | undefined): w is number {
+  return w !== undefined && w > 0;
 }
 
 /** date → 当天总组数（热力图深浅） */
@@ -199,9 +211,8 @@ export function prsByExercise(items: LoadItem[], exMap: ExMap): PrRow[] {
     const ex = exMap.get(item.exerciseId);
     if (!ex) continue;
     for (const s of item.sets) {
-      if (s.weight === undefined || s.reps === undefined) continue;
+      if (!weighted(s.weight) || s.reps === undefined) continue;
       const e1rm = estimate1RM(s.weight, s.reps);
-      if (e1rm === 0) continue;
       const cur = best.get(item.exerciseId);
       if (!cur || e1rm > cur.e1rm) {
         best.set(item.exerciseId, {
@@ -225,9 +236,10 @@ export function e1rmSeries(items: LoadItem[], exerciseId: string): { date: strin
   for (const item of items) {
     if (item.exerciseId !== exerciseId) continue;
     for (const s of item.sets) {
-      if (s.weight === undefined || s.reps === undefined) continue;
+      // 与 topExerciseIds / hasWeightData 同一个口径（weighted）。三者必须一致，
+      // 否则会出现「被选成主角、却一个点都画不出来」的动作 —— 那正是力量趋势空图的根因。
+      if (!weighted(s.weight) || s.reps === undefined) continue;
       const e1rm = estimate1RM(s.weight, s.reps);
-      if (e1rm === 0) continue;
       const cur = byDate.get(item.date);
       if (cur === undefined || e1rm > cur) byDate.set(item.date, e1rm);
     }
@@ -237,11 +249,53 @@ export function e1rmSeries(items: LoadItem[], exerciseId: string): { date: strin
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
+/** 进步曲线默认取多少次记录。12 次 ≈ 三个月的训练跨度，够看出趋势又不至于挤成一团 */
+export const PROGRESSION_POINTS = 12;
+
+/**
+ * 某动作最近 N 次记录的 e1RM，日期升序。
+ *
+ * 为什么不复用「周/月/年」范围：进步曲线回答的是「我的卧推从 60 涨到 90 了吗」，
+ * 这个问题天然属于全时段。绑在范围切换器上，默认「周」的用户只会剩 1 个点 → 空图。
+ * 顶部三个大数字是周期汇总（「本周练了 4 天」有意义），进步曲线不是，两者不该共用一个开关。
+ */
+export function recentE1rmSeries(
+  items: LoadItem[],
+  exerciseId: string,
+  limit: number,
+): { date: string; e1rm: number }[] {
+  const n = Math.max(1, Math.floor(limit));
+  return e1rmSeries(items, exerciseId).slice(-n);
+}
+
+/** 年度热力图的列：从当年 1/1 所在周的周一，排到 12/31 所在周的周一 */
+export function heatWeekStarts(year: number): string[] {
+  const end = weekStartOf(`${year}-12-31`);
+  const cols: string[] = [];
+  for (let d = weekStartOf(`${year}-01-01`); d <= end; d = addDays(d, 7)) cols.push(d);
+  return cols;
+}
+
+/**
+ * 每一列的月份标签：该月 1 号落在哪一列就标在哪一列，其余列为 null。
+ * 只认属于 year 的 1 号——首列常含上一年的 12 月尾巴，不能因此标出一个 12。
+ */
+export function heatMonthLabels(weekStarts: string[], year: number): (number | null)[] {
+  const prefix = String(year);
+  return weekStarts.map((start) => {
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(start, i);
+      if (d.startsWith(prefix) && d.slice(8) === '01') return Number(d.slice(5, 7));
+    }
+    return null;
+  });
+}
+
 /** 按「有 e1RM 数据的训练日数」降序的动作 id。默认动作靠它选，不再靠 Map 迭代顺序随机取 */
 export function topExerciseIds(items: LoadItem[], limit: number): string[] {
   const days = new Map<string, Set<string>>();
   for (const item of items) {
-    const usable = item.sets.some((s) => s.weight !== undefined && s.reps !== undefined);
+    const usable = item.sets.some((s) => weighted(s.weight) && s.reps !== undefined);
     if (!usable) continue;
     if (!days.has(item.exerciseId)) days.set(item.exerciseId, new Set());
     days.get(item.exerciseId)!.add(item.date);

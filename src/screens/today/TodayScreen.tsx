@@ -140,15 +140,15 @@ export function TodayScreen() {
                       </Fragment>
                     ))}
                   </span>
-                  <span className="mt-0.5 block text-xs text-mute">
-                    <span>{group.sets} 组</span>
-                    {group.volume > 0 && (
-                      <span> · {Math.round(group.volume).toLocaleString('en-US')} kg 容量</span>
-                    )}
-                  </span>
+                  {/* 组数是右栏大号数字的主场；meta 行只补它没说的（容量）。没得补就整行不渲染 */}
+                  {group.volume > 0 && (
+                    <span data-testid="today-meta" className="mt-0.5 block text-xs text-mute">
+                      {Math.round(group.volume).toLocaleString('en-US')} kg 容量
+                    </span>
+                  )}
                 </span>
 
-                <span className="flex shrink-0 items-baseline gap-1">
+                <span data-testid="today-sets" className="flex shrink-0 items-baseline gap-1">
                   <span className="display text-xl leading-none text-ink">{group.sets}</span>
                   <span className="text-[11px] text-mute">组</span>
                 </span>

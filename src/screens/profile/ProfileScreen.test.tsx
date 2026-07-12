@@ -115,7 +115,54 @@ test('导出 CSV 失败时显示错误文案（无 unhandled rejection）', asyn
 });
 
 test('不再使用废弃别名 card2 / iron2', async () => {
+  await seedTraining();
   const { container } = renderProfile();
   await screen.findByText('总打卡');
   expect(container.innerHTML).not.toMatch(/card2|iron2/);
+});
+
+test('零数据时成就墙给引导文案，不硬摆四个 0', async () => {
+  const { container } = renderProfile();
+
+  expect(await screen.findByText(/一条铁证都还没有/)).toBeInTheDocument();
+  for (const label of ['总打卡', '最长连续', '总组数', '累计容量']) {
+    expect(screen.queryByText(label)).not.toBeInTheDocument();
+  }
+  // 大号钢印字（.display）是战绩数字的唯一载体：零数据时一个都不该立起来，
+  // 更不该立四个 0 —— 那是在告诉新用户「你什么都没有」
+  expect([...container.querySelectorAll('.display')]).toHaveLength(0);
+});
+
+test('有数据时成就墙照常显示数字', async () => {
+  await seedTraining();
+  renderProfile();
+
+  expect(within(await statCell('总打卡')).getByText('2')).toBeInTheDocument();
+  expect(screen.queryByText(/一条铁证都还没有/)).not.toBeInTheDocument();
+});
+
+test('Epley 说明在 PR 列表之前（认知形成前校正）', async () => {
+  await seedTraining();
+  renderProfile();
+
+  const note = await screen.findByText(/Epley/);
+  const list = screen.getByRole('list', { name: 'PR 榜' });
+  // 说明必须先于列表出现在 DOM 里，否则用户滚过 12 条才看到
+  expect(note.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+/** Extended_Pictographic 而非 \p{Emoji}：后者连数字 0-9 都匹配 */
+const EMOJI = /\p{Extended_Pictographic}/u;
+
+test('页面里没有 emoji（有数据）', async () => {
+  await seedTraining();
+  const { container } = renderProfile();
+  await screen.findByText('总打卡');
+  expect(container.textContent ?? '').not.toMatch(EMOJI);
+});
+
+test('页面里没有 emoji（零数据）', async () => {
+  const { container } = renderProfile();
+  await screen.findByText(/一条铁证都还没有/);
+  expect(container.textContent ?? '').not.toMatch(EMOJI);
 });

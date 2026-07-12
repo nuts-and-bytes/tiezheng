@@ -2,6 +2,7 @@ import {
   countByBodyPart, currentStreak, maxWeightSeries, movingAverage, totals, weekProgress, weeklyCounts,
 } from './stats';
 import {
+  PROGRESSION_POINTS,
   compare,
   dailyLoad,
   dailyMovingAverage,
@@ -12,12 +13,15 @@ import {
   e1rmSeries,
   estimate1RM,
   hasWeightData,
+  heatMonthLabels,
+  heatWeekStarts,
   lastTrainedByBodyPart,
   longestStreak,
   percentile,
   prevRangeOf,
   prsByExercise,
   rangeOf,
+  recentE1rmSeries,
   setsByBodyPart,
   topExerciseIds,
   yearsWithData,
@@ -162,6 +166,48 @@ describe('hasWeightData', () => {
       hasWeightData([{ date: '2026-07-01', exerciseId: 'e1', sets: [{ weight: 60 }] }]),
     ).toBe(false);
   });
+
+  // weight: 0 是合法输入（自重：引体、俯卧撑），validLoad(0) === true。
+  // 但 0 既算不出容量（0×reps=0）也算不出 e1RM（Epley 乘的就是 weight）。
+  // 判 `!== undefined` 会把自重当成「有重量数据」，于是顶部大数字显示无意义的「0 kg 容量」，
+  // 力量趋势还会把自重动作选成主角、画出一张永远空着的图。口径必须是 weight > 0。
+  it('自重（重量记 0）算没有重量数据——0 既没有容量也没有 1RM', () => {
+    expect(
+      hasWeightData([{ date: '2026-07-01', exerciseId: 'p-pullup', sets: [{ weight: 0, reps: 10 }] }]),
+    ).toBe(false);
+  });
+
+  it('自重与配重混着练，只要有一组带重量就算有', () => {
+    expect(
+      hasWeightData([
+        { date: '2026-07-01', exerciseId: 'p-pullup', sets: [{ weight: 0, reps: 10 }] },
+        { date: '2026-07-02', exerciseId: 'p-bench', sets: [{ weight: 60, reps: 8 }] },
+      ]),
+    ).toBe(true);
+  });
+});
+
+describe('topExerciseIds', () => {
+  it('自重动作不进榜——它画不出 e1RM 曲线，选它当主角只会得到一张空图', () => {
+    const items = [
+      // 引体练了 3 天（自重），卧推只练了 2 天
+      { date: '2026-07-01', exerciseId: 'p-pullup', sets: [{ weight: 0, reps: 10 }] },
+      { date: '2026-07-02', exerciseId: 'p-pullup', sets: [{ weight: 0, reps: 10 }] },
+      { date: '2026-07-03', exerciseId: 'p-pullup', sets: [{ weight: 0, reps: 10 }] },
+      { date: '2026-07-04', exerciseId: 'p-bench', sets: [{ weight: 60, reps: 8 }] },
+      { date: '2026-07-05', exerciseId: 'p-bench', sets: [{ weight: 62.5, reps: 8 }] },
+    ];
+    expect(topExerciseIds(items, 5)).toEqual(['p-bench']);
+  });
+
+  it('按有 e1RM 数据的训练日数降序（名副其实）', () => {
+    const items = [
+      { date: '2026-07-01', exerciseId: 'p-bench', sets: [{ weight: 60, reps: 8 }] },
+      { date: '2026-07-02', exerciseId: 'p-bench', sets: [{ weight: 60, reps: 8 }] },
+      { date: '2026-07-01', exerciseId: 'p-squat', sets: [{ weight: 100, reps: 5 }] },
+    ];
+    expect(topExerciseIds(items, 5)).toEqual(['p-bench', 'p-squat']);
+  });
 });
 
 describe('dailyLoad', () => {
@@ -231,6 +277,71 @@ describe('e1rmSeries / topExerciseIds', () => {
 
   it('默认动作 = 有效数据点最多的那个（不再是 Map 迭代顺序里随机的第一个）', () => {
     expect(topExerciseIds(ITEMS, 5)[0]).toBe('e1'); // e1 有 3 天，e2 只有 1 天
+  });
+});
+
+describe('recentE1rmSeries（进步曲线：脱离范围切换器，永远看最近 N 次）', () => {
+  it('取该动作最近 N 次记录，日期升序', () => {
+    // e1 共 3 天：06-20 / 07-01 / 07-03，取最近 2 次 → 07-01、07-03
+    const s = recentE1rmSeries(ITEMS, 'e1', 2);
+    expect(s.map((p) => p.date)).toEqual(['2026-07-01', '2026-07-03']);
+  });
+
+  it('记录不足 N 次时全给（1 次也给 1 个点，让 UI 自己决定怎么降级）', () => {
+    const s = recentE1rmSeries(ITEMS, 'e2', 12);
+    expect(s).toHaveLength(1);
+    expect(s[0].date).toBe('2026-07-03');
+    expect(s[0].e1rm).toBeCloseTo(93.33, 1);
+  });
+
+  it('不混入别的动作，也不因为「本周只练过一次」而变空', () => {
+    const s = recentE1rmSeries(ITEMS, 'e1', PROGRESSION_POINTS);
+    expect(s).toHaveLength(3); // 全时段 3 次，跟「本周」没关系
+    expect(s.every((p) => p.e1rm > 0)).toBe(true);
+  });
+
+  it('没有重量数据的动作返回空数组', () => {
+    const s = recentE1rmSeries([{ date: '2026-07-01', exerciseId: 'e1', sets: [{}] }], 'e1', 12);
+    expect(s).toEqual([]);
+  });
+
+  it('limit <= 0 按 1 处理，绝不返回空（空图表就是骗人）', () => {
+    expect(recentE1rmSeries(ITEMS, 'e1', 0)).toHaveLength(1);
+  });
+
+  it('默认进步曲线取 12 次', () => {
+    expect(PROGRESSION_POINTS).toBe(12);
+  });
+});
+
+describe('heatWeekStarts / heatMonthLabels（年度热力图的列与月份轴）', () => {
+  it('从 1/1 所在周的周一排到 12/31 所在周的周一', () => {
+    const cols = heatWeekStarts(2026); // 2026-01-01 是周四 → 2025-12-29
+    expect(cols[0]).toBe('2025-12-29');
+    expect(cols.at(-1)).toBe('2026-12-28'); // 2026-12-31 是周四
+    expect(cols).toHaveLength(53);
+  });
+
+  it('月份标签落在「该月 1 号所在的那一列」，其余列为 null', () => {
+    const cols = heatWeekStarts(2026);
+    const labels = heatMonthLabels(cols, 2026);
+    expect(labels).toHaveLength(cols.length);
+    // 12 个月一个不能少，且升序
+    expect(labels.filter((m): m is number => m !== null)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    ]);
+    // 1 月落在第一列（那一列同时含 2025-12-29 和 2026-01-01）
+    expect(labels[0]).toBe(1);
+    // 2026-07-01 是周三，所在周的周一是 2026-06-29
+    expect(labels[cols.indexOf('2026-06-29')]).toBe(7);
+  });
+
+  it('跨年的边界列不会把上一年的月份标进来', () => {
+    const cols = heatWeekStarts(2026);
+    const labels = heatMonthLabels(cols, 2026);
+    // 第一列含 2025-12-29..2025-12-31，但 12 月只能标在 2026 年的 12 月那列
+    expect(labels[0]).toBe(1);
+    expect(labels.lastIndexOf(12)).toBeGreaterThan(40);
   });
 });
 

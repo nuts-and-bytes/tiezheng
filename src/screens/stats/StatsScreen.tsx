@@ -6,12 +6,12 @@ import { PartIcon } from '../../components/PartIcon';
 import { PhotoTimeline } from '../../components/PhotoTimeline';
 import { Stamp } from '../../components/Stamp';
 import { BODY_PARTS } from '../../data/bodyParts';
-import { addDays, todayStr, weekStartOf } from '../../lib/dates';
+import { addDays, todayStr } from '../../lib/dates';
 import { EMPTY_HEAT, heatColor } from '../../lib/heat';
 import {
-  compare, currentStreak, dailyMovingAverage, dailyPartLoad, e1rmSeries, hasWeightData,
-  lastTrainedByBodyPart, longestStreak, percentile, prevRangeOf, rangeOf, setsByBodyPart,
-  topExerciseIds, yearsWithData,
+  PROGRESSION_POINTS, compare, currentStreak, dailyMovingAverage, dailyPartLoad, hasWeightData,
+  heatMonthLabels, heatWeekStarts, lastTrainedByBodyPart, longestStreak, percentile, prevRangeOf,
+  rangeOf, recentE1rmSeries, setsByBodyPart, topExerciseIds, yearsWithData,
 } from '../../lib/stats';
 import type { Delta, ExMap, LoadItem, Segment } from '../../lib/stats';
 import { getExercisesByIds } from '../../repos/exerciseRepo';
@@ -24,6 +24,14 @@ const SEGMENTS: { id: Segment; label: string }[] = [
   { id: 'year', label: '年' },
   { id: 'all', label: '全部' },
 ];
+
+/** 范围切换器管的是「周期汇总」（大数字、部位柱长）。副标题里报口径用它，别让用户猜柱长是哪段时间的 */
+const SCOPE_LABEL: Record<Segment, string> = {
+  week: '本周',
+  month: '本月',
+  year: '今年',
+  all: '全部',
+};
 
 export function StatsScreen() {
   const today = todayStr();
@@ -98,7 +106,7 @@ export function StatsScreen() {
         <Hero testId="hero-sets" label="总组数" value={cmp.sets.cur} delta={cmp.sets} seg={seg} />
         <Sep />
         {weighted ? (
-          <Volume kg={cmp.volumeKg.cur} delta={cmp.volumeKg} seg={seg} />
+          <Volume kg={cmp.volumeKg.cur} />
         ) : (
           <Hero
             testId="hero-streak"
@@ -114,9 +122,10 @@ export function StatsScreen() {
         当前连续 {currentStreak(new Set(dates), today)} 天 · 最长 {longestStreak(dates)} 天
       </p>
 
-      <Strength items={scoped} exMap={exMap} exId={exId} onPick={setExId} weighted={weighted} />
+      {/* 进步曲线不吃 scoped：它回答「我变强了吗」，这跟用户当前选的是周还是月无关 */}
+      <Strength items={items} exMap={exMap} exId={exId} onPick={setExId} />
 
-      <Balance items={scoped} allItems={items} exMap={exMap} today={today} />
+      <Balance items={scoped} allItems={items} exMap={exMap} today={today} seg={seg} />
 
       <Heat items={items} exMap={exMap} dates={dates} year={year} onYear={setYear} today={today} />
 
@@ -128,7 +137,7 @@ export function StatsScreen() {
       >
         <Stamp size={44} />
         <span className="min-w-0">
-          <b className="block text-[15px]">生成训练海报</b>
+          <b className="block text-[15px]">导出训练海报</b>
           <span className="mt-0.5 block text-xs text-mute">把汗水盖上钢印，保存到相册</span>
         </span>
         <span className="ml-auto text-xl text-iron">›</span>
@@ -145,10 +154,20 @@ function Sep() {
   return <div className="mx-4 my-1.5 w-px shrink-0 bg-line" />;
 }
 
-function Section({ title, right }: { title: string; right?: React.ReactNode }) {
+/** sub 是区块的口径说明。一个区块只要有两种时间语义并存，就必须把它们写在脸上 */
+function Section({
+  title, sub, right,
+}: {
+  title: string;
+  sub?: string;
+  right?: React.ReactNode;
+}) {
   return (
-    <div className="mt-6 mb-3 flex items-center justify-between">
-      <p className="text-[11px] tracking-[2px] text-mute uppercase">{title}</p>
+    <div className="mt-6 mb-3 flex items-start justify-between gap-3">
+      <span className="min-w-0">
+        <p className="text-[11px] tracking-[2px] text-mute uppercase">{title}</p>
+        {sub && <p className="mt-1 text-[10px] leading-snug text-mute/70">{sub}</p>}
+      </span>
       {right}
     </div>
   );
@@ -197,8 +216,14 @@ function Hero({
   );
 }
 
-/** 容量：上千用吨，否则 kg。整数不带小数点，别让 12000kg 显示成 12000.0 */
-function Volume({ kg, delta, seg }: { kg: number; delta: Delta; seg: Segment }) {
+/**
+ * 容量：上千用吨，否则 kg。整数不带小数点，别让 12000kg 显示成 12000.0。
+ *
+ * 没有环比：容量的周环比噪声远大于信号——上周撞上一个 30 组的怪物日，本周就变成「↓88%」，
+ * 而用户什么也没做错。一个回答不了「我在变好还是变差」的指标，不该用红箭头吓人。
+ * 打卡天数和总组数够稳，环比留着。
+ */
+function Volume({ kg }: { kg: number }) {
   const t = kg >= 1000;
   const shown = t ? (kg / 1000).toFixed(1) : String(Math.round(kg));
   return (
@@ -209,26 +234,30 @@ function Volume({ kg, delta, seg }: { kg: number; delta: Delta; seg: Segment }) 
       </p>
       <p className="mt-1 flex items-center gap-1.5">
         <span className="text-[11px] text-mute">总容量</span>
-        <DeltaTag delta={delta} seg={seg} />
       </p>
     </div>
   );
 }
 
-/** 我是不是在变强？e1RM 是「练了到底有没有用」的唯一客观答案 */
+/**
+ * 我是不是在变强？e1RM 是「练了到底有没有用」的唯一客观答案。
+ *
+ * items 传的是全时段记录，不是 scoped——这个区块故意不接范围切换器。
+ * 顶部三个大数字是「周期汇总」（本周练了 4 天，有意义）；进步曲线是「我的卧推从 60 涨到 90」，
+ * 天然属于全时段。把两者绑在同一个切换器上，默认停在「周」的用户必然只剩 1 个点 → 一张空图。
+ */
 function Strength({
-  items, exMap, exId, onPick, weighted,
+  items, exMap, exId, onPick,
 }: {
   items: LoadItem[];
   exMap: ExMap;
   exId: string;
   onPick: (id: string) => void;
-  weighted: boolean;
 }) {
   const top = topExerciseIds(items, 5);
   const active = top.includes(exId) ? exId : top[0];
 
-  if (!weighted || !active) {
+  if (!hasWeightData(items) || !active) {
     return (
       <>
         <Section title="力量趋势" />
@@ -241,26 +270,62 @@ function Strength({
     );
   }
 
-  const series = e1rmSeries(items, active);
+  const series = recentE1rmSeries(items, active, PROGRESSION_POINTS);
+  const picker = (
+    <div className="mb-3 flex flex-wrap gap-1.5">
+      {top.map((id) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => onPick(id)}
+          className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
+            id === active
+              ? 'bg-iron/15 font-semibold text-iron'
+              : 'border border-line bg-raised text-mute'
+          }`}
+        >
+          {exMap.get(id)?.name ?? id}
+        </button>
+      ))}
+    </div>
+  );
+  const head = (
+    <Section
+      title="力量趋势 · 估算 1RM"
+      sub={`最近 ${PROGRESSION_POINTS} 次记录 · 不随上方范围变化`}
+    />
+  );
+
+  // series 至少有 1 个点：active 只可能来自 topExerciseIds，而它与 e1rmSeries 同口径
+  // （weighted：weight > 0 且有次数）。自重动作在那一层就被排除了，到不了这里。
+  //
+  // 只有一个点：画不出线，也就没有「趋势」可言。此时画个空壳图表是在骗人说「这里本该有东西」——
+  // 不如把这一个数字亮出来，再告诉用户下一步做什么。
+  if (series.length < 2) {
+    const only = series[0];
+    return (
+      <>
+        {head}
+        {picker}
+        <div
+          data-testid="strength-single"
+          className="rounded-xl border border-dashed border-line px-4 py-5 text-center"
+        >
+          <p className="flex items-baseline justify-center gap-1">
+            <span className="display text-[32px] leading-none text-ink">{only.e1rm.toFixed(1)}</span>
+            <span className="text-xs text-mute">kg</span>
+          </p>
+          <p className="mt-1.5 text-[11px] text-mute">{only.date.slice(5)} · 目前唯一一次记录</p>
+          <p className="mt-2.5 text-xs text-mute">再练一次，这里就会长出曲线。</p>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
-      <Section title="力量趋势 · 估算 1RM" />
-      <div className="mb-3 flex flex-wrap gap-1.5">
-        {top.map((id) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => onPick(id)}
-            className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-              id === active
-                ? 'bg-iron/15 font-semibold text-iron'
-                : 'border border-line bg-raised text-mute'
-            }`}
-          >
-            {exMap.get(id)?.name ?? id}
-          </button>
-        ))}
-      </div>
+      {head}
+      {picker}
       <Line
         data={{
           labels: series.map((s) => s.date.slice(5)),
@@ -272,7 +337,9 @@ function Strength({
               borderWidth: 2.5,
               fill: true,
               tension: 0.35,
-              pointRadius: 0,
+              // 恒显示圆点：series 由 recentE1rmSeries 截到最多 PROGRESSION_POINTS(12) 个，
+              // 12 个点不会把线糊成毛毛虫，而每一个点都是用户真练过的一次，值得看得见。
+              pointRadius: 3,
               pointHoverRadius: 4,
               pointBackgroundColor: '#FFB340',
             },
@@ -303,12 +370,13 @@ function Strength({
 
 /** 我是不是练得均衡？「背：已 12 天没练」比一个雷达图有用得多 */
 function Balance({
-  items, allItems, exMap, today,
+  items, allItems, exMap, today, seg,
 }: {
   items: LoadItem[];
   allItems: LoadItem[];
   exMap: ExMap;
   today: string;
+  seg: Segment;
 }) {
   const sets = setsByBodyPart(items, exMap);
   const last = lastTrainedByBodyPart(allItems, exMap, today);
@@ -316,7 +384,12 @@ function Balance({
 
   return (
     <>
-      <Section title="部位均衡" />
+      {/* 一行里塞着两个时间语义：柱长是范围内的，「已 N 天没练」是全时段事实。
+          删掉哪个都是损失，那就把口径写在脸上——并且跟着范围切换器改文案 */}
+      <Section
+        title="部位均衡"
+        sub={`柱长 = ${SCOPE_LABEL[seg]}组数 · 右侧 = 距上次训练（全时段）`}
+      />
       {BODY_PARTS.map((p) => {
         const n = sets[p.id];
         const days = last[p.id];
@@ -371,13 +444,10 @@ function Heat({
   const inYear = [...load.entries()].filter(([d]) => d.startsWith(String(y)));
   const maxSets = percentile(inYear.map(([, v]) => v.sets), 90);
 
-  // 从当年 1/1 所在周的周一排到 12/31 所在周的周日，7 行 × ~53 列
-  const start = weekStartOf(`${y}-01-01`);
-  const end = weekStartOf(`${y}-12-31`);
-  const cells: string[] = [];
-  for (let d = start; d <= end; d = addDays(d, 7)) {
-    for (let i = 0; i < 7; i++) cells.push(addDays(d, i));
-  }
+  // 一列 = 一周（7 行）。月份标签与格子共用同一份列定义，才能真正对齐到列
+  const weekStarts = heatWeekStarts(y);
+  const months = heatMonthLabels(weekStarts, y);
+  const cells = weekStarts.flatMap((d) => Array.from({ length: 7 }, (_, i) => addDays(d, i)));
 
   return (
     <>
@@ -405,26 +475,54 @@ function Heat({
         }
       />
       <div className="-mx-1 overflow-x-auto px-1 pb-1">
-        <div className="grid grid-flow-col grid-rows-7 gap-[3px]">
-          {cells.map((d) => {
-            const hit = d.startsWith(String(y)) ? load.get(d) : undefined;
-            return (
-              <span
-                key={d}
-                data-testid={`heat-${d}`}
-                title={d}
-                className="size-[9px] rounded-[2px]"
-                style={{
-                  backgroundColor: !d.startsWith(String(y))
-                    ? 'transparent'
-                    : hit
-                      ? heatColor(hit.part, hit.sets, maxSets)
-                      : EMPTY_HEAT,
-                }}
-              />
-            );
-          })}
+        <div className="min-w-max">
+          {/* 月份轴：标签绝对定位，才不会把 9px 的列撑宽 —— 列宽必须和下面的格子严格相等 */}
+          <div className="mb-1 grid grid-flow-col gap-[3px]" data-testid="heat-months">
+            {months.map((m, i) => (
+              <span key={weekStarts[i]} className="relative block h-3 w-[9px]">
+                {m !== null && (
+                  <span className="absolute top-0 left-0 text-[9px] leading-3 whitespace-nowrap text-mute">
+                    {m}月
+                  </span>
+                )}
+              </span>
+            ))}
+          </div>
+          <div className="grid grid-flow-col grid-rows-7 gap-[3px]">
+            {cells.map((d) => {
+              const hit = d.startsWith(String(y)) ? load.get(d) : undefined;
+              return (
+                <span
+                  key={d}
+                  data-testid={`heat-${d}`}
+                  title={d}
+                  className="size-[9px] rounded-[2px]"
+                  style={{
+                    backgroundColor: !d.startsWith(String(y))
+                      ? 'transparent'
+                      : hit
+                        ? heatColor(hit.part, hit.sets, maxSets)
+                        : EMPTY_HEAT,
+                  }}
+                />
+              );
+            })}
+          </div>
         </div>
+      </div>
+
+      {/* 图例：色块本身不自解释。日历页有，这里没有的话，同一套颜色就白共用了 */}
+      <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1.5" data-testid="heat-legend">
+        {BODY_PARTS.map((p) => (
+          <span key={p.id} className="flex items-center gap-1">
+            <span
+              className="size-[7px] shrink-0 rounded-[2px]"
+              style={{ background: p.color }}
+              aria-hidden
+            />
+            <span className="text-[10px] text-mute">{p.name}</span>
+          </span>
+        ))}
       </div>
     </>
   );

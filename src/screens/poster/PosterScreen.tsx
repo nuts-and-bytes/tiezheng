@@ -176,13 +176,18 @@ export function PosterScreen() {
                 ))}
           </div>
 
-          {/* 海报是一件实物 —— 它配得上浮起来 */}
-          <div className="mt-5 flex-1 px-5">
+          {/* 海报是一件实物 —— 它配得上浮起来。
+              画布是 9:16（1080×1920），比例交给 canvas 自己的 width/height 属性。
+              self-center 不是装饰：canvas 是 replaced element，在 flex 行里默认 align-items:stretch
+              会把它的交叉轴（高）拉到整行高度，固有比例保护不了它（CSS Flexbox §9.4）——
+              一旦 max-w 先于 max-h 触底（宽屏/高视口），9:16 就被抻长。align-self:center 让它
+              退回按固有比例缩放。手机上因 max-h 先触底而侥幸正常，所以这个 bug 只在平板/桌面现形。 */}
+          <div className="mt-5 flex flex-1 justify-center px-5">
             <canvas
               ref={canvasRef}
               role="img"
               aria-label={`${mode === 'monthly' ? '月度' : '年度'}训练海报预览`}
-              className="mx-auto block w-full max-w-[330px] rounded-md shadow-[0_18px_50px_rgba(0,0,0,.55)]"
+              className="block h-auto max-h-[52dvh] w-auto max-w-[280px] self-center rounded-md shadow-[0_18px_50px_rgba(0,0,0,.55)]"
             />
           </div>
 

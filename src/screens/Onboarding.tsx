@@ -52,8 +52,11 @@ export function Onboarding() {
     }
   }
 
+  // h-dvh 而非 min-h-dvh：min-height 让高度「不确定」，子层的 height:100% 会一路退化成 auto，
+  // 四屏于是塌回内容高、justify-center 无剩余空间可分 —— 内容全挤在顶部 1/4 的根因。
+  // 高度钉死后由 header / 轨道 / 底栏三段瓜分，CTA 自然落在底部安全区之上。
   return (
-    <div className="mx-auto flex min-h-dvh max-w-md flex-col overflow-hidden pt-[calc(env(safe-area-inset-top)+20px)] pb-[calc(env(safe-area-inset-bottom)+24px)]">
+    <div className="mx-auto flex h-dvh max-w-md flex-col overflow-hidden pt-[calc(env(safe-area-inset-top)+20px)] pb-[calc(env(safe-area-inset-bottom)+24px)]">
       {/* 顶栏：进度 / 返回 / 跳过。全局渲染，不随轨道滑动 */}
       <header className="flex h-9 shrink-0 items-center justify-between px-7">
         <div className="flex items-center gap-3">
@@ -87,10 +90,13 @@ export function Onboarding() {
       </header>
 
       {/* 轨道：四屏全部挂载，靠 translateX 位移。非当前屏 aria-hidden + inert，
-          读屏与 getByRole 都只看得见当前屏。 */}
-      <div className="relative flex-1 overflow-hidden">
+          读屏与 getByRole 都只看得见当前屏。
+          min-h-0：flex 项默认 min-height:auto，内容一长就把这段撑开、把 CTA 顶出安全区。 */}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        {/* absolute inset-0 而非 h-full：高度由定位撑满，不必再向上求解百分比，
+            四屏因此拿得到确定高度，justify-center 才真的有空间可居中。 */}
         <div
-          className="flex h-full transition-transform duration-[520ms] ease-[cubic-bezier(.22,.9,.28,1)] motion-reduce:transition-none"
+          className="absolute inset-0 flex transition-transform duration-[520ms] ease-[cubic-bezier(.22,.9,.28,1)] motion-reduce:transition-none"
           style={{ transform: `translateX(-${step * 100}%)` }}
         >
           {STEP_LABELS.map((label, i) => (
@@ -100,7 +106,15 @@ export function Onboarding() {
               aria-label={`第 ${i + 1} 步，共 ${STEP_COUNT} 步：${label}`}
               aria-hidden={i !== step || undefined}
               inert={i !== step}
-              className="flex w-full shrink-0 flex-col justify-center px-7"
+              // overflow-y-auto：矮机型（横屏尤其）上内容超高时改为屏内滚动，而不是被 h-dvh 硬切掉，
+              // 顶栏和 CTA 始终留在原位。[&>*]:shrink-0 是配套的：flex 项默认可压缩，
+              // 不锁住的话内容会先被压扁再溢出，比滚动更难看。
+              //
+              // justify-center-safe（= justify-content: safe center）而非 justify-center：
+              // 一个盒子同时「居中」和「可滚动」会互相下毒——内容超高时 center 把它两头都推出滚动区，
+              // 而 scrollTop 不能为负，顶部那截就永久不可达了（横屏实测：屏 3 标题停在 top:-60px）。
+              // safe 的含义正是：装得下就居中，装不下就退回顶对齐。
+              className="flex h-full w-full shrink-0 flex-col justify-center-safe overflow-y-auto px-7 py-6 [&>*]:shrink-0"
             >
               {i === 0 && <BrandPanel />}
               {i === 1 && <HowPanel />}
