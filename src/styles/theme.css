@@ -12,11 +12,6 @@
   --color-amber: #ffb340;   /* 热源的高光端 */
   --color-line: rgba(255, 255, 255, 0.07);
 
-  /* 兼容别名：阶段 1 逐个替换掉 bg-card2 / text-iron2 后再删。
-     现在删会静默失效（Tailwind 4 不报错），测试也照样全绿。 */
-  --color-card2: #1a1a1d;
-  --color-iron2: #ffb340;
-
   --font-display: 'Anton', 'Arial Narrow', 'Helvetica Neue Condensed', system-ui, sans-serif;
 }
 
