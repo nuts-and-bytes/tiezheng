@@ -8,7 +8,7 @@ import { Stamp } from '../../components/Stamp';
 import { todayStr } from '../../lib/dates';
 import { buildJsonExport, buildWorkoutCsv, downloadText } from '../../lib/exportData';
 import { log } from '../../lib/logger';
-import { daysBetween, longestStreak, prsByExercise, totals } from '../../lib/stats';
+import { daysBetween, hasWeightData, longestStreak, prsByExercise, totals } from '../../lib/stats';
 import { getExercisesByIds } from '../../repos/exerciseRepo';
 import { adjustWeeklyGoal, getProfile } from '../../repos/profileRepo';
 import { listAllItems, listAllWorkoutDates } from '../../repos/workoutRepo';
@@ -89,14 +89,23 @@ export function ProfileScreen() {
         <p className="mt-7 rounded-xl border border-dashed border-line px-4 py-7 text-center text-xs leading-relaxed text-mute">
           一条铁证都还没有。
           <br />
-          练完第一次，这里立起四个数字：打卡 · 连续 · 组数 · 容量。
+          练完第一次，这里立起四个数字：打卡 · 连续 · 组数 · 负荷。
         </p>
       ) : (
         <div className="mt-7 grid grid-cols-2">
           <Stat value={t.days} unit="天" label="总打卡" hot className="border-r border-b border-line pr-4" />
           <Stat value={longestStreak(dates)} unit="天" label="最长连续" className="border-b border-line pl-5" />
           <Stat value={t.sets} unit="组" label="总组数" className="border-r border-line pr-4" />
-          <Volume kg={t.volumeKg} className="pl-5" />
+          {/* 第四格是「负荷」，不是「容量」。容量 = 重量 × 次数，练俯卧撑和引体向上的人恒为 0 ——
+              而这是一个 42px 的战绩数字，跟总打卡并排立着，他读到的不是「我没记重量」，
+              是「我练了等于零」。同一个根因数据页（hasWeightData）、今日页（volume > 0）、
+              海报（formatVolume → 「—」）都堵过了，这里是最后一处。
+              也不降级成「—」：那还是「本该有东西但没有」。自重训练者的负荷维度本来就是次数。 */}
+          {hasWeightData(items) ? (
+            <Volume kg={t.volumeKg} className="pl-5" />
+          ) : (
+            <Stat value={t.reps} unit="次" label="总次数" className="pl-5" />
+          )}
         </div>
       )}
 

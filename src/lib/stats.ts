@@ -52,19 +52,25 @@ export function maxWeightSeries(
 }
 
 /** 累计大数字：容量 = Σ(重量×次数)，仅重量次数都填了才计入 */
+/**
+ * 容量 = 重量 × 次数，所以纯自重训练者的容量恒为 0 —— 但他并没有练了个寂寞。
+ * reps 是他唯一挣得到的负荷维度，跟 volumeKg 平级返回，让调用方自己决定摆哪一个。
+ */
 export function totals(
   items: { sets: SetEntry[] }[],
   workoutDates: string[],
-): { days: number; sets: number; volumeKg: number } {
+): { days: number; sets: number; reps: number; volumeKg: number } {
   let sets = 0;
+  let reps = 0;
   let volumeKg = 0;
   for (const item of items) {
     sets += item.sets.length;
     for (const s of item.sets) {
+      if (s.reps !== undefined) reps += s.reps;
       if (s.weight !== undefined && s.reps !== undefined) volumeKg += s.weight * s.reps;
     }
   }
-  return { days: new Set(workoutDates).size, sets, volumeKg };
+  return { days: new Set(workoutDates).size, sets, reps, volumeKg };
 }
 
 /** 连续打卡天数：今天没练则从昨天起算（今天还没练不算断） */

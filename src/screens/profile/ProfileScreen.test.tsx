@@ -58,6 +58,59 @@ test('顶部战绩：总打卡 / 最长连续 / 总组数 / 累计容量', async
   expect(within(vol).getByText('t')).toBeInTheDocument();
 });
 
+/** 纯自重：昨天俯卧撑 20+18，今天引体向上 8+6。一次重量都没填 → 容量恒为 0 */
+async function seedBodyweight() {
+  const today = todayStr();
+  await addWorkoutItem(addDays(today, -1), 'p-pushup', [{ reps: 20 }, { reps: 18 }]);
+  await addWorkoutItem(today, 'p-pullup', [{ reps: 8 }, { reps: 6 }]);
+}
+
+/**
+ * 容量 = 重量 × 次数。练俯卧撑和引体向上的人从不填重量，他的容量恒为 0 ——
+ * 而这一格是 42px 的战绩数字，跟「总打卡」「总组数」并排立着。
+ * 他读到的不是「我没记重量」，是「我练了等于零」。这正是 D1「硬摆零」的病，
+ * 数据页（hasWeightData）、今日页（volume > 0）、海报（formatVolume → 「—」）都堵过了，
+ * 唯独这一页漏了。
+ *
+ * 而且不能只降级成「—」：那还是「这里本该有东西但没有」。自重训练者的负荷维度
+ * 本来就是次数，那一格该显示他真正挣来的数字。
+ */
+test('纯自重训练者：第四格立的是「总次数」，而不是一个 42px 的 0 kg', async () => {
+  await seedBodyweight();
+  renderProfile();
+
+  const reps = await statCell('总次数');
+  expect(within(reps).getByText('52')).toBeInTheDocument(); // 20+18+8+6
+  expect(within(reps).getByText('次')).toBeInTheDocument();
+
+  // 容量那一格根本不该出现：0 不是成绩，是噪声
+  expect(screen.queryByText('累计容量')).not.toBeInTheDocument();
+
+  // 另外三个真实的数字照旧
+  expect(within(await statCell('总打卡')).getByText('2')).toBeInTheDocument();
+  expect(within(await statCell('总组数')).getByText('4')).toBeInTheDocument();
+});
+
+/** 对抗式：证明上面那条不是把容量整个删了——填过重量的人必须还看得见它 */
+test('填过重量的人仍看到「累计容量」，看不到「总次数」', async () => {
+  await seedTraining();
+  renderProfile();
+
+  await screen.findByText('累计容量');
+  expect(screen.queryByText('总次数')).not.toBeInTheDocument();
+});
+
+/** 混合：只要有过一组带重量的记录，容量就有意义，不许被自重组挤掉 */
+test('自重 + 负重混着练：容量照常显示（有一组带重量就够）', async () => {
+  await seedBodyweight();
+  await seedTraining(); // 卧推/深蹲带重量
+  renderProfile();
+
+  const vol = await statCell('累计容量');
+  expect(within(vol).getByText('1.9')).toBeInTheDocument();
+  expect(screen.queryByText('总次数')).not.toBeInTheDocument();
+});
+
 test('.display 里不许出现中文（Anton 无中日韩字形）', async () => {
   await seedTraining();
   const { container } = renderProfile();
