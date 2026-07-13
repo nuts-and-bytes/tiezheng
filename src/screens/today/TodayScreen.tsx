@@ -100,12 +100,15 @@ export function TodayScreen() {
           {streak > 0 ? (
             <p className="mt-2.5 flex items-center gap-1.5 text-[13px] text-amber">
               <Flame />
+              {/* 「个人纪录」这个词全站只归「我的」页的 e1RM 重量榜（个人纪录 · PR）。
+                  这里说的是连续天数——它叫「最长连续」，和数据页、「我的」页同一个词、同一个数。
+                  同名不同量，用户读到的不是「两个指标」，是「这 app 算错了」。 */}
               <span>
-                连续 {streak} 天 · 个人纪录 {best} 天
+                连续 {streak} 天 · 最长连续 {best} 天
               </span>
             </p>
           ) : total > 0 ? (
-            <p className="mt-2.5 text-[13px] text-mute">个人纪录 {best} 天</p>
+            <p className="mt-2.5 text-[13px] text-mute">最长连续 {best} 天</p>
           ) : null}
         </div>
       </section>

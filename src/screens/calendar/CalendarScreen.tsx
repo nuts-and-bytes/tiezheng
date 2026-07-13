@@ -170,10 +170,13 @@ export function CalendarScreen() {
               练一次，这里就会落下第一枚钢印。
             </p>
           ) : (
+            /* 三格算的都是「当前浏览的这个月」，名字就得把口径说出来。
+               「最长连续」在首页 / 数据页 /「我的」页是**终身**纪录（一个不变的成就），
+               这里的数却随手指往左划就变。同一个词两个数，用户没有线索知道哪个是真的。 */
             <div data-testid="month-stats" className="flex">
               <Stat value={data.days} label="本月打卡" />
-              <Stat value={data.streak} label="最长连续" accent />
-              <Stat value={data.sets} label="总组数" last />
+              <Stat value={data.streak} label="本月最长连续" accent />
+              <Stat value={data.sets} label="本月组数" last />
             </div>
           ))}
       </div>
