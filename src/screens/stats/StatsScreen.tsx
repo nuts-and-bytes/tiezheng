@@ -144,9 +144,8 @@ export function StatsScreen() {
         <span className="ml-auto text-xl text-iron">›</span>
       </Link>
 
-      <div className="mt-6">
-        <PhotoTimeline />
-      </div>
+      {/* 间距归 PhotoTimeline 自己（它现在自带蚀刻线开头），外面不再套壳 */}
+      <PhotoTimeline />
     </div>
   );
 }
