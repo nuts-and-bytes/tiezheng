@@ -5,6 +5,7 @@ import { PartIcon } from '../../components/PartIcon';
 import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
 import { bodyPartInfo } from '../../data/bodyParts';
+import { setLabels } from '../../lib/setLabel';
 import { sanitizeSets } from '../../lib/validation';
 import { getWeight } from '../../repos/weightRepo';
 import { getDayItems, removeWorkoutItem, updateItemSets, type DayItem } from '../../repos/workoutRepo';
@@ -74,9 +75,7 @@ function ItemRow({ item }: { item: DayItem }) {
   const [sets, setSets] = useState(item.sets);
   const info = bodyPartInfo(item.exercise.bodyPart);
 
-  const summary = item.sets
-    .map((s) => (s.weight !== undefined && s.reps !== undefined ? `${s.weight}×${s.reps}` : null))
-    .filter((s) => s !== null);
+  const summary = setLabels(item.sets);
 
   return (
     <div className="py-1">

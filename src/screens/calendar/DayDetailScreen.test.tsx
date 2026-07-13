@@ -99,3 +99,36 @@ test('不再使用废弃别名 card2 / iron2', async () => {
   await user.click(await screen.findByText('编辑')); // 编辑态才会露出取消/删除两个按钮
   expect(container.innerHTML).not.toMatch(/card2|iron2/);
 });
+
+/**
+ * 写侧 sanitizeSets 保留一组的条件是 weight **或** reps 有值（validation.ts:34），
+ * 而这一屏的读侧原本要求两者**同时**有值 —— 于是纯自重训练者填的次数在唯一能回看
+ * 单日明细的地方全部消失，只剩一个「4 组」。他填的 12/12/10/8 和什么都没填，长得一模一样。
+ */
+test('只填次数的组：次数看得见，不再退化成一个「4 组」', async () => {
+  await addWorkoutItem('2026-07-10', 'p-pullup', [{ reps: 12 }, { reps: 12 }, { reps: 10 }, { reps: 8 }]);
+  renderDay('2026-07-10');
+
+  expect(await screen.findByText(/12次\s+12次\s+10次\s+8次/)).toBeInTheDocument();
+  expect(screen.queryByText('4 组')).not.toBeInTheDocument();
+});
+
+/** 混合场景：正文列出的项数必须等于页头的总组数，否则同一屏上两个数字打架 */
+test('自重与负重混着记：四组全部可见，与页头「4 组」对得上', async () => {
+  await addWorkoutItem('2026-07-10', 'p-bench', [
+    { weight: 60, reps: 10 },
+    { weight: 60, reps: 8 },
+    { reps: 12 },
+    { reps: 10 },
+  ]);
+  renderDay('2026-07-10');
+
+  expect(await screen.findByText(/60×10\s+60×8\s+12次\s+10次/)).toBeInTheDocument();
+});
+
+/** 对抗式护栏：别把「只记组数、一个数字都没填」的兜底一起改坏 */
+test('一个数字都没填的组仍走「3 组」兜底', async () => {
+  await addWorkoutItem('2026-07-10', 'p-bench', [{}, {}, {}]);
+  renderDay('2026-07-10');
+  expect(await screen.findByText('3 组')).toBeInTheDocument();
+});
