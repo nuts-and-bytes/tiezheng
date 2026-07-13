@@ -399,9 +399,19 @@ export interface DayPartLoad {
   sets: number;
 }
 
-/** 每天的主练部位（组数最多者；并列取 BODY_PARTS 顺序靠前者）+ 当天总组数。
-    日历格上色和年度海报热力图共用这一个函数——两处颜色规则必须完全一致 */
-export function dailyPartLoad(items: LoadItem[], exMap: ExMap): Map<string, DayPartLoad> {
+/**
+ * 每天练到的**每一个**部位及其组数，按组数降序（并列取 BODY_PARTS 顺序靠前者）。
+ *
+ * dailyPartLoad 只回答「主练的是哪块」——够画一个格子的颜色，不够回答别的。而年度热力图的
+ * 格子是 9px 见方，部位只编码在色相里：七个色相挤进 9px，红绿色盲（男性约 8%）读到的信息量
+ * 是零，说实话谁也分不清。颜色只配当冗余通道，所以格子得说得出话（「腿 2 组 · 胸 1 组」），
+ * 图例得能筛（点「胸」→ 退成单色的胸部贡献图，此时唯一的变量是浓淡）。
+ *
+ * 这两件事都需要**全部**部位，不是主练那一个：一天主练腿、顺带练了胸，按主练部位筛「胸」
+ * 会把这天整个漏掉——而用户问的正是「我这一年到底摸过几次胸」。
+ */
+export function dailyPartBreakdown(items: LoadItem[], exMap: ExMap): Map<string, DayPartLoad[]> {
+  const order = BODY_PARTS.map((p) => p.id);
   const perDay = new Map<string, Map<BodyPart, number>>();
   for (const item of items) {
     const ex = exMap.get(item.exerciseId);
@@ -410,22 +420,23 @@ export function dailyPartLoad(items: LoadItem[], exMap: ExMap): Map<string, DayP
     const bucket = perDay.get(item.date)!;
     bucket.set(ex.bodyPart, (bucket.get(ex.bodyPart) ?? 0) + item.sets.length);
   }
-  const order = BODY_PARTS.map((p) => p.id);
-  const out = new Map<string, DayPartLoad>();
+  const out = new Map<string, DayPartLoad[]>();
   for (const [date, bucket] of perDay) {
-    let winner: BodyPart | null = null;
-    let total = 0;
-    for (const [part, n] of bucket) {
-      total += n;
-      if (
-        winner === null ||
-        n > bucket.get(winner)! ||
-        (n === bucket.get(winner)! && order.indexOf(part) < order.indexOf(winner))
-      ) {
-        winner = part;
-      }
-    }
-    if (winner !== null) out.set(date, { part: winner, sets: total });
+    const rows = [...bucket].map(([part, sets]) => ({ part, sets }));
+    // 并列必须有确定的决胜规则，否则顺序会跟着 Map 的插入顺序（= 用户的记录顺序）漂
+    rows.sort((a, b) => b.sets - a.sets || order.indexOf(a.part) - order.indexOf(b.part));
+    if (rows.length > 0) out.set(date, rows);
+  }
+  return out;
+}
+
+/** 每天的主练部位（组数最多者；并列取 BODY_PARTS 顺序靠前者）+ 当天总组数。
+    日历格上色和年度海报热力图共用这一个函数——两处颜色规则必须完全一致。
+    派生自 dailyPartBreakdown：决胜规则只写一遍，两个函数不可能各说各话 */
+export function dailyPartLoad(items: LoadItem[], exMap: ExMap): Map<string, DayPartLoad> {
+  const out = new Map<string, DayPartLoad>();
+  for (const [date, rows] of dailyPartBreakdown(items, exMap)) {
+    out.set(date, { part: rows[0].part, sets: rows.reduce((s, r) => s + r.sets, 0) });
   }
   return out;
 }

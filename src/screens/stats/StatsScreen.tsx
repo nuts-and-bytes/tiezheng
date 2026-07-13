@@ -5,15 +5,17 @@ import { Line } from '../../components/charts';
 import { PartIcon } from '../../components/PartIcon';
 import { PhotoTimeline } from '../../components/PhotoTimeline';
 import { Stamp } from '../../components/Stamp';
-import { BODY_PARTS } from '../../data/bodyParts';
+import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { addDays, todayStr } from '../../lib/dates';
 import { EMPTY_HEAT, heatColor } from '../../lib/heat';
+import { vibrate } from '../../lib/platform';
 import {
-  PROGRESSION_POINTS, compare, currentStreak, dailyMovingAverage, dailyPartLoad, hasWeightData,
+  PROGRESSION_POINTS, compare, currentStreak, dailyMovingAverage, dailyPartBreakdown, hasWeightData,
   heatMonthLabels, heatWeekStarts, lastTrainedByBodyPart, longestStreak, percentile, prevRangeOf,
   rangeOf, recentE1rmSeries, setsByBodyPart, topExerciseIds, yearsWithData,
 } from '../../lib/stats';
-import type { Delta, ExMap, LoadItem, Segment } from '../../lib/stats';
+import type { DayPartLoad, Delta, ExMap, LoadItem, Segment } from '../../lib/stats';
+import type { BodyPart } from '../../lib/types';
 import { getExercisesByIds } from '../../repos/exerciseRepo';
 import { listWeights } from '../../repos/weightRepo';
 import { listAllItems, listAllWorkoutDates } from '../../repos/workoutRepo';
@@ -427,6 +429,8 @@ function Balance({
 }
 
 /** 年度热力图：与日历页共用 heatColor —— 同一个训练日在两处必须长同一个颜色 */
+const partName = (p: BodyPart) => bodyPartInfo(p).name;
+
 function Heat({
   items, exMap, dates, year, onYear, today,
 }: {
@@ -439,10 +443,34 @@ function Heat({
 }) {
   const years = yearsWithData(dates);
   const y = year !== null && years.includes(year) ? year : (years[0] ?? Number(today.slice(0, 4)));
-  const load = dailyPartLoad(items, exMap);
 
-  const inYear = [...load.entries()].filter(([d]) => d.startsWith(String(y)));
-  const maxSets = percentile(inYear.map(([, v]) => v.sets), 90);
+  /**
+   * 部位曾经**只**编码在色相里。9px 的格子、七个色相——红绿色盲（男性约 8%）看
+   * chest #E8483F / cardio #8FAE9B / arm #2FD6C3 三者高度趋同，读到的信息量是零；
+   * 而说实话，七个色相在 9px 上谁都分不清。所以颜色降级为冗余通道，真相走另外两条：
+   *
+   * 1. **每个格子说得出话**（title + 无障碍名）：「2026-07-03 · 腿 3 组 · 胸 1 组」。
+   * 2. **图例能筛**：点「腿」，整张图退成单色的腿部贡献图——此时唯一的变量是浓淡，
+   *    色觉障碍者也读得全。而「我腿练得少吗」本来就是个查询，不是个看：
+   *    七色同屏时，谁都数不出这一年有几个紫格子。
+   */
+  const [pick, setPick] = useState<BodyPart | null>(null);
+
+  const breakdown = dailyPartBreakdown(items, exMap);
+  /** 筛选态下，格子代表的是「这一天的这个部位」；无筛选时代表「这一天的主练部位 + 总组数」 */
+  const shownOf = (rows: DayPartLoad[] | undefined): DayPartLoad | undefined => {
+    if (!rows) return undefined;
+    if (pick === null) return { part: rows[0].part, sets: rows.reduce((s, r) => s + r.sets, 0) };
+    const hit = rows.find((r) => r.part === pick);
+    return hit && { part: pick, sets: hit.sets };
+  };
+
+  // 浓淡的分母跟着筛选走：筛「胸」时拿全年总组数当分母，胸的格子会集体发灰
+  const inYear = [...breakdown.entries()].filter(([d]) => d.startsWith(String(y)));
+  const maxSets = percentile(
+    inYear.map(([, rows]) => shownOf(rows)?.sets ?? 0).filter((n) => n > 0),
+    90,
+  );
 
   // 一列 = 一周（7 行）。月份标签与格子共用同一份列定义，才能真正对齐到列
   const weekStarts = heatWeekStarts(y);
@@ -490,12 +518,19 @@ function Heat({
           </div>
           <div className="grid grid-flow-col grid-rows-7 gap-[3px]">
             {cells.map((d) => {
-              const hit = d.startsWith(String(y)) ? load.get(d) : undefined;
+              const rows = d.startsWith(String(y)) ? breakdown.get(d) : undefined;
+              const hit = shownOf(rows);
+              // 标签报的是那天的全部真相（筛选只决定谁上色，不改写那天练了什么）
+              const label = rows && `${d} · ${rows.map((r) => `${partName(r.part)} ${r.sets} 组`).join(' · ')}`;
               return (
                 <span
                   key={d}
                   data-testid={`heat-${d}`}
-                  title={d}
+                  // 没练的日子不进无障碍树：一年 365 声「未训练」是纯噪声。
+                  // 有练的必须有 role——光挂 aria-label 在 <span> 上，屏幕阅读器不念。
+                  {...(hit && label
+                    ? { role: 'img', 'aria-label': label, title: label }
+                    : { 'aria-hidden': true })}
                   className="size-[9px] rounded-[2px]"
                   style={{
                     backgroundColor: !d.startsWith(String(y))
@@ -511,19 +546,41 @@ function Heat({
         </div>
       </div>
 
-      {/* 图例：色块本身不自解释。日历页有，这里没有的话，同一套颜色就白共用了 */}
+      {/* 图例即筛选器：色块本身不自解释，而七个色相在 9px 上谁都读不出来——
+          它得能被点，把「这一年我练了几次腿」从一道找色题变成一次筛选 */}
       <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1.5" data-testid="heat-legend">
-        {BODY_PARTS.map((p) => (
-          <span key={p.id} className="flex items-center gap-1">
-            <span
-              className="size-[7px] shrink-0 rounded-[2px]"
-              style={{ background: p.color }}
-              aria-hidden
-            />
-            <span className="text-[10px] text-mute">{p.name}</span>
-          </span>
-        ))}
+        {BODY_PARTS.map((p) => {
+          const on = pick === p.id;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              aria-pressed={on}
+              onClick={() => {
+                vibrate(8);
+                setPick(on ? null : p.id); // 再点一次取消，不然用户被自己锁死在一个部位里
+              }}
+              className={`flex items-center gap-1 rounded-md px-1 py-0.5 -mx-1 transition-opacity ${
+                pick !== null && !on ? 'opacity-40' : ''
+              }`}
+            >
+              <span
+                className="size-[7px] shrink-0 rounded-[2px]"
+                style={{ background: p.color }}
+                aria-hidden
+              />
+              <span className={`text-[10px] ${on ? 'font-semibold text-iron' : 'text-mute'}`}>
+                {p.name}
+              </span>
+            </button>
+          );
+        })}
       </div>
+      {pick !== null && (
+        <p className="mt-1.5 text-[10px] text-mute">
+          只看{partName(pick)}——再点一次看全部
+        </p>
+      )}
     </>
   );
 }

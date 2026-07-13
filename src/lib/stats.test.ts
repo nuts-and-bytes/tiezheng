@@ -6,6 +6,7 @@ import {
   compare,
   dailyLoad,
   dailyMovingAverage,
+  dailyPartBreakdown,
   dailyPartLoad,
   daysBetween,
   daysInRange,
@@ -402,6 +403,47 @@ describe('dailyPartLoad', () => {
       { date: '2026-07-05', exerciseId: 'e1', sets: [{}] }, // chest 1 组
     ];
     expect(dailyPartLoad(tie, EX).get('2026-07-05')).toEqual({ part: 'chest', sets: 2 });
+  });
+});
+
+/**
+ * 年度热力图的格子是 9px 见方，部位**只**编码在色相里。七个色相挤进 9px：
+ * 红绿色盲（男性约 8%）看 chest #E8483F / cardio #8FAE9B / arm #2FD6C3 三者高度趋同，
+ * 读到的信息量是零；而说实话，七个色相在 9px 上谁都分不清。颜色只配当冗余通道，
+ * 真相得另有一条文字通道 + 一条可交互的筛选通道。
+ *
+ * 而这两条通道都需要先有真相：dailyPartLoad 只给「主练部位」，一天里练到的次要部位
+ * 它直接丢了。于是 tooltip 说不全，按部位筛选也会漏掉「那天也练了臂，只是胸更多」的日子。
+ */
+describe('dailyPartBreakdown', () => {
+  it('一天练了几个部位就列几个，按组数降序', () => {
+    expect(dailyPartBreakdown(ITEMS, EX).get('2026-07-03')).toEqual([
+      { part: 'leg', sets: 3 },
+      { part: 'chest', sets: 1 },
+    ]);
+  });
+
+  it('并列时按 BODY_PARTS 顺序——和 dailyPartLoad 同一套决胜规则', () => {
+    const tie = [
+      { date: '2026-07-05', exerciseId: 'e2', sets: [{}] },
+      { date: '2026-07-05', exerciseId: 'e1', sets: [{}] },
+    ];
+    expect(dailyPartBreakdown(tie, EX).get('2026-07-05')).toEqual([
+      { part: 'chest', sets: 1 },
+      { part: 'leg', sets: 1 },
+    ]);
+  });
+
+  it('主练部位 = 明细的头一项，总组数 = 明细之和（两个函数不许各说各话）', () => {
+    const brk = dailyPartBreakdown(ITEMS, EX);
+    const load = dailyPartLoad(ITEMS, EX);
+    expect([...brk.keys()].sort()).toEqual([...load.keys()].sort());
+    for (const [date, rows] of brk) {
+      expect(load.get(date)).toEqual({
+        part: rows[0].part,
+        sets: rows.reduce((s, r) => s + r.sets, 0),
+      });
+    }
   });
 });
 

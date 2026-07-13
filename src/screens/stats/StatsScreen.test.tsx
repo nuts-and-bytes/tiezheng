@@ -5,7 +5,7 @@ import { seedPresets } from '../../repos/exerciseRepo';
 import { setWeight } from '../../repos/weightRepo';
 import { addWorkoutItem } from '../../repos/workoutRepo';
 import { BODY_PARTS } from '../../data/bodyParts';
-import { heatColor } from '../../lib/heat';
+import { EMPTY_HEAT, heatColor } from '../../lib/heat';
 import { estimate1RM } from '../../lib/stats';
 import { resetDb } from '../../test/dbTestUtils';
 import { StatsScreen } from './StatsScreen';
@@ -352,6 +352,92 @@ describe('年度热力图', () => {
     for (const p of BODY_PARTS) {
       expect(within(legend).getByText(p.name)).toBeInTheDocument();
     }
+  });
+
+  /**
+   * 部位曾经**只**编码在色相里。9px 的格子、七个色相——红绿色盲（男性约 8%）
+   * 读到的信息量是零，而说实话谁也分不清。颜色只能当冗余通道，真相得另有出口。
+   * 出口有两个：格子自己说得出话（title / 无障碍名），以及图例能筛（下一组测试）。
+   */
+  test('格子说得出练的是什么：日期 · 部位 · 组数，不是只有一个颜色', async () => {
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    const cell = await screen.findByTestId('heat-2026-07-13');
+    expect(cell).toHaveAttribute('title', '2026-07-13 · 胸 1 组');
+    // 色块要进无障碍树就得有 role——光挂 aria-label 在 <span> 上，屏幕阅读器不念
+    expect(cell).toHaveAttribute('role', 'img');
+    expect(cell).toHaveAccessibleName('2026-07-13 · 胸 1 组');
+  });
+
+  test('一天练了两个部位，两个都说出来（主练部位不是全部真相）', async () => {
+    await addWorkoutItem('2026-07-13', 'p-squat', [{ weight: 80, reps: 5 }, { weight: 80, reps: 5 }]);
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    const cell = await screen.findByTestId('heat-2026-07-13');
+    expect(cell).toHaveAttribute('title', '2026-07-13 · 腿 2 组 · 胸 1 组');
+  });
+
+  test('没练的日子不进无障碍树：一年 365 声「未训练」是纯噪声', async () => {
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    await screen.findByTestId('heat-2026-07-13');
+    expect(screen.getByTestId('heat-2026-07-14')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  /**
+   * 筛选通道。七色同屏谁都读不出「我腿练得少吗」——那是个查询，不是个看。
+   * 点「腿」，整张图退成单色的腿部贡献图：此时唯一的变量是浓淡，色觉障碍者也读得全。
+   */
+  test('点图例筛部位：只留这个部位的日子，其余退回底色', async () => {
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]); // 胸
+    await addWorkoutItem('2026-07-14', 'p-squat', [{ weight: 80, reps: 5 }]); // 腿
+    const user = userEvent.setup();
+    renderStats();
+
+    const legend = await screen.findByTestId('heat-legend');
+    await user.click(within(legend).getByRole('button', { name: '胸' }));
+
+    expect(screen.getByTestId('heat-2026-07-13')).toHaveStyle({
+      backgroundColor: heatColor('chest', 1, 1),
+    });
+    expect(screen.getByTestId('heat-2026-07-14')).toHaveStyle({ backgroundColor: EMPTY_HEAT });
+    expect(within(legend).getByRole('button', { name: '胸' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  test('主练的是腿、顺带练了胸的那天，筛「胸」也留得下（按主练部位筛会漏掉它）', async () => {
+    await addWorkoutItem('2026-07-13', 'p-squat', [{ weight: 80, reps: 5 }, { weight: 80, reps: 5 }]);
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
+    const user = userEvent.setup();
+    renderStats();
+
+    const legend = await screen.findByTestId('heat-legend');
+    await user.click(within(legend).getByRole('button', { name: '胸' }));
+
+    // 那天只练了 1 组胸 → 筛出来的浓淡按「这个部位当天的组数」算，不是当天总组数
+    expect(screen.getByTestId('heat-2026-07-13')).toHaveStyle({
+      backgroundColor: heatColor('chest', 1, 1),
+    });
+  });
+
+  test('再点一次取消筛选（不然用户被自己锁死在一个部位里）', async () => {
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
+    await addWorkoutItem('2026-07-14', 'p-squat', [{ weight: 80, reps: 5 }]);
+    const user = userEvent.setup();
+    renderStats();
+
+    const legend = await screen.findByTestId('heat-legend');
+    await user.click(within(legend).getByRole('button', { name: '胸' }));
+    await user.click(within(legend).getByRole('button', { name: '胸' }));
+
+    expect(screen.getByTestId('heat-2026-07-14')).toHaveStyle({
+      backgroundColor: heatColor('leg', 1, 1),
+    });
   });
 });
 
