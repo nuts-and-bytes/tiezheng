@@ -142,12 +142,11 @@ describe('rangeOf / prevRangeOf', () => {
     expect(rangeOf('all', '2026-07-12')).toEqual({ from: '1970-01-01', to: '2026-07-12' });
   });
 
-  it('上一区间与本区间等长且紧邻', () => {
-    // 07-06..07-12 共 7 天 → 上一段 06-29..07-05
-    expect(prevRangeOf({ from: '2026-07-06', to: '2026-07-12' })).toEqual({
-      from: '2026-06-29',
-      to: '2026-07-05',
-    });
+  it('周日打开（本周已走完）时，上一区间正好是完整的上一周', () => {
+    // 2026-07-12 是周日 → cur = 07-06..07-12（整周）→ prev = 上一整周
+    // 这是唯一一个「同相位」与旧的「紧邻等长窗口」重合的时刻；周中打开就会分道扬镳，
+    // 见下面 prevRangeOf 的同相位用例。
+    expect(prevRangeOf('week', '2026-07-12')).toEqual({ from: '2026-06-29', to: '2026-07-05' });
   });
 });
 
@@ -443,4 +442,111 @@ describe('dailyMovingAverage', () => {
     expect(out[1].value).toBe(80); // 7 日窗内只有它自己，不该被 6-01 的 70 拖下来
     expect(out[2].value).toBe(81); // (80+82)/2
   });
+});
+
+// ---- J · 环比：跟「上周同一时刻的我」比，而不是跟「上周的尾巴」比 ----
+
+/**
+ * 旧实现：prev = 紧挨着 cur 的等长窗口。周三打开时 cur = 周一–周三，
+ * prev 就成了**上周五–上周日** —— 拿这周的周中训练日去比上周的周末休息日。
+ * 后果：一个作息完全没变的人，环比数字随「今天是周几」剧烈震荡，红色下降箭头
+ * 全是噪声。而环比存在的唯一理由，就是回答「我最近是不是在退步」。
+ *
+ * 正确的对照组是**上一周期的同一相位**：week-to-date 比 上周同一天为止。
+ */
+test('prevRangeOf：周对周，是上周的同一段，不是上周的尾巴', () => {
+  // 2026-07-17 是周五；本周从 7/13（周一）起 → cur = 7/13–7/17
+  expect(prevRangeOf('week', '2026-07-17')).toEqual({ from: '2026-07-06', to: '2026-07-10' });
+});
+
+test('prevRangeOf：月对月 / 年对年同样相位对齐', () => {
+  expect(prevRangeOf('month', '2026-07-10')).toEqual({ from: '2026-06-01', to: '2026-06-10' });
+  expect(prevRangeOf('year', '2026-03-05')).toEqual({ from: '2025-01-01', to: '2025-03-05' });
+});
+
+/** 月末的越界要夹住：3/31 的对照相位落在 2 月，不能算到 3 月去 */
+test('prevRangeOf：3/31 的上一月对照夹在 2 月内，不溢出', () => {
+  const prev = prevRangeOf('month', '2026-03-31');
+  expect(prev).toEqual({ from: '2026-02-01', to: '2026-02-28' });
+});
+
+/**
+ * 这是 J 真正的伤害：作息**完全没变**的人被告知自己在退步。
+ * 每周一/三/五练。周五打开 —— 他这周练了 3 天，上周同期也练了 3 天。
+ * 环比该是 0%，而旧实现拿上周三–上周日去比，只数出 2 天 → ↓33%。
+ */
+test('作息零变化的人，环比就是 0%（不该因为「今天是周五」而变成下降）', () => {
+  const dates = [
+    '2026-07-06', '2026-07-08', '2026-07-10', // 上周一三五
+    '2026-07-13', '2026-07-15', '2026-07-17', // 本周一三五
+  ];
+  const items = dates.map((date) => ({ date, exerciseId: 'p-bench', sets: [{ weight: 60, reps: 10 }] }));
+  const today = '2026-07-17';
+  const cur = rangeOf('week', today);
+
+  const cmp = compare(items, dates, cur, prevRangeOf('week', today));
+  expect(cmp.days.cur).toBe(3);
+  expect(cmp.days.prev).toBe(3);
+  expect(cmp.days.pct).toBe(0);
+});
+
+// ---- I · Epley 在高次数区间不成立 ----
+
+/**
+ * Epley：1RM = w × (1 + reps/30)。它在低次数区间（≤10–12）才站得住。
+ * 无上限时，60kg×30 推出 120kg，直接顶掉这个人真实做到的 100kg×1（e1RM 103.3）——
+ * PR 榜的头名成了一组耐力训练。榜单本该回答「我最强的一次」。
+ *
+ * 修法是**在公式里封顶、不外推**（>12 次按 12 次算），而不是把高次数组判 0 剔除：
+ * hasWeightData / topExerciseIds / e1rmSeries 共用「有重量」这一个口径，
+ * 一旦某组「有重量但 e1RM = 0」，就会重新长出「被选成主角却画不出点」的空图。
+ * 封顶还是保守方向：宁可低估，绝不让一组 30 次的假 PR 骑在真 PR 头上。
+ */
+test('Epley 在 12 次处封顶，不向高次数区间外推', () => {
+  expect(estimate1RM(100, 1)).toBeCloseTo(103.33, 1);
+  expect(estimate1RM(60, 12)).toBeCloseTo(84, 5);
+  expect(estimate1RM(60, 30)).toBeCloseTo(84, 5); // 按 12 次估，不再推出 120
+  expect(estimate1RM(60, 100)).toBeCloseTo(84, 5);
+});
+
+test('每一组带重量的记录仍产生正的 e1RM（不许长回空图根因）', () => {
+  expect(estimate1RM(60, 30)).toBeGreaterThan(0);
+  expect(estimate1RM(0, 10)).toBe(0); // 自重：weight 0 算不出 e1RM，这是另一回事
+});
+
+test('PR 榜：60kg×30 的耐力组顶不掉真实的 100kg×1', () => {
+  const exMap = new Map([
+    ['p-bench', { id: 'p-bench', name: '卧推', bodyPart: 'chest', preset: true, updatedAt: 0, deletedAt: null }],
+  ] as const) as unknown as Parameters<typeof prsByExercise>[1];
+
+  const rows = prsByExercise(
+    [
+      { date: '2026-07-01', exerciseId: 'p-bench', sets: [{ weight: 60, reps: 30 }] },
+      { date: '2026-07-08', exerciseId: 'p-bench', sets: [{ weight: 100, reps: 1 }] },
+    ],
+    exMap,
+  );
+  expect(rows).toHaveLength(1);
+  expect(rows[0].weight).toBe(100);
+  expect(rows[0].reps).toBe(1);
+});
+
+// ---- K · compare 一直算着 reps 却把它丢了 ----
+
+/**
+ * totals() 早就有 reps 维度（D12 给「我的」页加的），compare() 却只往外传
+ * days / sets / volumeKg —— 纯自重训练者唯一有意义的负荷维度，在数据页被丢在门口。
+ */
+test('compare 输出 reps 环比：自重训练者的负荷维度不能被丢掉', () => {
+  const items = [
+    { date: '2026-07-06', exerciseId: 'p-pushup', sets: [{ reps: 20 }, { reps: 20 }] },
+    { date: '2026-07-13', exerciseId: 'p-pushup', sets: [{ reps: 25 }, { reps: 25 }] },
+  ];
+  const dates = ['2026-07-06', '2026-07-13'];
+  const today = '2026-07-13';
+
+  const cmp = compare(items, dates, rangeOf('week', today), prevRangeOf('week', today));
+  expect(cmp.reps.cur).toBe(50);
+  expect(cmp.reps.prev).toBe(40);
+  expect(cmp.reps.pct).toBe(25);
 });

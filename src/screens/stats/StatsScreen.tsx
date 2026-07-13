@@ -76,9 +76,13 @@ export function StatsScreen() {
   }
 
   const range = rangeOf(seg, today);
-  const cmp = compare(items, dates, range, prevRangeOf(range));
+  const cmp = compare(items, dates, range, prevRangeOf(seg, today));
   const scoped = items.filter((i) => i.date >= range.from && i.date <= range.to);
-  const weighted = hasWeightData(scoped);
+  // 全时段判断，不是 scoped：「你是不是一个搬铁的人」是这个人的属性，不是这三天的属性。
+  // 用 scoped 会让一个举铁的人在「本周只练了自重」时整块容量口径消失、下周一又回来——
+  // 页面结构随最近三天的偶然性漂移。而下面的「力量趋势」本来就吃全时段（见 :126），
+  // 两处口径必须一致，否则会出现「曲线画着卧推，上面的大数字却当他没重量数据」。
+  const weighted = hasWeightData(items);
 
   return (
     <div className="px-5 pt-6 pb-4">
@@ -108,12 +112,9 @@ export function StatsScreen() {
         {weighted ? (
           <Volume kg={cmp.volumeKg.cur} />
         ) : (
-          <Hero
-            testId="hero-streak"
-            label="当前连续"
-            value={currentStreak(new Set(dates), today)}
-            unit="天"
-          />
+          // 自重训练者的 volumeKg 恒为 0，但次数是真的——那才是他的负荷维度。
+          // （这一格原本给了「当前连续」，而它下面 4px 处的小字里已经印过一遍。）
+          <Hero testId="hero-reps" label="总次数" value={cmp.reps.cur} delta={cmp.reps} seg={seg} />
         )}
       </div>
       <div className="etch" />

@@ -31,7 +31,8 @@ vi.mock('react-chartjs-2', () => ({
 }));
 
 // 数据页所有区间都由 todayStr() 锚定。2026-07-15 是周三 →
-// 本周 = 07-13(周一)..07-15，上一等长区间 = 07-10..07-12。
+// 本周 = 07-13(周一)..07-15；环比的对照组是**上周同一相位**（week-to-date 比 week-to-date）
+// = 07-06(上周一)..07-08(上周三)，而不是紧挨着的 07-10..07-12。
 const TODAY = '2026-07-15';
 vi.mock('../../lib/dates', async (orig) => ({
   ...(await orig<typeof import('../../lib/dates')>()),
@@ -80,10 +81,10 @@ describe('顶部时间范围 + 环比', () => {
   });
 
   test('上期有数据时给出真实环比百分比', async () => {
-    // 本周 2 天，上一区间 1 天 → +100%
+    // 本周（截至周三）2 天，上周同期 1 天 → +100%
     await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
     await addWorkoutItem('2026-07-14', 'p-bench', [{ weight: 60, reps: 8 }]);
-    await addWorkoutItem('2026-07-11', 'p-bench', [{ weight: 60, reps: 8 }]);
+    await addWorkoutItem('2026-07-07', 'p-bench', [{ weight: 60, reps: 8 }]);
     renderStats();
 
     const days = await screen.findByTestId('hero-days');
@@ -106,8 +107,8 @@ describe('顶部时间范围 + 环比', () => {
   });
 
   test('总容量不显示环比：撞上一个怪物日就 ↓88% 的指标回答不了「我在变好吗」', async () => {
-    // 上一区间（07-10..07-12）一个 30 组的怪物日，本周只练了 1 组 → 旧版会红着箭头写 ↓
-    await addWorkoutItem('2026-07-11', 'p-bench', Array.from({ length: 30 }, () => ({ weight: 60, reps: 10 })));
+    // 上周同期（07-06..07-08）一个 30 组的怪物日，本周只练了 1 组 → 旧版会红着箭头写 ↓
+    await addWorkoutItem('2026-07-07', 'p-bench', Array.from({ length: 30 }, () => ({ weight: 60, reps: 10 })));
     await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }]);
     renderStats();
 
@@ -373,5 +374,47 @@ describe('体重趋势', () => {
 
     expect(await screen.findByText(/体重/)).toBeInTheDocument();
     expect(pageText()).not.toMatch(/NaN|Infinity/);
+  });
+});
+
+describe('大数字三格的口径（K）', () => {
+  /**
+   * hero 用 scoped（当前区间）判断有没有重量数据，而下面的「力量趋势」吃的是全时段 items。
+   * 于是同一屏上会出现：曲线好端端画着卧推的 e1RM，上面的大数字却当他没有重量数据，
+   * 把第三格降级成「当前连续」。
+   *
+   * 更深的问题是**页面结构在漂**：一个举铁的人，这周碰巧只练了自重/有氧，整块
+   * 容量口径就消失；下周一又回来。用户没法建立「这一页长什么样」的稳定预期。
+   *
+   * 「你是不是一个搬铁的人」是这个人的属性，不是这三天的属性 → 用全时段判断。
+   * 本周真的没搬起重量，就诚实显示 0 kg——旁边天数和组数一起为 0 时，这读得懂。
+   */
+  test('举铁的人本周只练了自重，第三格仍是总容量，而不是整块换掉', async () => {
+    await addWorkoutItem('2026-06-20', 'p-bench', [{ weight: 60, reps: 8 }]); // 上个月搬过铁
+    await addWorkoutItem(TODAY, 'p-pushup', [{ reps: 20 }]); // 本周只有自重
+    renderStats();
+
+    expect(await screen.findByTestId('hero-volume')).toBeInTheDocument();
+    expect(screen.queryByTestId('hero-streak')).not.toBeInTheDocument();
+  });
+
+  /**
+   * 降级态原本把第三格给了「当前连续」——而它下面 4px 处的那行小字里已经印了一遍
+   * 「当前连续 N 天 · 最长 M 天」。同一个数字在一屏里出现两次，第二次不携带任何新信息，
+   * 白白占掉三格中的一格。
+   *
+   * 纯自重训练者缺的恰恰是负荷维度：他的 volumeKg 恒为 0，但**总次数**是真的。
+   */
+  test('纯自重的人，第三格给总次数（而不是把「当前连续」印第二遍）', async () => {
+    await addWorkoutItem(TODAY, 'p-pushup', [{ reps: 20 }, { reps: 15 }]);
+    renderStats();
+
+    const reps = await screen.findByTestId('hero-reps');
+    expect(within(reps).getByText('总次数')).toBeInTheDocument();
+    expect(within(reps).getByText('35')).toBeInTheDocument();
+    expect(screen.queryByTestId('hero-streak')).not.toBeInTheDocument();
+
+    // 「当前连续」全页只该出现一次（那行小字里）
+    expect(pageText().match(/当前连续/g)).toHaveLength(1);
   });
 });

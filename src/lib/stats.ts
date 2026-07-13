@@ -124,11 +124,32 @@ export function rangeOf(seg: Segment, today: string): Range {
   return { from: EPOCH, to: today };
 }
 
-/** 相邻的等长上一区间（环比用） */
-export function prevRangeOf(cur: Range): Range {
-  const len = daysBetween(cur.from, cur.to) + 1;
-  const to = addDays(cur.from, -1);
-  return { from: addDays(to, -(len - 1)), to };
+/**
+ * 环比的对照组：**上一周期的同一相位**，不是紧挨着的等长窗口。
+ *
+ * 旧实现拿 cur 前面的等长区间当 prev。周三打开时 cur = 周一–周三，prev 就成了
+ * 上周五–上周日 —— 拿这周的训练日去比上周的周末。后果是一个作息完全没变的人，
+ * 环比数字随「今天是周几」剧烈震荡，红色下降箭头全是噪声。而环比存在的唯一理由，
+ * 就是回答「我最近是不是在退步」——它必须只对行为的变化有反应。
+ *
+ * 所以对照的是「上周同一天为止的我」：week-to-date 比 上周 week-to-date。
+ * 末尾要 clamp：3/31 往前推 30 天落在 2 月，会溢出到 3 月去，夹回上月最后一天。
+ */
+export function prevRangeOf(seg: Segment, today: string): Range {
+  // 「全部」没有上一周期可比。给一个空区间（from > to），让 inRange 自然筛空、pct 归 null。
+  if (seg === 'all') return { from: EPOCH, to: addDays(EPOCH, -1) };
+
+  const cur = rangeOf(seg, today);
+  const from =
+    seg === 'week'
+      ? addDays(cur.from, -7)
+      : seg === 'month'
+        ? `${addDays(cur.from, -1).slice(0, 7)}-01`
+        : `${Number(today.slice(0, 4)) - 1}-01-01`;
+
+  const lastOfPrev = addDays(cur.from, -1);
+  const samePhase = addDays(from, daysBetween(cur.from, cur.to));
+  return { from, to: samePhase < lastOfPrev ? samePhase : lastOfPrev };
 }
 
 export function daysBetween(a: string, b: string): number {
@@ -184,20 +205,37 @@ export function compare(
   dates: string[],
   cur: Range,
   prev: Range,
-): { days: Delta; sets: Delta; volumeKg: Delta } {
+): { days: Delta; sets: Delta; reps: Delta; volumeKg: Delta } {
   const a = totals(inRange(items, cur.from, cur.to), dates.filter((d) => d >= cur.from && d <= cur.to));
   const b = totals(inRange(items, prev.from, prev.to), dates.filter((d) => d >= prev.from && d <= prev.to));
   return {
     days: { cur: a.days, prev: b.days, pct: pct(a.days, b.days) },
     sets: { cur: a.sets, prev: b.sets, pct: pct(a.sets, b.sets) },
+    // reps 是纯自重训练者唯一有意义的负荷维度（他们的 volumeKg 恒为 0）。
+    // totals() 一直在算，compare() 之前却没往外传。
+    reps: { cur: a.reps, prev: b.reps, pct: pct(a.reps, b.reps) },
     volumeKg: { cur: a.volumeKg, prev: b.volumeKg, pct: pct(a.volumeKg, b.volumeKg) },
   };
 }
 
-/** Epley 估算 1RM。重量或次数缺失/非正 → 0（绝不返回 NaN，NaN 进 Chart.js 会画出断线） */
+/** Epley 公式成立的次数上限。超出不外推——见 estimate1RM。 */
+export const EPLEY_MAX_REPS = 12;
+
+/**
+ * Epley 估算 1RM：w × (1 + reps/30)。重量或次数缺失/非正 → 0
+ * （绝不返回 NaN，NaN 进 Chart.js 会画出断线）。
+ *
+ * **高次数区间封顶，不外推。** Epley 只在 ≤12 次时站得住。放任外推，60kg×30 会推出
+ * 120kg，直接顶掉这个人真实做到的 100kg×1（e1RM 103.3）——PR 榜的头名成了一组耐力
+ * 训练，而榜单本该回答「我最强的一次是哪次」。
+ *
+ * 为什么是封顶而不是把高次数组判 0 剔除：hasWeightData / topExerciseIds / e1rmSeries
+ * 共用「有重量」这一个口径，一旦出现「有重量但 e1RM = 0」的组，就会重新长出
+ * 「被选成主角却画不出点」的空图。封顶也是保守方向——宁可低估，绝不让假 PR 骑在真 PR 头上。
+ */
 export function estimate1RM(weight: number, reps: number): number {
   if (!(weight > 0) || !(reps > 0)) return 0;
-  return weight * (1 + reps / 30);
+  return weight * (1 + Math.min(reps, EPLEY_MAX_REPS) / 30);
 }
 
 export interface PrRow {
