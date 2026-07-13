@@ -13,6 +13,7 @@
   --color-line: rgba(255, 255, 255, 0.07);
 
   --font-display: 'Anton', 'Arial Narrow', 'Helvetica Neue Condensed', system-ui, sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
 }
 
 /* Anton 数字子集，base64 内联。
@@ -36,7 +37,7 @@ html,
 body {
   background: var(--color-bg);
   color: var(--color-ink);
-  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  font-family: var(--font-body);
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;

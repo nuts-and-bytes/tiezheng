@@ -11,6 +11,7 @@ import {
   type ExMap,
   type LoadItem,
 } from './stats';
+import { FONT, THEME } from './theme';
 import type { BodyPart } from './types';
 
 /**
@@ -54,21 +55,19 @@ const CW = POSTER_W - PAD_X * 2; // 318
 const X0 = PAD_X;
 const X1 = POSTER_W - PAD_X;
 
-/* ── 颜色（= theme.css 的 token，Canvas 读不到 CSS 变量，只能同步一份）──── */
+/* ── 颜色 ─────────────────────────────────────────────────────────────── */
 
-const BG = '#0A0A0B';
-const INK = '#F2F0EB';
-const MUTE = '#8B8B85';
-const IRON = '#FF5C1F';
-const AMBER = '#FFB340';
-const LINE = 'rgba(255,255,255,.07)';
+// Canvas 读不到 CSS 变量，但也不必手抄：src/lib/theme.ts 是 token 的 JS 镜像，
+// 由 theme.test.ts 逐字钉在 theme.css 上。
+const { bg: BG, ink: INK, mute: MUTE, iron: IRON, amber: AMBER, line: LINE } = THEME;
+/** 轨道底色只有海报用（比 --color-line 再退半档），不是 token，别往 theme.css 里塞。 */
 const TRACK = 'rgba(255,255,255,.05)';
 
 /* ── 字体 ─────────────────────────────────────────────────────────────── */
 
 /** 只给纯数字用。Anton 没有中文字形，写中文会出豆腐块。 */
-const DISPLAY = "'Anton', 'Arial Narrow', 'Helvetica Neue', sans-serif";
-const UI = "-apple-system, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif";
+const DISPLAY = FONT.display;
+const UI = FONT.body;
 
 const display = (size: number) => `${size}px ${DISPLAY}`;
 const ui = (size: number, weight = 400) => `${weight} ${size}px ${UI}`;

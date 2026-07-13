@@ -5,6 +5,7 @@ import { PartIcon } from '../../components/PartIcon';
 import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { monthGrid, shiftMonth, todayStr } from '../../lib/dates';
 import { EMPTY_HEAT, calendarHeatColor } from '../../lib/heat';
+import { THEME } from '../../lib/theme';
 import { dailyPartLoad, longestStreak, percentile } from '../../lib/stats';
 import type { BodyPart } from '../../lib/types';
 import { getExercisesByIds } from '../../repos/exerciseRepo';
@@ -31,12 +32,12 @@ const CN_MONTHS = [
 const ON_HEAT_SHADOW = 'drop-shadow(0 1px 1.5px rgba(0,0,0,.55))';
 
 /**
- * 日期数字的四档颜色。写成 rgba 常量而不是 Tailwind 类：它要按「练没练 / 是不是本月」
- * 逐格切换，而 --ink 压在热力块上必须是确定的值，不能靠类名叠加去猜。
+ * 日期数字的三档颜色。写成 style 而不是 Tailwind 类：它要按「练没练 / 是不是今天」
+ * 逐格切换，而压在热力块上的字必须是确定的值，不能靠类名叠加去猜。
  */
-const DAY_INK = 'rgba(242, 240, 235, 1)'; // --ink
-const DAY_MUTE = 'rgba(139, 139, 133, 1)'; // --mute
-const DAY_IRON = '#FF5C1F'; // 今天且没练：空格子上唯一的热源
+const DAY_INK = THEME.ink;
+const DAY_MUTE = THEME.mute;
+const DAY_IRON = THEME.iron; // 今天且没练：空格子上唯一的热源
 
 /** 溢出格的两档整格浓度。练过的那档要留够余量：0.7 × DAY_INK 的有效 alpha 仍有 0.7，读得出。 */
 const OVERFLOW_TRAINED = 0.7;

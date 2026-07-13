@@ -1,5 +1,6 @@
 import { bodyPartInfo } from '../data/bodyParts';
 import type { BodyPart } from './types';
+import { THEME } from './theme';
 
 /**
  * 热力色规则——日历格、年度热力图、海报 Canvas 三处共用的唯一真相源。
@@ -10,7 +11,7 @@ import type { BodyPart } from './types';
  */
 
 /** 未训练日的底色（= --color-card）。有它兜底，空白格才不是纯黑洞。 */
-export const EMPTY_HEAT = '#1A1A1D';
+export const EMPTY_HEAT = THEME.card;
 
 /** 最低不透明度：练了一组也必须一眼看得出与空白格的区别。 */
 export const HEAT_FLOOR = 0.3;

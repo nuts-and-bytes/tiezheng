@@ -43,7 +43,7 @@ describe('heatColor', () => {
   });
 
   it('EMPTY_HEAT 是未训练日的底色，与任何部位色都不同', () => {
-    expect(EMPTY_HEAT).toBe('#1A1A1D');
+    expect(EMPTY_HEAT).toBe('#1a1a1d'); // = --color-card
   });
 });
 

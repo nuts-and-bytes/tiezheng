@@ -9,6 +9,7 @@ import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { addDays, todayStr } from '../../lib/dates';
 import { EMPTY_HEAT, heatColor } from '../../lib/heat';
 import { vibrate } from '../../lib/platform';
+import { THEME } from '../../lib/theme';
 import {
   PROGRESSION_POINTS, compare, currentStreak, dailyMovingAverage, dailyPartBreakdown, hasWeightData,
   heatMonthLabels, heatWeekStarts, lastTrainedByBodyPart, longestStreak, percentile, prevRangeOf,
@@ -334,7 +335,7 @@ function Strength({
           datasets: [
             {
               data: series.map((s) => s.e1rm),
-              borderColor: '#FF5C1F',
+              borderColor: THEME.iron,
               backgroundColor: 'rgba(255,92,31,0.12)',
               borderWidth: 2.5,
               fill: true,
