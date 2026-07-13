@@ -159,7 +159,7 @@ export function PosterScreen() {
                       setPickedYm(m);
                     }}
                   >
-                    {chipLabel(m)}
+                    <ChipLabel ym={m} />
                   </Chip>
                 ))
               : years.map((y) => (
@@ -171,7 +171,7 @@ export function PosterScreen() {
                       setPickedYear(y);
                     }}
                   >
-                    {y}
+                    <span className="display">{y}</span>
                   </Chip>
                 ))}
           </div>
@@ -210,6 +210,10 @@ export function PosterScreen() {
   );
 }
 
+/**
+ * Anton（.display）只戴在数字上——单位、月份字交给正文字体，由调用方决定（见 ChipLabel）。
+ * Chip 整块套 display，「月」就会掉进后备字体：紧挨着一个压缩重体的数字，字宽字重基线全对不上。
+ */
 function Chip({
   on,
   onClick,
@@ -224,7 +228,7 @@ function Chip({
       type="button"
       aria-pressed={on}
       onClick={onClick}
-      className={`display shrink-0 rounded-lg px-3 py-1.5 text-[13px] whitespace-nowrap transition-colors ${
+      className={`shrink-0 rounded-lg px-3 py-1.5 text-[13px] whitespace-nowrap transition-colors ${
         on ? 'bg-iron/15 text-iron' : 'text-mute'
       }`}
     >
@@ -252,10 +256,19 @@ function EmptyState({ onStart, loading }: { onStart: () => void; loading: boolea
   );
 }
 
-/** '2026-07' → '7月'；往年的显示成 '2025.12' */
-function chipLabel(ym: string): string {
+/**
+ * '2026-07' → 7月；往年的显示成 2025.12。
+ * 数字走 Anton，「月」走正文字体——Anton 的内联子集里没有 CJK 字形。
+ */
+function ChipLabel({ ym }: { ym: string }) {
   const [y, m] = ym.split('-').map(Number);
-  return y === new Date().getFullYear() ? `${m}月` : `${y}.${m}`;
+  if (y !== new Date().getFullYear()) return <span className="display">{`${y}.${m}`}</span>;
+  return (
+    <>
+      <span className="display">{m}</span>
+      <span className="ml-0.5 text-[11px]">月</span>
+    </>
+  );
 }
 
 /** Anton 是内联的数字子集（font-display:block）。没就位就画会掉成后备字体，宽度全错。 */

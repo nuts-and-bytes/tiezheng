@@ -308,3 +308,25 @@ describe('隐私：note 绝不上海报', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Anton 是内联的**数字子集**——实测字形范围 U+0020–U+007E，95 个 ASCII，零 CJK。
+ * 把中文塞进 `.display`，那个字会掉进后备字体：紧挨着一个压缩重体的「7」，
+ * 冒出一个常规字重的「月」，字宽、字重、基线全对不上，视觉上直接裂开。
+ *
+ * 这不是一个 bug，是一条全站不变量：**`.display` 里只能有 ASCII。**
+ * 全站的写法本来就是「数字上 Anton，单位用正文字体」（`{n} 组`、`{kg} kg`），
+ * 海报页的月份 chip 是唯一一处违例。
+ */
+test('.display 元素里不许出现中文（Anton 没有 CJK 字形）', async () => {
+  await seed();
+  renderPoster();
+  await waitReady();
+
+  const cjk = /[一-鿿]/;
+  const offenders = [...document.querySelectorAll('.display')]
+    .map((el) => el.textContent ?? '')
+    .filter((t) => cjk.test(t));
+
+  expect(offenders).toEqual([]);
+});
