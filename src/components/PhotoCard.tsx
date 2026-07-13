@@ -39,14 +39,9 @@ export function PhotoCard({ date }: { date: string }) {
         <h2 className="text-[11px] tracking-[2px] text-mute uppercase">体型铁证</h2>
         <span className="text-[11px] text-mute">仅存本机</span>
       </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={onPick}
-      />
+      {/* 刻意不写 capture：那会强制拉起后置摄像头，把「从相册选」这个选项整个拿掉。
+          体型对比要拿三个月前的旧照片当基线，而且对镜自拍用的是前置。该由用户选。 */}
+      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={onPick} />
       {!url && (
         <button
           type="button"

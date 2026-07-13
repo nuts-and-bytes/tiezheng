@@ -132,3 +132,17 @@ test('一个数字都没填的组仍走「3 组」兜底', async () => {
   renderDay('2026-07-10');
   expect(await screen.findByText('3 组')).toBeInTheDocument();
 });
+
+test('编辑时输入超范围的重量：保存按钮禁用', async () => {
+  const user = userEvent.setup();
+  await addWorkoutItem('2026-07-10', 'p-bench', [{ weight: 60, reps: 10 }]);
+  renderDay('2026-07-10');
+
+  await user.click(await screen.findByText('编辑'));
+  const weight = await screen.findByPlaceholderText('重量kg');
+  await user.clear(weight);
+  await user.type(weight, '9999');
+
+  expect(screen.getByText('保存')).toBeDisabled();
+  expect(await screen.findByText(/0–1000/)).toBeInTheDocument();
+});

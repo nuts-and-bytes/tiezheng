@@ -8,7 +8,7 @@ import { Stamp } from '../../components/Stamp';
 import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { todayStr } from '../../lib/dates';
 import { vibrate } from '../../lib/platform';
-import { sanitizeSets } from '../../lib/validation';
+import { hasOutOfRange, sanitizeSets } from '../../lib/validation';
 import type { BodyPart, Exercise } from '../../lib/types';
 import { addCustomExercise, getExercisesByIds, listByPart, seedPresets } from '../../repos/exerciseRepo';
 import { commitDraft, listRecentExerciseIds } from '../../repos/workoutRepo';
@@ -295,7 +295,7 @@ function EditSets({
         </button>
         <button
           type="button"
-          disabled={items.length === 0 || submitting}
+          disabled={items.length === 0 || submitting || items.some((i) => hasOutOfRange(i.sets))}
           onClick={onFinish}
           className={`flex-[2] ${CTA}`}
         >

@@ -6,7 +6,7 @@ import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
 import { bodyPartInfo } from '../../data/bodyParts';
 import { setLabels } from '../../lib/setLabel';
-import { sanitizeSets } from '../../lib/validation';
+import { hasOutOfRange, sanitizeSets } from '../../lib/validation';
 import { getWeight } from '../../repos/weightRepo';
 import { getDayItems, removeWorkoutItem, updateItemSets, type DayItem } from '../../repos/workoutRepo';
 
@@ -111,11 +111,12 @@ function ItemRow({ item }: { item: DayItem }) {
           <div className="flex gap-2">
             <button
               type="button"
+              disabled={hasOutOfRange(sets)}
               onClick={async () => {
                 await updateItemSets(item.id, sanitizeSets(sets));
                 setEditing(false);
               }}
-              className="heat flex-[2] rounded-xl py-2.5 text-sm font-extrabold text-white shadow-[0_6px_20px_rgba(255,92,31,.3)] active:scale-[.98]"
+              className="heat flex-[2] rounded-xl py-2.5 text-sm font-extrabold text-white shadow-[0_6px_20px_rgba(255,92,31,.3)] disabled:opacity-30 disabled:shadow-none active:scale-[.98]"
             >
               保存
             </button>

@@ -182,3 +182,37 @@ test('选动作步骤内新建动作按钮同 tick 双击只产生 1 条记录',
     expect(customs).toHaveLength(1);
   });
 });
+
+/**
+ * 静默丢弃是最坏的失败模式：用户输了 20260710（日期串进重量栏），按下「完成打卡」，
+ * sanitizeSets 把 weight 剥掉，落库的是一组只有次数的记录 —— 而 app 从头到尾
+ * 没有告诉他任何事。他要在几天后翻日历时才发现那一栏是空的。
+ * 拦在保存之前，让他改对。
+ */
+test('超范围的重量：完成打卡按钮禁用，不许静默丢弃', async () => {
+  const user = userEvent.setup();
+  presetDraftAtStep2();
+  renderFlow();
+
+  const finish = await screen.findByText('完成打卡');
+  expect(finish).toBeEnabled();
+
+  await user.type(screen.getAllByPlaceholderText('重量kg')[0], '20260710');
+  expect(screen.getByText('完成打卡')).toBeDisabled();
+  expect(await screen.findByText(/0–1000/)).toBeInTheDocument();
+});
+
+/** 对抗式护栏：改回合法值后必须能救回来，不能一错就锁死 */
+test('把超范围的值改回合法后，完成打卡重新可用', async () => {
+  const user = userEvent.setup();
+  presetDraftAtStep2();
+  renderFlow();
+
+  const weight = (await screen.findAllByPlaceholderText('重量kg'))[0];
+  await user.type(weight, '9999');
+  expect(screen.getByText('完成打卡')).toBeDisabled();
+
+  await user.clear(weight);
+  await user.type(weight, '560'); // 腿举机，真实值
+  expect(screen.getByText('完成打卡')).toBeEnabled();
+});
