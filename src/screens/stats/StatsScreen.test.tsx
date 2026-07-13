@@ -66,6 +66,14 @@ describe('零数据（新用户）', () => {
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
     expect(pageText()).not.toMatch(/NaN|Infinity/);
   });
+
+  // 空状态的钢印是插图：它说的话（「铁证」）旁边的文案已经说了，读屏念第二遍只是噪声
+  test('空状态的钢印是装饰，不进无障碍树', async () => {
+    renderStats();
+
+    await screen.findByText(/还没有.*铁证|还没有任何记录/);
+    expect(screen.queryByRole('img', { name: '铁证' })).toBeNull();
+  });
 });
 
 describe('顶部时间范围 + 环比', () => {
@@ -448,6 +456,19 @@ describe('海报入口', () => {
 
     expect(await screen.findByText('导出训练海报')).toBeInTheDocument();
     expect(screen.queryByText('生成训练海报')).not.toBeInTheDocument();
+  });
+
+  /**
+   * 链接的无障碍名由子内容拼出来。钢印带着 aria-label="铁证" 站在链接第一位，
+   * 读屏用户听到的第一个词就是品牌名——而他要判断的是「这个链接干什么」。
+   * 品牌感是给眼睛的，不该占用耳朵的第一秒。钢印在这里是装饰，让它闭嘴。
+   */
+  test('入口的无障碍名说的是它干什么，不是念一遍品牌名', async () => {
+    await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    expect(await screen.findByRole('link', { name: /导出训练海报/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /铁证/ })).toBeNull();
   });
 });
 

@@ -61,7 +61,8 @@ export function StatsScreen() {
       <div className="px-5 pt-6">
         <h1 className="text-[22px] font-extrabold">数据</h1>
         <div className="flex flex-col items-center gap-4 pt-24 text-center">
-          <Stamp size={64} />
+          {/* 插图。它要说的话，底下那句文案已经说了——读屏没必要念第二遍 */}
+          <Stamp size={64} decorative />
           <p className="text-sm text-mute">
             还没有一条铁证。
             <br />
@@ -139,7 +140,10 @@ export function StatsScreen() {
         to="/poster"
         className="mt-6 flex items-center gap-3.5 rounded-[18px] border border-iron/35 bg-gradient-to-br from-iron/12 to-amber/5 px-4 py-4"
       >
-        <Stamp size={44} />
+        {/* 链接的无障碍名由子内容拼出来。钢印带着 aria-label="铁证" 站在第一位，
+            读屏用户听到的第一个词就是品牌名——而他要判断的是「这链接干什么」。
+            品牌感是给眼睛的，不该占用耳朵的第一秒。 */}
+        <Stamp size={44} decorative />
         <span className="min-w-0">
           <b className="block text-[15px]">导出训练海报</b>
           <span className="mt-0.5 block text-xs text-mute">把汗水盖上钢印，保存到相册</span>
