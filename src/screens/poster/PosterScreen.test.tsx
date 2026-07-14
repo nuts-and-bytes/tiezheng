@@ -68,6 +68,8 @@ function fakeCtx(): CanvasRenderingContext2D {
 
 let toBlob: ReturnType<typeof vi.fn>;
 let anchorClick: ReturnType<typeof vi.fn>;
+/** 下载那一刻 <a> 在不在 DOM 里 —— 游离节点的 click() 在 iOS Safari / PWA 里会被静默丢弃 */
+let anchorAttachedAtClick: boolean[];
 
 beforeEach(async () => {
   await resetDb();
@@ -85,7 +87,13 @@ beforeEach(async () => {
   URL.revokeObjectURL = vi.fn();
 
   anchorClick = vi.fn();
-  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(anchorClick);
+  anchorAttachedAtClick = [];
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+    this: HTMLAnchorElement,
+  ) {
+    anchorAttachedAtClick.push(document.body.contains(this));
+    anchorClick();
+  });
 });
 
 afterEach(() => {
@@ -259,6 +267,9 @@ describe('导出', () => {
 
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
     expect(anchorClick).toHaveBeenCalledTimes(1);
+    // 降级路径是「存进相册」这句承诺在老 iOS / 微信内嵌里的唯一兑现方式：
+    // <a> 必须已经挂在 DOM 上，否则 click() 石沉大海，用户点了没反应也没报错
+    expect(anchorAttachedAtClick).toEqual([true]);
   });
 
   test('年度海报的文件名是年份', async () => {

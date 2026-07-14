@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { todayStr } from '../../lib/dates';
+import { downloadBlob } from '../../lib/download';
 import { canShareFiles, shareFiles, vibrate } from '../../lib/platform';
 import {
   POSTER_SCALE,
@@ -283,12 +284,7 @@ async function ensureFonts(): Promise<void> {
   }
 }
 
-/** 不支持 Web Share 的浏览器（桌面 Chrome / 老 Android）降级成下载 */
+/** 不支持 Web Share 的浏览器（桌面 Chrome / 老 Android / 微信内嵌）降级成下载 */
 function download(file: File): void {
-  const url = URL.createObjectURL(file);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = file.name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadBlob(file, file.name);
 }

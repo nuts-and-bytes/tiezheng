@@ -1,4 +1,5 @@
 import { db } from './db';
+import { downloadBlob } from './download';
 
 export function csvEscape(value: string): string {
   // OWASP CSV Injection：前导 = + - @ 会被 Excel/WPS 当公式执行，加单引号中和（先前缀再走引号转义）
@@ -102,15 +103,5 @@ export async function buildJsonExport(): Promise<string> {
 }
 
 export function downloadText(filename: string, text: string, mime: string): void {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  // iOS Safari（尤其 PWA 独立模式）：<a> 必须挂载到 DOM 才能可靠触发下载/分享面板；
-  // revokeObjectURL 若与 click() 同步执行，部分机型会在下载真正发起前吊销 blob URL。
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadBlob(new Blob([text], { type: mime }), filename);
 }

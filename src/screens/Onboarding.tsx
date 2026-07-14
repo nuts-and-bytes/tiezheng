@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Stamp } from '../components/Stamp';
 import { PartIcon } from '../components/PartIcon';
 import { BODY_PARTS } from '../data/bodyParts';
-import { vibrate } from '../lib/platform';
+import { canShareFiles, vibrate } from '../lib/platform';
 import { saveProfile } from '../repos/profileRepo';
 
 const GOALS = [3, 4, 5];
@@ -203,16 +203,23 @@ function HowPanel() {
 
 /* ── 屏 3：海报（用户点名要的分享钩子）─────────────────────── */
 function PosterPanel() {
+  // 能不能进相册取决于浏览器有没有 Web Share files：桌面 Chrome / 老 iOS / 微信内嵌只能下载 PNG。
+  // 引导页的措辞必须和 PosterScreen 的按钮两态同源，否则第一屏就在许一个当场兑现不了的愿。
+  const shareable = canShareFiles([new File([], 'ironproof.png', { type: 'image/png' })]);
+  const now = new Date();
+  const sampleYm = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}`;
+
   return (
     <div>
       <h2 className="text-[22px] leading-[1.4] font-bold">月底，领你的海报</h2>
       <p className="mt-3 text-[13px] leading-[1.8] text-mute">
-        月度 / 年度训练数据一键生成钢印海报，存进相册，发不发朋友圈你说了算。
+        月度 / 年度训练数据一键生成钢印海报，{shareable ? '存进相册' : '下载到本地'}
+        ，发不发朋友圈你说了算。
       </p>
 
       {/* 海报示意：这是「可以浮起来」的东西 —— 它是一个实物，不是一段信息 */}
       <div className="mx-auto mt-7 w-[152px] rounded-xl border border-iron/25 bg-raised px-3.5 py-4 text-center shadow-[0_10px_34px_rgba(255,92,31,.16)]">
-        <p className="display text-[8px] tracking-[2px] text-mute">IRONPROOF · 2026.07</p>
+        <p className="display text-[8px] tracking-[2px] text-mute">IRONPROOF · {sampleYm}</p>
         <p className="display heat-text mt-1.5 text-[42px] leading-none">12</p>
         <p className="mt-1 text-[8px] text-mute">天 · 打卡</p>
         <div className="mt-3 flex justify-between text-[8px] text-mute">
