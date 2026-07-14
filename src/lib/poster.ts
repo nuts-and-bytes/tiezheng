@@ -555,6 +555,38 @@ export function footerLayout(measure: Measure, h: number): FooterLayout {
   };
 }
 
+/* ── PR 行 ───────────────────────────────────────────────────────────── */
+
+const PR_SIZE = 11;
+/** 名字与成绩之间的最小空隙。没有它，两串字会「贴脸」而不算重叠——技术上不叠，读起来是一坨。 */
+const PR_GUTTER = 8;
+
+export interface PrRowLayout {
+  name: { text: string; x: number; right: number };
+  score: { text: string; x: number; left: number; right: number };
+}
+
+/**
+ * PR 行是「动作名 …… 成绩」两端对齐，而动作名的长度是**用户输入**——它来自自建动作库，
+ * 不是设计师能预设的常量。prBlock 原本直接 fillText(name, X0) + fillText(成绩, X1, right)，
+ * 谁都没量过宽：「史密斯机上斜哑铃飞鸟（改良版）」画出去就直接压在 120kg × 5 上面。
+ *
+ * 让位是单向的：**成绩一个字都不能截**（PR 的载荷就是几公斤几次，截了这行就没意义了），
+ * 名字是标识，长了可以省略号。所以先量成绩，剩下的宽度才轮到名字。
+ */
+export function prRowLayout(measure: Measure, pr: PosterPr): PrRowLayout {
+  const scoreText = `${pr.weight}kg × ${pr.reps}`;
+  const scoreW = measure(scoreText, ui(PR_SIZE, 600));
+  const name = fitLine(measure, pr.name, X1 - scoreW - PR_GUTTER - X0, [[PR_SIZE, 0]], (s) =>
+    ui(s),
+  );
+
+  return {
+    name: { text: name.text, x: X0, right: X0 + name.width },
+    score: { text: scoreText, x: X1, left: X1 - scoreW, right: X1 },
+  };
+}
+
 /* ── Canvas 原语 ──────────────────────────────────────────────────────── */
 
 /** letterSpacing 是 Chrome 99+ / Safari 17.4+ 才有的；老设备上退化成不带字距，不炸。 */
@@ -863,11 +895,17 @@ function yearGridBlock(ctx: CanvasRenderingContext2D, d: YearlyPosterData, y: nu
 
 function prBlock(ctx: CanvasRenderingContext2D, prs: PosterPr[], y: number): number {
   if (prs.length === 0) return y;
+  const measure = measureWith(ctx);
   let cur = sectionLabel(ctx, '年度突破 PR', y);
   for (const p of prs) {
-    text(ctx, p.name, X0, cur + ROW_H / 2, { font: ui(11), fill: MUTE, baseline: 'middle' });
-    text(ctx, `${p.weight}kg × ${p.reps}`, X1, cur + ROW_H / 2, {
-      font: ui(11, 600),
+    const l = prRowLayout(measure, p);
+    text(ctx, l.name.text, l.name.x, cur + ROW_H / 2, {
+      font: ui(PR_SIZE),
+      fill: MUTE,
+      baseline: 'middle',
+    });
+    text(ctx, l.score.text, l.score.x, cur + ROW_H / 2, {
+      font: ui(PR_SIZE, 600),
       fill: INK,
       align: 'right',
       baseline: 'middle',

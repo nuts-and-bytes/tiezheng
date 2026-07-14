@@ -21,6 +21,8 @@ import {
   type MonthlyPosterData,
   type PosterInput,
   type YearlyPosterData,
+  prRowLayout,
+  type PosterPr,
 } from './poster';
 import { BODY_PARTS } from '../data/bodyParts';
 import { EMPTY_HEAT, heatColor } from './heat';
@@ -354,6 +356,85 @@ describe('footerLayout', () => {
     const f = footerLayout(fakeMeasure, 951);
     expect(f.tagline.text).toBe('你练过的，都有铁证。');
     expect(f.meta.text).toBe('TIEZHENG.PAGES.DEV · 本地生成 · 照片不上传');
+  });
+});
+
+/* ── B3：PR 行的动作名不许压到成绩上 ─────────────────────────────────── */
+describe('prRowLayout', () => {
+  const X0 = 36; // PAD_X
+  const X1 = 354; // POSTER_W - PAD_X
+
+  /**
+   * 海报的 PR 行是「动作名 …… 成绩」两端对齐。动作名来自用户自建的动作库——
+   * 它的长度是**用户输入**，不是设计师能预设的常量。而 prBlock 一直是直接
+   * fillText(p.name, X0) + fillText(成绩, X1, align:right)：谁都没量过宽。
+   * 「史密斯机上斜哑铃飞鸟（改良版）」这种名字画出去，就直接叠在 120kg × 5 上面。
+   *
+   * 成绩是这一行的载荷（PR 是几公斤几次），它一个字都不能少；名字是标识，
+   * 长了可以截。所以让位方向是单向的：截名字，永不截成绩。
+   *
+   * 「多长才咬到」：11px 下一个汉字约 11px，`120kg × 5` 约 54px，X0..X1 是 318px，
+   * 留出 8px 空隙后名字只剩 ~256px —— **23 个汉字**。而 addExercise 只 trim() 不设上限
+   * （src/repos/exerciseRepo.ts:48），所以这不是一个够不着的边界，是个没人拦的输入。
+   */
+  const LONG: PosterPr = {
+    name: '史密斯机上斜哑铃飞鸟（改良版）教练特训专用超长动作名称',
+    weight: 120,
+    reps: 5,
+    e1rm: 140,
+  };
+  const SHORT: PosterPr = { name: '卧推', weight: 120, reps: 5, e1rm: 140 };
+
+  test('短名字原样画出，成绩右对齐贴着右边距', () => {
+    const l = prRowLayout(fakeMeasure, SHORT);
+    expect(l.name.text).toBe('卧推');
+    expect(l.name.x).toBe(X0);
+    expect(l.score.text).toBe('120kg × 5');
+    expect(l.score.right).toBe(X1);
+  });
+
+  test('长名字被截断，而不是压到成绩上 —— 两个包围盒不相交', () => {
+    const l = prRowLayout(fakeMeasure, LONG);
+    expect(l.name.right).toBeLessThanOrEqual(l.score.left);
+    expect(l.score.left - l.name.right).toBeGreaterThanOrEqual(8); // 中间得有呼吸
+    expect(l.name.text).not.toBe(LONG.name);
+    expect(l.name.text.endsWith('…')).toBe(true);
+  });
+
+  test('成绩永不被截：它是这行的载荷，名字才是可牺牲的那个', () => {
+    const l = prRowLayout(fakeMeasure, LONG);
+    expect(l.score.text).toBe('120kg × 5');
+    expect(l.name.x).toBeGreaterThanOrEqual(X0);
+    expect(l.score.right).toBeLessThanOrEqual(X1);
+  });
+
+  test('正常长度的名字不许被误伤：截断只在真放不下时发生', () => {
+    const l = prRowLayout(fakeMeasure, { ...LONG, name: '史密斯机上斜卧推' });
+    expect(l.name.text).toBe('史密斯机上斜卧推');
+  });
+
+  /** 名字长度是用户输入 —— 契约不该指望它恰好够短（titleLayout 判例） */
+  test('任意长度的名字都不越界、不重叠', () => {
+    for (const n of [1, 2, 5, 12, 30, 80]) {
+      const l = prRowLayout(fakeMeasure, { ...LONG, name: '深'.repeat(n) });
+      expect(l.name.x).toBeGreaterThanOrEqual(X0);
+      expect(l.name.right).toBeLessThanOrEqual(l.score.left);
+      expect(l.score.right).toBeLessThanOrEqual(X1);
+    }
+  });
+
+  test('canvas：画出去的名字就是布局算出来的那个（截断版），不是原文', () => {
+    const d = buildYearly(2026, {
+      items: [item('2026-03-02', 'e-long', 3, 120, 5)],
+      dates: ['2026-03-02'],
+      exMap: new Map([['e-long', ex('e-long', LONG.name, 'chest')]]),
+    });
+    const r = recorder();
+    drawYearlyPoster(r.ctx, d);
+    const drawn = r.calls.filter((c) => c.fn === 'fillText').map((c) => String(c.args[0]));
+
+    expect(drawn).not.toContain(LONG.name);
+    expect(drawn).toContain(prRowLayout(fakeMeasure, { ...LONG, e1rm: 0 }).name.text);
   });
 });
 
