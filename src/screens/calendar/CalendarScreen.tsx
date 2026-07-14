@@ -4,7 +4,13 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { PartIcon } from '../../components/PartIcon';
 import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { monthGrid, shiftMonth, todayStr } from '../../lib/dates';
-import { calendarHeatColor, cellParts, heatBackground } from '../../lib/heat';
+import {
+  EMPTY_HEAT,
+  OVERFLOW_HEAT_FADE,
+  calendarHeatColor,
+  cellParts,
+  heatBackground,
+} from '../../lib/heat';
 import { THEME } from '../../lib/theme';
 import { dailyPartLoad, longestStreak, percentile } from '../../lib/stats';
 import type { BodyPart } from '../../lib/types';
@@ -39,9 +45,15 @@ const DAY_INK = THEME.ink;
 const DAY_MUTE = THEME.mute;
 const DAY_IRON = THEME.iron; // 今天且没练：空格子上唯一的热源
 
-/** 溢出格的两档整格浓度。练过的那档要留够余量：0.7 × DAY_INK 的有效 alpha 仍有 0.7，读得出。 */
-const OVERFLOW_TRAINED = 0.7;
-const OVERFLOW_EMPTY = 0.35;
+/**
+ * 溢出格（上/下月）不再用整格 opacity 弱化。
+ *
+ * opacity 压的是整格：底色淡下去的同时，要读的日期数字也跟着淡。实测白字掉到 3.2:1，
+ * 没练的那档（0.35）更是把 mute 字压到 1.6:1，等于隐形——「不是本月」的信号强到
+ * 把内容本身也吞了。层次和可读性被绑在同一个旋钮上，往哪拧都是错。
+ *
+ * 现在两件事各归各：练过的格子只淡**底色**（heat.ts 的 OVERFLOW_HEAT_FADE），
+ * 没练的格子干脆不画底块（融进页面底色），字一律保持全亮。
 
 /**
  * 热力块的浓淡被压到 0.6 封顶后色相会变弱——底部这条实色部位色把「练了哪个部位」钉回来。
@@ -196,8 +208,16 @@ export function CalendarScreen() {
           // 溢出格要同时「读得出」和「看得出不是本月」，二元开关做不到——只能分两档浓度：
           //   本月 1 ／ 溢出但练过 .7（明显退后，色块和数字都还在）／ 溢出且空 .35（那格没东西要读）
           // 数字一律用满 DAY_INK：整格已经淡了，再叠一层 .72 会把有效 alpha 压到 0.5 以下。
-          const cellOpacity = inMonth ? 1 : day ? OVERFLOW_TRAINED : OVERFLOW_EMPTY;
           const numColor = day ? DAY_INK : isToday ? DAY_IRON : DAY_MUTE;
+          const cellBg = day
+            ? heatBackground(
+                shown.map((p) =>
+                  calendarHeatColor(p, day.sets, data!.maxSets, inMonth ? 1 : OVERFLOW_HEAT_FADE),
+                ),
+              )
+            : inMonth
+              ? EMPTY_HEAT
+              : THEME.bg; // 没练 + 不是本月：不画块，只留一个读得出的日期
 
           return (
             <Link
@@ -212,12 +232,7 @@ export function CalendarScreen() {
                   ? `${label} ${day.parts.map((p) => bodyPartInfo(p).name).join(' ')} ${day.sets}组`
                   : `${label} 未训练`
               }
-              style={{
-                background: heatBackground(
-                  shown.map((p) => calendarHeatColor(p, day!.sets, data!.maxSets)),
-                ),
-                opacity: cellOpacity,
-              }}
+              style={{ background: cellBg }}
               className={`relative flex aspect-square flex-col items-center justify-center gap-[3px] overflow-hidden rounded-[11px] text-[11px] active:scale-95 ${
                 isToday ? 'ring-1 ring-iron' : ''
               }`}

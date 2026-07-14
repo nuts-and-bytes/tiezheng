@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { BODY_PARTS } from '../data/bodyParts';
+import { AA_TEXT, compositeOver, contrastRatio, parseColor } from './contrast';
+import { THEME } from './theme';
+import type { BodyPart } from './types';
 import {
   CALENDAR_ALPHA_CEIL,
   CELL_PARTS_MAX,
@@ -9,6 +13,7 @@ import {
   heatAlpha,
   heatBackground,
   heatColor,
+  OVERFLOW_HEAT_FADE,
 } from './heat';
 
 describe('heatAlpha', () => {
@@ -138,5 +143,48 @@ describe('heatBackground：把 1~2 个色变成一块 CSS 背景', () => {
     const bg = heatBackground(['MAIN', 'SECOND']);
     expect(bg.indexOf('MAIN')).toBeLessThan(bg.indexOf('SECOND'));
     expect(bg).toContain('135deg');
+  });
+});
+
+/**
+ * 常驻守门：日历格上的日期数字必须读得出。
+ *
+ * 这条测试的存在是因为「浓度上限」曾经是个拍脑袋的常数（0.6），配的注释还写反了——
+ * 说「饱和红/紫会把白字吃掉」，实测红/紫是 7.0:1 绰绰有余，真正跌破 AA 的是最亮的
+ * 黄和青（3.87 / 3.95）。肉眼在暗底 + 半透明色上是个合格的异常探测器、不合格的因果分析器。
+ *
+ * 所以断言的是**渲染出来的那个颜色**对 ink 的实测比值，而不是 alpha 的账面值——
+ * 后者是可读性的代理指标，代理指标正是上一版栽跟头的地方。
+ * 有了它，将来任何人改部位色、加部位，都会被当场兜住。
+ */
+describe('日历格的白字必须读得出（WCAG AA 4.5:1）', () => {
+  const BG = parseColor(THEME.bg).rgb;
+  const INK = parseColor(THEME.ink).rgb;
+
+  /** 渲染成什么色，就量什么色——包括最浓的那一格（sets = maxSets） */
+  function ratioAt(part: BodyPart, fade: number): number {
+    const { rgb, alpha } = parseColor(calendarHeatColor(part, 20, 20, fade));
+    return contrastRatio(compositeOver(rgb, BG, alpha), INK);
+  }
+
+  it.each(BODY_PARTS.map((p) => [p.name, p.id] as const))(
+    '%s：最深的那一格上，日期数字仍有 4.5:1',
+    (_name, id) => {
+      expect(ratioAt(id, 1)).toBeGreaterThanOrEqual(AA_TEXT);
+    },
+  );
+
+  it.each(BODY_PARTS.map((p) => [p.name, p.id] as const))(
+    '%s：溢出月的格子淡了底色，字反而更清楚',
+    (_name, id) => {
+      expect(ratioAt(id, OVERFLOW_HEAT_FADE)).toBeGreaterThanOrEqual(ratioAt(id, 1));
+    },
+  );
+
+  it('弱化溢出格靠的是底色浓度，不是整格 opacity —— 后者会把字一起稀释掉', () => {
+    const full = parseColor(calendarHeatColor('chest', 20, 20, 1)).alpha;
+    const faded = parseColor(calendarHeatColor('chest', 20, 20, OVERFLOW_HEAT_FADE)).alpha;
+    expect(faded).toBeLessThan(full * 0.8); // 看得出不是本月
+    expect(faded).toBeGreaterThan(0); // 但色块还在，练没练仍一眼可辨
   });
 });

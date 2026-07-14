@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { BODY_PARTS } from '../data/bodyParts';
 import { FONT, THEME } from './theme';
 
 /**
@@ -77,10 +78,9 @@ const walk = (dir: string): string[] =>
  * - theme.ts：token 的出处，本来就该写字面量。
  * - *.test.ts(x)：测试写字面量正是它的职责。改成 THEME.x 会让断言变成同义反复——
  *   用被测代码的常量去验证被测代码，等于什么都没测。
- * - data/bodyParts.ts：部位色是另一个独立的真相源，不跟随 THEME。肩部 #FFB340 与
- *   THEME.amber 撞了同一个 hex，但那是巧合不是抄本：改 amber 时肩部不该跟着变。
- *   （撞色本身是个设计问题——琥珀是「警示 / PR」语义，肩是部位语义，同屏同色会混淆。
- *   那是配色决策，不是 token 卫生问题，另案。）
+ * - data/bodyParts.ts：部位色是另一个独立的真相源，不跟随 THEME。它写自己的 hex 是本分，
+ *   不是抄本——改 THEME.amber 时肩色不该跟着变。豁免的代价是撞色会从这条测试底下溜过去
+ *   （肩曾经就是 #FFB340，跟 THEME.amber 一字不差），所以下面单独给它一条守门。
  */
 const isExempt = (file: string) =>
   /\.test\.tsx?$/.test(file) || file.endsWith('lib/theme.ts') || file.endsWith('data/bodyParts.ts');
@@ -132,4 +132,28 @@ test('图表的网格色只准来自 charts.tsx —— 别处不许写 grid.colo
   }
 
   expect(offenders).toEqual([]);
+});
+
+/**
+ * 部位色不许和 THEME 的语义色撞同一个 hex。
+ *
+ * 这不是 token 卫生，是**语义**：琥珀在这个 app 里说的是「警示 / PR」，肩说的是身体部位。
+ * 同屏同色，读者只能靠位置猜哪个是哪个——而位置正是最不该承担语义的通道。
+ * 肩曾经就是 #FFB340，跟 THEME.amber 一字不差；因为 bodyParts.ts 在上面那条测试的豁免名单里，
+ * 它整整躲过了那条守门。豁免开出去了，就得在这里把口子补回来。
+ *
+ * 为什么不干脆让部位色去引 THEME：因为它们本就不该联动。这条测试要的是「别撞」，不是「同源」。
+ */
+test('部位色不许撞 THEME 的语义色 —— 同一个 hex 就是两种含义抢一个信号', () => {
+  const themeHex = new Map(
+    Object.entries(THEME)
+      .filter(([, v]) => v.startsWith('#'))
+      .map(([name, v]) => [v.toLowerCase(), name]),
+  );
+
+  const collisions = BODY_PARTS.filter((p) => themeHex.has(p.color.toLowerCase())).map(
+    (p) => `${p.name}(${p.color}) 撞了 THEME.${themeHex.get(p.color.toLowerCase())}`,
+  );
+
+  expect(collisions).toEqual([]);
 });

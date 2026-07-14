@@ -8,7 +8,7 @@ export interface BodyPartInfo {
 
 export const BODY_PARTS: BodyPartInfo[] = [
   { id: 'chest', name: '胸', color: '#E8483F' },
-  { id: 'shoulder', name: '肩', color: '#FFB340' },
+  { id: 'shoulder', name: '肩', color: '#D9A521' },
   { id: 'back', name: '背', color: '#4F8EF7' },
   { id: 'leg', name: '腿', color: '#A06BFF' },
   { id: 'arm', name: '手臂', color: '#2FD6C3' },

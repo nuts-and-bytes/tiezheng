@@ -7,7 +7,14 @@ import { savePhoto } from '../../repos/photoRepo';
 import { addWorkoutItem } from '../../repos/workoutRepo';
 import { resetDb } from '../../test/dbTestUtils';
 import { monthGrid, shiftMonth, todayStr } from '../../lib/dates';
-import { CALENDAR_ALPHA_CEIL, EMPTY_HEAT, calendarHeatColor } from '../../lib/heat';
+import { AA_TEXT, compositeOver, contrastRatio, parseColor } from '../../lib/contrast';
+import {
+  CALENDAR_ALPHA_CEIL,
+  EMPTY_HEAT,
+  OVERFLOW_HEAT_FADE,
+  calendarHeatColor,
+} from '../../lib/heat';
+import { THEME } from '../../lib/theme';
 import { percentile } from '../../lib/stats';
 import { CalendarScreen } from './CalendarScreen';
 
@@ -66,6 +73,11 @@ const GRID = monthGrid(YM);
 /** 溢出格：1 号是周一时没有上月溢出，尾部溢出（42 格窗口最多覆盖 6+31=37 天）则必然存在。 */
 const OVERFLOW = GRID.find((x) => x < `${YM}-01`) ?? GRID[41];
 const OVERFLOW_EMPTY = GRID.filter((x) => !x.startsWith(YM) && x !== OVERFLOW).at(-1)!;
+/** seedMonth 练过的日子。本月的空白参照格要算出来，不能写死——写死的那天迟早会撞上今天。 */
+const SEEDED = new Set(['03', '04', '05', '06', '09', '10'].map(d));
+const IN_MONTH_EMPTY = GRID.find(
+  (x) => x.startsWith(YM) && !SEEDED.has(x) && x !== todayStr(),
+)!;
 
 function setsOf(n: number) {
   return Array.from({ length: n }, () => ({ weight: 60, reps: 8 }));
@@ -270,12 +282,17 @@ test('零态只认"当前浏览的月"：翻回有数据的本月，数字回来
 
 /**
  * 溢出格（网格里属于上/下月的那些天）要同时满足两件事，它们互相拉扯：
- *   1. 练过就得读得出——有色块却配暗灰数字是自相矛盾；
+ *   1. 练过就得读得出——有色块却读不出日期是自相矛盾；
  *   2. 又必须一眼看出「不是本月」——否则 6 周窗口里的月界就没了，
  *      而月界恰恰在最该看清的地方（练过的那天）消失。
- * 二元开关（压暗 or 不压暗）满足不了，只能是**两档浓度**。
- * 所以这里断言的是**最终落到眼睛里的**有效透明度 = 整格 opacity × 数字自身 alpha，
- * 而不是分别去锁那两个数——那样任何一个方向的修法都能把测试糊弄过去。
+ *
+ * 上一版把这两件事绑在**同一个旋钮**上：整格 opacity=0.7。opacity 压的是整格，
+ * 日期数字跟着底色一起被稀释，实测白字掉到 3.2:1（空白溢出格 opacity=0.35，1.6:1，
+ * 基本隐形）。当时的测试断言的是「有效 alpha = 整格 opacity × 数字 alpha ≥ 0.6」——
+ * 但 alpha 只是可读性的**代理指标**，而代理指标正是上一版栽跟头的地方：0.7 的账面值
+ * 看着很安全，落到眼睛里是 3.2:1。所以这一版直接量**渲染出来的颜色**。
+ *
+ * 修法：弱化只落在底色上（OVERFLOW_HEAT_FADE），字保持全亮。两件事就各归各了。
  */
 test('溢出格练过：既读得出日期，又一眼看得出不是本月', async () => {
   await seedMonth();
@@ -285,20 +302,51 @@ test('溢出格练过：既读得出日期，又一眼看得出不是本月', as
 
   await waitFor(() => expect(cell(OVERFLOW).querySelector('[data-hue]')).toBeTruthy());
 
-  const cellAlpha = Number(cell(OVERFLOW).style.opacity || '1');
+  const BG = parseColor(THEME.bg).rgb;
+  const cellEl = cell(OVERFLOW);
   const [r, g, b, textAlpha] = rgba(screen.getByTestId(`daynum-${OVERFLOW}`).style.color);
   expect([r, g, b]).toEqual(INK); // 暗灰是给「没练」用的，练过的一律 --ink
 
-  // 1. 读得出：眼睛看到的最终 alpha，不是那两个数各自的账面值
-  expect(cellAlpha * textAlpha).toBeGreaterThanOrEqual(0.6);
+  // 0. 弱化不许再走整格 opacity —— 它会把要读的字一起拖下水
+  expect(cellEl.style.opacity).toBe('');
+  expect(textAlpha).toBe(1);
 
-  // 2. 看得出不是本月：整格必须明显淡于本月格（本月格是 1）
-  expect(cellAlpha).toBeLessThanOrEqual(0.8);
-  expect(Number(cell(d('03')).style.opacity || '1')).toBe(1);
+  // 1. 读得出：量的是最终落到眼睛里的那个颜色，不是 alpha 的账面值
+  const bgc = parseColor(cellEl.style.background || cellEl.style.backgroundColor);
+  expect(contrastRatio(compositeOver(bgc.rgb, BG, bgc.alpha), INK)).toBeGreaterThanOrEqual(AA_TEXT);
 
-  // 3. 没练的溢出格：暗灰数字 + 压得更狠（那格没有任何要读的东西）
-  expect(rgba(screen.getByTestId(`daynum-${OVERFLOW_EMPTY}`).style.color).slice(0, 3)).toEqual(MUTE);
-  expect(Number(cell(OVERFLOW_EMPTY).style.opacity || '1')).toBeLessThan(cellAlpha);
+  // 2. 看得出不是本月：底色明显淡于本月的**同款**格子。
+  //    04 号也是背 3 组——同色同强度，两格之间只剩「本月 / 不是本月」这一个变量。
+  const inMonthAlpha = parseColor(cell(d('04')).style.background).alpha;
+  expect(cell(d('04')).style.opacity).toBe('');
+  expect(bgc.alpha).toBeLessThan(inMonthAlpha * 0.8);
+  expect(bgc.alpha).toBeCloseTo(inMonthAlpha * OVERFLOW_HEAT_FADE, 2);
+});
+
+/**
+ * 没练过的溢出格：数字仍是要读的（那一格是可点的 Link，点进去就能补记）。
+ * 上一版 opacity=0.35 把 mute 字压到 1.6:1——「不是本月」的信号强到把内容也一起吞了。
+ * 「不是本月」应该由**有没有底块**来说，而不是把整格调暗。
+ */
+test('溢出格没练：日期仍读得出，靠没有底块来说明不是本月', async () => {
+  await seedMonth();
+  renderCal();
+  await waitForHeat();
+
+  const cellEl = cell(OVERFLOW_EMPTY);
+  expect(cellEl.style.opacity).toBe('');
+
+  const [r, g, b, alpha] = rgba(screen.getByTestId(`daynum-${OVERFLOW_EMPTY}`).style.color);
+  expect([r, g, b]).toEqual(MUTE);
+  expect(alpha).toBe(1);
+
+  const BG = parseColor(THEME.bg).rgb;
+  const bgc = parseColor(cellEl.style.background || cellEl.style.backgroundColor || THEME.bg);
+  expect(contrastRatio(compositeOver(bgc.rgb, BG, bgc.alpha), MUTE)).toBeGreaterThanOrEqual(AA_TEXT);
+
+  // 本月的空白格有底块（EMPTY_HEAT），溢出的融进页面底色——层次全靠这个说
+  expect(parseColor(cell(IN_MONTH_EMPTY).style.background).rgb).toEqual(parseColor(EMPTY_HEAT).rgb);
+  expect(compositeOver(bgc.rgb, BG, bgc.alpha)).toEqual(BG);
 });
 
 test('切到上个月：月份头与网格都换成上个月', async () => {

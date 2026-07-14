@@ -1,4 +1,5 @@
 import { bodyPartInfo } from '../data/bodyParts';
+import { AA_TEXT, maxReadableAlpha, parseColor } from './contrast';
 import type { BodyPart } from './types';
 import { THEME } from './theme';
 
@@ -42,15 +43,59 @@ export function heatColor(part: BodyPart, sets: number, maxSets: number): string
 }
 
 /**
- * 日历格的浓度天花板。年度小格和海报格上没有字，可以满色；
- * 日历格上压着白色日期数字——满 alpha 的饱和红/紫会把白字吃掉。
+ * 日历格的浓度天花板——**审美**上的那一半：再浓就压过版面了。
+ * 年度小格和海报格上没有字，可以满色；日历格上压着日期数字，得留白。
+ *
+ * 这个常数曾经是唯一的天花板，配的注释还写反了：说「满 alpha 的饱和红/紫会把白字吃掉」。
+ * 实测红/紫在 0.6 上是 7.0:1，绰绰有余；真正跌破 AA 的是最亮的黄和青（3.87 / 3.95）。
+ * 暗底 + 半透明色上，肉眼是合格的异常探测器、不合格的因果分析器——所以**可读**的那一半
+ * 天花板不再由人拍脑袋，交给 calendarAlphaCeil() 现算。
  */
 export const CALENDAR_ALPHA_CEIL = 0.6;
 
-/** 日历格专用：同一个色相、同一条浓淡曲线，只是整体压到 CALENDAR_ALPHA_CEIL 以内。 */
-export function calendarHeatColor(part: BodyPart, sets: number, maxSets: number): string {
+/**
+ * 溢出格（网格里属于上/下月的那些天）的底色折扣。
+ *
+ * 弱化必须落在**底色**上。上一版用整格 opacity=0.7 来「压暗」，但 opacity 压的是整格——
+ * 日期数字跟着一起被稀释，白字实测掉到 3.2:1（空白溢出格的 opacity=0.35 更狠，1.6:1，
+ * 基本等于隐形）。层次和可读性被绑在了同一个旋钮上，拧哪边都是错。
+ * 底色淡下去、字保持全亮，两件事就各归各了：既看得出不是本月，字还比本月格更清楚。
+ */
+export const OVERFLOW_HEAT_FADE = 0.55;
+
+/** 每个部位只解一次：色表是编译期常量，没必要在渲染路径上反复二分。 */
+const CEIL_CACHE = new Map<BodyPart, number>();
+
+/**
+ * 这个部位在日历格上最浓能涂到多少——取「审美上限」与「可读上限」中更小的那个。
+ *
+ * 可读上限是解出来的，不是查表来的：将来谁改了部位色、加了部位，天花板会自己跟着走，
+ * 不需要有人记得回来重算。暗色（胸/背/腿/核心）本来就压不垮白字，解出来大于 0.6，
+ * 于是维持 0.6 不变；亮色（肩/手臂）会被自动压到刚好还站在 4.5:1 上。
+ */
+export function calendarAlphaCeil(part: BodyPart): number {
+  const hit = CEIL_CACHE.get(part);
+  if (hit !== undefined) return hit;
+  const ceil = Math.min(
+    CALENDAR_ALPHA_CEIL,
+    maxReadableAlpha(rgb(part), parseColor(THEME.bg).rgb, parseColor(THEME.ink).rgb, AA_TEXT),
+  );
+  CEIL_CACHE.set(part, ceil);
+  return ceil;
+}
+
+/**
+ * 日历格专用：同一个色相、同一条浓淡曲线，只是整体压进该部位的可读上限。
+ * fade 给溢出格用（见 OVERFLOW_HEAT_FADE）——它只淡底色，不碰字。
+ */
+export function calendarHeatColor(
+  part: BodyPart,
+  sets: number,
+  maxSets: number,
+  fade: number = 1,
+): string {
   const [r, g, b] = rgb(part);
-  const a = Math.round(heatAlpha(sets, maxSets) * CALENDAR_ALPHA_CEIL * 1000) / 1000;
+  const a = Math.round(heatAlpha(sets, maxSets) * calendarAlphaCeil(part) * fade * 1000) / 1000;
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
