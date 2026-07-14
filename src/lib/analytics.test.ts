@@ -1,10 +1,33 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi, type Mock } from 'vitest';
 import { analyticsEnabled, initAnalytics, screenOf, track, trackScreen } from './analytics';
 
 const ID = '11111111-2222-3333-4444-555555555555';
 const injected = () => document.querySelector<HTMLScriptElement>('script[data-website-id]');
+
+/**
+ * umami 的函数形式：它把自己组装好的 payload 递进来，我们只覆盖其中的 url / title。
+ * 这里模拟一份"它真实会传进来的 props"——注意 url 里带着训练日期，那正是要被覆盖掉的东西。
+ * （对照 cloud.umami.is/script.js：C()=({website,screen,language,title,hostname,url,referrer,…})）
+ */
+const UMAMI_PROPS = {
+  website: ID,
+  hostname: 'tiezheng.pages.dev',
+  screen: '390x844',
+  language: 'zh-CN',
+  title: '铁证 IRONPROOF',
+  url: 'https://tiezheng.pages.dev/#/day/2026-07-14',
+  referrer: '',
+};
+/** 取出第 i 次调用传给 umami 的函数，喂给它 umami 的 props，看它吐出什么 payload */
+const applied = (spy: Mock, i = 0): Record<string, unknown> => spy.mock.calls[i][0](UMAMI_PROPS);
+
+function fakeUmami(): Mock {
+  const spy = vi.fn();
+  (window as unknown as { umami: unknown }).umami = { track: spy };
+  return spy;
+}
 
 beforeEach(() => {
   document.head.innerHTML = '';
@@ -48,6 +71,19 @@ describe('装载', () => {
     expect(injected()?.dataset.autoTrack).toBe('false');
   });
 
+  /* 关掉 auto-track 只挡住了"自动上报"这半边。umami 模块顶层那句 `Y = B(location.href)`
+   * 照跑不误，而 C() 会把 `url: Y` 塞进**每一个**事件 payload——包括我们自己发的
+   * track('workout_logged')。用户在 #/day/2026-07-14 上刷新一次（或从分享链接进来），
+   * Y 就冻结成那个带日期的 URL，此后整个会话的每个事件都驮着它出境。
+   *
+   * 白名单管不到这条通道——payload 不是我们组装的。只能让 umami 自己在源头剥掉 hash：
+   * 源码里 N=w("exclude-hash")==="true"，B() 里 `N && (e.hash = "")`。 */
+  test('剥掉 hash —— 否则每个事件 payload 都驮着 #/day/2026-07-14 出境', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', ID);
+    initAnalytics();
+    expect(injected()?.dataset.excludeHash).toBe('true');
+  });
+
   test('重复调用只注入一次', () => {
     vi.stubEnv('VITE_UMAMI_WEBSITE_ID', ID);
     initAnalytics();
@@ -74,15 +110,80 @@ describe('track', () => {
 });
 
 describe('trackScreen', () => {
-  test('上报的是白名单字面量，不是真实 URL', () => {
-    const spy = vi.fn();
-    (window as unknown as { umami: unknown }).umami = { track: spy };
+  /* 必须走 umami 的**函数**形式，不能直接递一个对象：它的 track 对对象走的是 `{...t}`——
+   * 不合并自己组装的 payload，website / hostname / screen 全丢，服务端认不出这是哪个站点，
+   * 这条上报就白发了。函数形式拿到它组装好的 props，我们只把 url / title 换成白名单字面量。
+   * （读 cloud.umami.is/script.js 源码确认：F=(t,e)=>q("object"==typeof t?{...t}:…)） */
+  test('保留 umami 自己的 payload —— 丢了 website 服务端根本不收', () => {
+    const spy = fakeUmami();
     trackScreen('day');
-    expect(spy).toHaveBeenCalledWith({ url: '/day', title: '训练详情' });
+    expect(applied(spy).website).toBe(ID);
+  });
+
+  test('把真实 URL 换成白名单字面量 —— 日期被覆盖掉，不出境', () => {
+    const spy = fakeUmami();
+    trackScreen('day');
+    const payload = applied(spy);
+    expect(payload.url).toBe('/day');
+    expect(payload.title).toBe('训练详情');
+    expect(JSON.stringify(payload)).not.toContain('2026-07-14');
   });
 
   test('脚本没加载时静默', () => {
     expect(() => trackScreen('stats')).not.toThrow();
+  });
+});
+
+/* 脚本是 async 从 CDN 拉的，而首屏那次上报只等一个 IndexedDB 读——本地读几乎必赢跨域请求。
+ * 于是"入口是哪一屏"这条最该有的记录，冷启动时大概率撞在 window.umami 还没出生的空档里，
+ * 被 `?.` 一声不响地吞掉：不报错、不掉数据以外的任何东西，只是这个数字长期偏低，且偏得
+ * 毫无规律。攒着，等脚本 onload 再补发。 */
+describe('载入竞态', () => {
+  test('脚本还没到就上报 —— 先攒着，加载完补发', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', ID);
+    initAnalytics();
+    trackScreen('today'); // 此刻 window.umami 还不存在
+    track('workout_logged');
+
+    const spy = fakeUmami();
+    injected()!.dispatchEvent(new Event('load'));
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(applied(spy, 0).url).toBe('/today');
+    expect(spy.mock.calls[1][0]).toBe('workout_logged');
+  });
+
+  test('脚本到位后直接发，不再进队列', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', ID);
+    initAnalytics();
+    const spy = fakeUmami();
+    injected()!.dispatchEvent(new Event('load'));
+    spy.mockClear();
+
+    track('poster_exported');
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test('脚本永远不来（被广告拦截器挡掉 / 断网）—— 队列有上限，不会无限涨', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', ID);
+    initAnalytics();
+    for (let i = 0; i < 200; i++) track('workout_logged');
+
+    const spy = fakeUmami();
+    injected()!.dispatchEvent(new Event('load'));
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(20);
+  });
+
+  test('没配 id 时不攒也不发 —— dev 里不该悬着一个只进不出的队列', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', '');
+    initAnalytics();
+    track('workout_logged');
+
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', ID);
+    initAnalytics();
+    const spy = fakeUmami();
+    injected()!.dispatchEvent(new Event('load'));
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 
