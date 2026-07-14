@@ -14,6 +14,8 @@ import {
   drawPoster,
   drawYearlyPoster,
   formatVolume,
+  loadMetric,
+  monthTicks,
   posterFileName,
   posterTitle,
   type MonthlyPosterData,
@@ -211,6 +213,7 @@ function monthlyOf(weeks: number, rows: number): MonthlyPosterData {
     month: 8,
     days: 26,
     sets: 188,
+    reps: 1504,
     volumeKg: 96000,
     streak: 14,
     split: splitOf(rows),
@@ -225,6 +228,7 @@ function yearlyOf(rows: number, prs: number): YearlyPosterData {
     year: 2026,
     days: 260,
     sets: 1880,
+    reps: 15040,
     volumeKg: 960000,
     streak: 42,
     split: splitOf(rows),
@@ -663,6 +667,118 @@ describe('隐私：workout.note 绝不出现在海报的任何位置', () => {
     for (const s of r.texts) {
       expect(s).not.toContain('老板');
       expect(s).not.toContain('状态');
+    }
+  });
+});
+
+/* ── 自重训练者的负荷维度 ────────────────────────────────────────────────
+   容量 = 重量 × 次数，练俯卧撑和引体向上的人恒为 0。海报此前在那一格画一个「—」。
+   而项目自己早就否掉了这个做法——ProfileScreen.tsx:102 原话：
+   「也不降级成「—」：那还是『本该有东西但没有』。自重训练者的负荷维度本来就是次数。」
+   数据页（weighted ? Volume : 总次数）、资料页（hasWeightData ? Volume : 总次数）都已落地。
+   海报是最后一处，也是唯一要分享出去的那一处。
+
+   根因不在 formatVolume 选了破折号，而在 baseOf() 把 totals() 平级返回的 reps 扔了——
+   metrics() 手里没有第二个维度可换，只能在「0」和「—」之间挑个危害小的。 */
+describe('自重训练者：海报不许拿一个「—」占着负荷那一格', () => {
+  const BW_MAP: ExMap = new Map([
+    ['e-pushup', ex('e-pushup', '俯卧撑', 'chest')],
+    ['e-pullup', ex('e-pullup', '引体向上', 'back')],
+  ]);
+
+  /** 整月纯自重：weight 全 0 → volumeKg 恒为 0；但 4×20 + 3×10 = 110 次是他真做到的 */
+  function bodyweightInput(): PosterInput {
+    const items: LoadItem[] = [
+      item('2026-07-01', 'e-pushup', 4, 0, 20), // 80 次
+      item('2026-07-02', 'e-pullup', 3, 0, 10), // 30 次
+    ];
+    return { items, dates: items.map((i) => i.date), exMap: BW_MAP };
+  }
+
+  test('有容量 → 还是 VOLUME（别把负重的人也改了）', () => {
+    expect(loadMetric({ volumeKg: 12400, reps: 300 })).toEqual({
+      value: '12.4',
+      unit: 't',
+      label: '总容量 VOLUME',
+    });
+  });
+
+  test('没容量 → 换成他真正挣到的那个维度，而不是一个破折号', () => {
+    expect(loadMetric({ volumeKg: 0, reps: 110 })).toEqual({
+      value: '110',
+      unit: '',
+      label: '总次数 REPS',
+    });
+  });
+
+  test('月度海报：整月自重，画出去的字里一个「—」都没有', () => {
+    const r = recorder();
+    drawMonthlyPoster(r.ctx, buildMonthly('2026-07', bodyweightInput()));
+    for (const s of r.texts) expect(s).not.toContain('—');
+  });
+
+  test('月度海报：那一格画的是 110 次 / 总次数 REPS', () => {
+    const r = recorder();
+    drawMonthlyPoster(r.ctx, buildMonthly('2026-07', bodyweightInput()));
+    expect(r.texts).toContain('110');
+    expect(r.texts).toContain('总次数 REPS');
+    expect(r.texts).not.toContain('总容量 VOLUME');
+  });
+
+  test('年度海报：同一条口径，一个「—」都没有', () => {
+    const r = recorder();
+    drawYearlyPoster(r.ctx, buildYearly(2026, bodyweightInput()));
+    for (const s of r.texts) expect(s).not.toContain('—');
+    expect(r.texts).toContain('110');
+    expect(r.texts).toContain('总次数 REPS');
+  });
+
+  test('负重月仍然画 VOLUME —— 这条不许被上面几条改坏', () => {
+    const r = recorder();
+    drawMonthlyPoster(r.ctx, buildMonthly('2026-07', julyInput()));
+    expect(r.texts).toContain('总容量 VOLUME');
+    expect(r.texts).not.toContain('总次数 REPS');
+  });
+});
+
+/* ── 年度热力图的月份刻度 ────────────────────────────────────────────────
+   53 列格子没有时间轴，读者认不出哪一列是几月——热力图读不出「什么时候」，
+   就只是一张色块壁纸。数据页的同款热力图早有月份轴（heat-months），设计研究
+   2026-07-12-yearly-poster-design.json 第 13 条也明文规定了刻度的字号与基线，
+   海报这份是从版式表阶段就漏掉了（yearlyContentH 里从没给它留过一像素）。
+
+   刻度直接从 columns 派生：HeatCell 自带 date，所以标签和格子必然对齐——
+   而不是重算一遍 heatWeekStarts，再赌它跟 buildYearly 的列凑巧同构。 */
+describe('monthTicks：年度热力图得有时间轴', () => {
+  test('12 个月一个不多一个不少，且自左向右递增', () => {
+    const ticks = monthTicks(buildYearly(2026, julyInput()).columns);
+    expect(ticks).toHaveLength(buildYearly(2026, julyInput()).columns.length);
+    const months = ticks.filter((m): m is number => m !== null);
+    expect(months).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  test('首列含上一年的 12 月尾巴，但不许因此标出一个 12', () => {
+    // 2026-01-01 是周四 → 首列从 2025-12-29 起。跨年的格子是 null，标签不该被它带偏。
+    const ticks = monthTicks(buildYearly(2026, julyInput()).columns);
+    expect(ticks[0]).toBe(1); // 1/1 就在首列里
+    expect(ticks.indexOf(12)).toBeGreaterThan(40); // 12 月只能出现在年尾
+  });
+
+  test('每个月标在它 1 号所在的那一列上', () => {
+    const cols = buildYearly(2026, julyInput()).columns;
+    const ticks = monthTicks(cols);
+    ticks.forEach((m, c) => {
+      if (m === null) return;
+      const first = `2026-${String(m).padStart(2, '0')}-01`;
+      expect(cols[c]!.some((cell) => cell?.date === first)).toBe(true);
+    });
+  });
+
+  test('年度海报真的把 1..12 画出去了', () => {
+    const r = recorder();
+    drawYearlyPoster(r.ctx, buildYearly(2026, julyInput()));
+    for (const m of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
+      expect(r.texts).toContain(String(m));
     }
   });
 });

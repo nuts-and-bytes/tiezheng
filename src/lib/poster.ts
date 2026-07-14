@@ -112,6 +112,8 @@ export interface PosterPr {
 interface PosterBase {
   days: number;
   sets: number;
+  /** 跟 volumeKg 平级带上来：纯自重训练者的容量恒为 0，次数才是他的负荷维度（见 loadMetric） */
+  reps: number;
   volumeKg: number;
   streak: number;
   split: SplitRow[];
@@ -163,6 +165,7 @@ function baseOf(items: LoadItem[], dates: string[], exMap: ExMap): PosterBase & 
   return {
     days: t.days,
     sets: t.sets,
+    reps: t.reps,
     volumeKg: t.volumeKg,
     streak: longestStreak(dates),
     split,
@@ -220,11 +223,50 @@ export function buildYearly(year: number, input: PosterInput): YearlyPosterData 
 
 /* ── 格式化 ───────────────────────────────────────────────────────────── */
 
-/** 12400 → 12.4t；860 → 860kg；0 → 「—」（纯自重训练不该看到一个硬邦邦的 0） */
+/**
+ * 12400 → 12.4t；860 → 860kg。
+ * 0 → 「—」只是一道兜底防线，海报走不到这里：负荷那一格由 loadMetric 决定，
+ * 容量为 0 时它压根不会问容量该怎么格式化。
+ */
 export function formatVolume(kg: number): { value: string; unit: string } {
   if (!(kg > 0)) return { value: '—', unit: '' };
   if (kg >= 1000) return { value: (kg / 1000).toFixed(1), unit: 't' };
   return { value: String(Math.round(kg)), unit: 'kg' };
+}
+
+/**
+ * 三大数字中间那一格：负荷。
+ *
+ * 容量 = 重量 × 次数，所以练俯卧撑和引体向上的人恒为 0 —— 而这是一个要分享出去的
+ * 28px 大字。他读到的不是「我没记重量」，是「我练了等于零」。降级成「—」也一样：
+ * 那还是「本该有东西但没有」。他的负荷维度本来就是次数，那个数字是真的。
+ *
+ * 数据页（weighted ? Volume : 总次数）和资料页（hasWeightData ? Volume : 总次数）
+ * 早就是这条口径了，海报是最后一处补上的。
+ */
+export function loadMetric(d: { volumeKg: number; reps: number }): {
+  value: string;
+  unit: string;
+  label: string;
+} {
+  if (!(d.volumeKg > 0)) return { value: String(d.reps), unit: '', label: '总次数 REPS' };
+  return { ...formatVolume(d.volumeKg), label: '总容量 VOLUME' };
+}
+
+/**
+ * 年度热力图的月份刻度：某一列里含有当年某月的 1 号，就在那列底下标那个月。
+ *
+ * 直接从 columns 派生（HeatCell 自带 date），而不是拿 year 去重算一遍 heatWeekStarts ——
+ * 刻度和格子于是必然对齐，不靠两处算法凑巧同构。跨年的格子在 buildYearly 里已经是 null，
+ * 上一年 12 月的尾巴带不出一个假的「12」。
+ */
+export function monthTicks(columns: (HeatCell | null)[][]): (number | null)[] {
+  return columns.map((col) => {
+    for (const cell of col) {
+      if (cell && cell.date.slice(8) === '01') return Number(cell.date.slice(5, 7));
+    }
+    return null;
+  });
 }
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -244,6 +286,9 @@ export function posterTitle(d: PosterData): string {
 const GRID_GAP = 3;
 const MONTH_CELL = (CW - GRID_GAP * 6) / 7; // 42.857
 const YEAR_GAP = 2;
+/** 月份刻度：格子底下 4px 处的一行 9px 小字（1..12） */
+const TICK_GAP = 4;
+const TICK_SIZE = 9;
 const YEAR_COLS = 53;
 const YEAR_CELL = (CW - YEAR_GAP * (YEAR_COLS - 1)) / YEAR_COLS; // 4.04
 const ROW_H = 20; // 分布行 / PR 行
@@ -282,7 +327,7 @@ function yearlyContentH(d: YearlyPosterData): number {
     (18 + 108 + 6) +
     (22 + 49 + 22) +
     1 +
-    (16 + 12 + 10 + gridH + 6) + // 热力图（带 label）
+    (16 + 12 + 10 + gridH + TICK_GAP + TICK_SIZE + 6) + // 热力图（带 label + 月份刻度）
     distH(d.split.length) +
     (d.prs.length === 0 ? 0 : 16 + 12 + 10 + d.prs.length * ROW_H + 6) +
     (20 + BOTTOM_H) +
@@ -656,11 +701,11 @@ function metrics(ctx: CanvasRenderingContext2D, d: PosterData, y: number): numbe
   const sepW = 1;
   const sepM = 14;
   const colW = (CW - 2 * (sepW + sepM * 2)) / 3;
-  const vol = formatVolume(d.volumeKg);
 
   const cols: { value: string; unit: string; label: string; color: string }[] = [
     { value: String(d.sets), unit: '', label: '总组数 SETS', color: INK },
-    { value: vol.value, unit: vol.unit, label: '总容量 VOLUME', color: INK },
+    // 容量 or 次数——自重训练者不该在这儿看到一个破折号（见 loadMetric）
+    { ...loadMetric(d), color: INK },
     // 连续是唯一被高亮的指标——它是这张海报真正想夸的事
     { value: String(d.streak), unit: '', label: '最长连续 STREAK', color: AMBER },
   ];
@@ -769,7 +814,19 @@ function yearGridBlock(ctx: CanvasRenderingContext2D, d: YearlyPosterData, y: nu
       );
     });
   });
-  return top + 7 * YEAR_CELL + 6 * YEAR_GAP + 6;
+
+  // 没有时间轴的热力图只是一张色块壁纸——读者认不出哪一列是几月
+  const ticksTop = top + 7 * YEAR_CELL + 6 * YEAR_GAP + TICK_GAP;
+  monthTicks(d.columns).forEach((m, c) => {
+    if (m === null) return;
+    text(ctx, String(m), X0 + c * (YEAR_CELL + YEAR_GAP), ticksTop, {
+      font: ui(TICK_SIZE),
+      fill: MUTE,
+      baseline: 'top',
+    });
+  });
+
+  return ticksTop + TICK_SIZE + 6;
 }
 
 function prBlock(ctx: CanvasRenderingContext2D, prs: PosterPr[], y: number): number {

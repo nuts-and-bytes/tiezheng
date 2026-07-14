@@ -98,9 +98,11 @@ export function ProfileScreen() {
           <Stat value={t.sets} unit="组" label="总组数" className="border-r border-line pr-4" />
           {/* 第四格是「负荷」，不是「容量」。容量 = 重量 × 次数，练俯卧撑和引体向上的人恒为 0 ——
               而这是一个 42px 的战绩数字，跟总打卡并排立着，他读到的不是「我没记重量」，
-              是「我练了等于零」。同一个根因数据页（hasWeightData）、今日页（volume > 0）、
-              海报（formatVolume → 「—」）都堵过了，这里是最后一处。
-              也不降级成「—」：那还是「本该有东西但没有」。自重训练者的负荷维度本来就是次数。 */}
+              是「我练了等于零」。也不降级成「—」：那还是「本该有东西但没有」。
+              自重训练者的负荷维度本来就是次数。
+              同一个根因的四处：数据页（weighted）、今日页（volume > 0）、这里（hasWeightData）、
+              海报（poster.ts 的 loadMetric）。海报那处一度被记成「堵过了」，其实它画的正是
+              这条注释否掉的那个「—」——最后一处补上的反而是它，也是唯一要分享出去的那一处。 */}
           {hasWeightData(items) ? (
             <Volume kg={t.volumeKg} className="pl-5" />
           ) : (
