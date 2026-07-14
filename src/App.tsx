@@ -23,24 +23,33 @@ function TabLayout() {
   );
 }
 
-/** 引导门：置于 Routes 外统一生效，未引导时任何路由（含 /log、/day/:date）都进不去 */
+/**
+ * 引导门：置于 Routes 外统一生效，未引导时任何路由（含 /log、/day/:date）都进不去。
+ *
+ * InstallHint 也归它管，而不是挂在 App 顶层无条件渲染 —— 那条 fixed / z-40 的浮条钉在
+ * 底部安全区 +80px，正好压在引导页的 CTA 上：iPhone Safari 第一次打开，用户还没看懂
+ * 这 app 是什么，就先被催「添加到主屏幕」。催安装的时机是他决定留下来之后。
+ */
 function OnboardingGate() {
   const profile = useLiveQuery(() => getProfile(), []);
   if (!profile) return null;
   if (!profile.onboarded) return <Onboarding />;
   return (
-    <Routes>
-      <Route path="/log" element={<LogFlow />} />
-      <Route path="/day/:date" element={<DayDetailScreen />} />
-      <Route path="/poster" element={<PosterScreen />} />
-      <Route element={<TabLayout />}>
-        <Route path="/" element={<TodayScreen />} />
-        <Route path="/calendar" element={<CalendarScreen />} />
-        <Route path="/stats" element={<StatsScreen />} />
-        <Route path="/profile" element={<ProfileScreen />} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <>
+      <InstallHint />
+      <Routes>
+        <Route path="/log" element={<LogFlow />} />
+        <Route path="/day/:date" element={<DayDetailScreen />} />
+        <Route path="/poster" element={<PosterScreen />} />
+        <Route element={<TabLayout />}>
+          <Route path="/" element={<TodayScreen />} />
+          <Route path="/calendar" element={<CalendarScreen />} />
+          <Route path="/stats" element={<StatsScreen />} />
+          <Route path="/profile" element={<ProfileScreen />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
   );
 }
 
@@ -50,7 +59,6 @@ export default function App() {
       {/* 全屏噪点：锻造质感的来源，pointer-events:none 不挡交互 */}
       <div className="grain" aria-hidden />
       <UpdateToast />
-      <InstallHint />
       <HashRouter>
         <OnboardingGate />
       </HashRouter>
