@@ -224,7 +224,7 @@ function WeightQuickEntry({ today }: { today: string }) {
             setRaw(e.target.value);
             if (error) setError(false);
           }}
-          className="min-w-0 flex-1 rounded-xl bg-raised px-4 py-3 text-ink placeholder:text-mute/60"
+          className="min-w-0 flex-1 rounded-xl bg-raised px-4 py-3 text-ink placeholder:text-mute"
         />
         <button
           type="button"

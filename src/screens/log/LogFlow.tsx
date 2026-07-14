@@ -143,7 +143,7 @@ function PickExercises({ onBack, onNext }: { onBack: () => void; onNext: () => v
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="搜索动作…"
-        className="mt-5 rounded-xl border border-line bg-raised px-4 py-3 text-ink placeholder:text-mute/60"
+        className="mt-5 rounded-xl border border-line bg-raised px-4 py-3 text-ink placeholder:text-mute"
       />
       <div className="flex flex-col overflow-y-auto">
         {parts.map((part) => (
@@ -238,7 +238,7 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder={`新建${info.name}动作…`}
-          className="flex-1 rounded-lg border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute/60"
+          className="flex-1 rounded-lg border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute"
         />
         <button
           type="button"

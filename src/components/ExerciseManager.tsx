@@ -142,7 +142,7 @@ export function ExerciseManager() {
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder={`新建${info.name}动作…`}
-              className="flex-1 rounded-xl border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute/60"
+              className="flex-1 rounded-xl border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute"
             />
             <button
               type="button"

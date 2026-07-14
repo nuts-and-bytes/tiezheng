@@ -16,11 +16,17 @@ import { StatsScreen } from './StatsScreen';
 vi.mock('react-chartjs-2', () => ({
   Line: ({
     data,
+    'aria-label': ariaLabel,
   }: {
     data: { labels?: unknown[]; datasets?: { data: number[]; pointRadius?: number }[] };
+    // react-chartjs-2 把多余的 props 透传到它渲染的 <canvas> 上。那个 canvas 自带
+    // role="img"——一个有角色、没名字的图形，屏幕阅读器只念一声「图」。名字得自己给。
+    'aria-label'?: string;
   }) => (
     <div
       data-testid="line-chart"
+      role="img"
+      aria-label={ariaLabel}
       data-labels={JSON.stringify(data?.labels ?? [])}
       data-series={JSON.stringify(data?.datasets?.[0]?.data ?? [])}
       data-point-radius={String(data?.datasets?.[0]?.pointRadius)}
@@ -690,5 +696,41 @@ describe('环比的零值：「↓100%」在周期开头是常态，不是新闻
     const days = await screen.findByTestId('hero-days');
     expect(within(days).getByText('—')).toBeInTheDocument();
     expect(within(days).queryByText('未开张')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * 两张折线图都画在 <canvas> 上。canvas 里的像素对屏幕阅读器是不存在的——react-chartjs-2
+ * 给它挂了 role="img"，于是它成了「一个图形」，但没有名字：读屏软件念出来就是一声「图」，
+ * 然后什么都没有。这一整块数据对看不见的人是**空白**。
+ *
+ * 所以名字不能是「力量趋势图」这种同义反复的标签——那只是把「图」换成「力量趋势图」，
+ * 信息量还是零。名字里得装着这张图真正在说的那句话：练的哪个动作、几个点、从多少到多少。
+ */
+describe('折线图的可访问名：canvas 里的像素对读屏软件不存在', () => {
+  test('力量趋势图的名字里有动作名、点数和首尾 1RM，不是一句「力量趋势图」', async () => {
+    await addWorkoutItem('2026-07-01', 'p-bench', [{ weight: 60, reps: 10 }]);
+    await addWorkoutItem('2026-07-03', 'p-bench', [{ weight: 65, reps: 8 }]);
+    renderStats();
+
+    const chart = await screen.findByTestId('line-chart');
+    const name = chart.getAttribute('aria-label') ?? '';
+    expect(name).toContain('卧推');
+    expect(name).toContain('2 次');
+    expect(name).toContain(estimate1RM(60, 10).toFixed(1)); // 起点
+    expect(name).toContain(estimate1RM(65, 8).toFixed(1)); // 终点
+  });
+
+  test('体重图的名字里有记录条数和首尾体重', async () => {
+    await setWeight('2026-07-10', 70);
+    await setWeight('2026-07-13', 72.4);
+    renderStats();
+
+    const charts = await screen.findAllByTestId('line-chart');
+    const name = charts.map((c) => c.getAttribute('aria-label') ?? '').find((n) => n.includes('体重'));
+    expect(name).toBeDefined();
+    expect(name).toContain('2 条');
+    expect(name).toContain('70');
+    expect(name).toContain('72.4');
   });
 });

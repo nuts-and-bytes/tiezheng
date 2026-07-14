@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { BODY_PARTS } from '../data/bodyParts';
+import { AA_TEXT, compositeOver, contrastRatio, parseColor } from './contrast';
 import { FONT, THEME } from './theme';
 
 /**
@@ -156,4 +157,51 @@ test('部位色不许撞 THEME 的语义色 —— 同一个 hex 就是两种含
   );
 
   expect(collisions).toEqual([]);
+});
+
+/**
+ * mute 不许再降 alpha —— 因为 `text-mute/70` 这类写法看着是「更淡一点」，实际是把字
+ * 推到 AA 门槛之下，而降 alpha 的人**没有一次是算过的**。
+ *
+ * 门槛不写死，从 contrast.ts 解出来：mute 落在最亮的表面（raised）上，要过 AA_TEXT
+ * 需要多少 alpha。答案是 ~0.89 —— 也就是说 /50 到 /88 全部不合格，而 /89 以上跟实色
+ * 肉眼没有区别。这条规则于是干净得没有灰带：**mute 就是不带 alpha 后缀。**
+ *
+ * 被这条抓出来的原案：
+ *   - SetRows 的 placeholder:text-mute/50 → 2.28:1。那两个框只有 placeholder 没有 label，
+ *     标签的活儿由一个 2.28:1 的字在干。
+ *   - 4 处 placeholder:text-mute/60 → 2.70:1
+ *   - StatsScreen 的说明文字 text-mute/70 → 3.33:1
+ */
+test('mute 不许带 alpha 后缀——降下去就压穿 AA，而降的人从来没算过', () => {
+  const mute = parseColor(THEME.mute).rgb;
+  const raised = parseColor(THEME.raised).rgb; // 最亮的表面 = 最坏情况
+  const minAlpha = (() => {
+    for (let a = 1; a >= 0; a -= 0.01) {
+      if (contrastRatio(compositeOver(mute, raised, a), raised) < AA_TEXT) {
+        return Math.round((a + 0.01) * 100);
+      }
+    }
+    return 0;
+  })();
+  expect(minAlpha).toBeGreaterThan(85); // 解出来的门槛确实高到「没有可用的 alpha 档位」
+
+  const offenders: string[] = [];
+  for (const file of walk(SRC)) {
+    if (/\.test\.tsx?$/.test(file)) continue;
+    readFileSync(file, 'utf8')
+      .split('\n')
+      .forEach((line, i) => {
+        for (const m of line.matchAll(/text-mute\/(\d+)/g)) {
+          const a = Number(m[1]);
+          if (a < minAlpha) {
+            const c = compositeOver(mute, raised, a / 100);
+            offenders.push(
+              `${file.slice(SRC.length + 1)}:${i + 1} text-mute/${a} → ${contrastRatio(c, raised).toFixed(2)}:1，AA 要 ${AA_TEXT}`,
+            );
+          }
+        }
+      });
+  }
+  expect(offenders).toEqual([]);
 });

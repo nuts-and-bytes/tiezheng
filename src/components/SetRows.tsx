@@ -16,6 +16,9 @@ function numOrUndefined(raw: string): number | undefined {
 interface NumFieldProps {
   value: number | undefined;
   placeholder: string;
+  /** placeholder 一输入就消失，当不了标签。名字得独立挂着，而且要带组号——
+      一屏 5 组、10 个框，光叫「重量」等于没有名字。 */
+  label: string;
   inputMode: 'decimal' | 'numeric';
   className: string;
   invalid: boolean;
@@ -26,7 +29,7 @@ interface NumFieldProps {
  * 数字输入格：显示层持有本地字符串态，允许「62.」这类中间态存在；
  * 可解析时把 number 同步给上层（store 类型不变），失焦用外部值归一化显示。
  */
-function NumField({ value, placeholder, inputMode, className, invalid, onCommit }: NumFieldProps) {
+function NumField({ value, placeholder, label, inputMode, className, invalid, onCommit }: NumFieldProps) {
   const [text, setText] = useState<string | null>(null);
   const committed = value === undefined ? '' : String(value);
   // 本地字符串与外部值语义一致时显示本地态（保留「62.」）；外部值被别处改动时跟随外部
@@ -34,6 +37,7 @@ function NumField({ value, placeholder, inputMode, className, invalid, onCommit 
   return (
     <input
       inputMode={inputMode}
+      aria-label={label}
       placeholder={placeholder}
       value={display}
       onChange={(e) => {
@@ -54,7 +58,7 @@ export function SetRows({ sets, onChange }: Props) {
   const badWeight = sets.some((s) => s.weight !== undefined && !validLoad(s.weight));
   const badReps = sets.some((s) => s.reps !== undefined && !validReps(s.reps));
 
-  const field = 'rounded-xl bg-raised px-3 py-2.5 text-ink tabular-nums placeholder:text-mute/50';
+  const field = 'rounded-xl bg-raised px-3 py-2.5 text-ink tabular-nums placeholder:text-mute';
   const step =
     'flex h-9 w-9 items-center justify-center rounded-xl bg-raised text-lg text-ink disabled:opacity-25 active:scale-95';
 
@@ -88,6 +92,7 @@ export function SetRows({ sets, onChange }: Props) {
           <NumField
             inputMode="decimal"
             placeholder="重量kg"
+            label={`第 ${i + 1} 组 重量（公斤）`}
             value={s.weight}
             invalid={s.weight !== undefined && !validLoad(s.weight)}
             onCommit={(weight) => patch(i, { ...s, weight })}
@@ -97,6 +102,7 @@ export function SetRows({ sets, onChange }: Props) {
           <NumField
             inputMode="numeric"
             placeholder="次数"
+            label={`第 ${i + 1} 组 次数`}
             value={s.reps}
             invalid={s.reps !== undefined && !validReps(s.reps)}
             onCommit={(reps) => patch(i, { ...s, reps })}

@@ -58,3 +58,21 @@ test('空栏不标红', () => {
   }
   expect(screen.queryByText(/0–1000/)).not.toBeInTheDocument();
 });
+
+/**
+ * 这两个框的名字一直只写在 placeholder 上 —— 而 placeholder 是**输入的那一刻就消失**的东西。
+ * 屏幕阅读器用户走到第 3 组的第一个框，听到的是「编辑框，62」：62 是什么？重量还是次数？
+ * 视力正常的用户靠位置和那个「×」猜得出来，听的人猜不出。
+ *
+ * 而且组号也必须念出来：一屏 5 组、10 个同名的框，「重量」这个名字在里面出现 5 次，
+ * 光有名字没有序号，等于没有名字。
+ */
+test('每个数字框都有独立的无障碍名——placeholder 一输入就消失，它当不了标签', () => {
+  render(<Harness initial={[{}, { weight: 62, reps: 8 }]} />);
+
+  expect(screen.getByLabelText('第 1 组 重量（公斤）')).toBeInTheDocument();
+  expect(screen.getByLabelText('第 1 组 次数')).toBeInTheDocument();
+  // 第 2 组已经填了值 —— placeholder 已经消失，名字必须还在
+  expect(screen.getByLabelText('第 2 组 重量（公斤）')).toHaveValue('62');
+  expect(screen.getByLabelText('第 2 组 次数')).toHaveValue('8');
+});

@@ -187,7 +187,7 @@ function Section({
     <div className="mt-6 mb-3 flex items-start justify-between gap-3">
       <span className="min-w-0">
         <p className="text-[11px] tracking-[2px] text-mute uppercase">{title}</p>
-        {sub && <p className="mt-1 text-[10px] leading-snug text-mute/70">{sub}</p>}
+        {sub && <p className="mt-1 text-[10px] leading-snug text-mute">{sub}</p>}
       </span>
       {right}
     </div>
@@ -353,11 +353,17 @@ function Strength({
     );
   }
 
+  // canvas 里的像素对读屏软件不存在——react-chartjs-2 给它挂了 role="img"，于是它是「一个
+  // 图形」，却没有名字，念出来只有一声「图」。名字不能是「力量趋势图」这种同义反复：
+  // 那只是把「图」换了个说法。装进去的必须是这张图真正在说的那句话。
+  const label = `力量趋势：${exMap.get(active)?.name ?? active}，最近 ${series.length} 次记录，估算 1RM 从 ${series[0].e1rm.toFixed(1)} 公斤到 ${series[series.length - 1].e1rm.toFixed(1)} 公斤`;
+
   return (
     <>
       {head}
       {picker}
       <Line
+        aria-label={label}
         data={{
           labels: series.map((s) => s.date.slice(5)),
           datasets: [
@@ -665,6 +671,7 @@ function Weight({ weights }: { weights: { date: string; weightKg: number }[] }) 
     <>
       <Section title="体重 · 7 日均线" />
       <Line
+        aria-label={`体重 7 日均线：${weights.length} 条记录，从 ${weights[0].weightKg} 公斤到 ${weights[weights.length - 1].weightKg} 公斤`}
         data={{
           labels: weights.map((w) => w.date.slice(5)),
           datasets: [
