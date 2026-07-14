@@ -6,6 +6,7 @@ import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
 import { Stamp } from '../../components/Stamp';
 import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
+import { track } from '../../lib/analytics';
 import { todayStr } from '../../lib/dates';
 import { vibrate } from '../../lib/platform';
 import { hasOutOfRange, sanitizeSets } from '../../lib/validation';
@@ -57,6 +58,8 @@ export function LogFlow() {
         sets: sanitizeSets(i.sets),
       }));
       await commitDraft(items, todayStr());
+      // 只有事件名。练了什么、几组、几公斤、note 里写了什么 —— 全部留在这台设备上
+      track('workout_logged');
       // 钢印落下：震动 200ms（design card: 缩放 + 辉光 + 震动）
       vibrate(200);
       setDone({

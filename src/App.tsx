@@ -2,6 +2,7 @@ import { HashRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { InstallHint } from './components/InstallHint';
+import { ScreenTracker } from './components/ScreenTracker';
 import { UpdateToast } from './components/UpdateToast';
 import { TabBar } from './components/TabBar';
 import { CalendarScreen } from './screens/calendar/CalendarScreen';
@@ -37,6 +38,7 @@ function OnboardingGate() {
   return (
     <>
       <InstallHint />
+      <ScreenTracker />
       <Routes>
         <Route path="/log" element={<LogFlow />} />
         <Route path="/day/:date" element={<DayDetailScreen />} />

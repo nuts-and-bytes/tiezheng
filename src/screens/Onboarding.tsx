@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Stamp } from '../components/Stamp';
 import { PartIcon } from '../components/PartIcon';
 import { BODY_PARTS } from '../data/bodyParts';
+import { analyticsEnabled, track } from '../lib/analytics';
 import { canShareFiles, vibrate } from '../lib/platform';
 import { saveProfile } from '../repos/profileRepo';
 
@@ -45,6 +46,7 @@ export function Onboarding() {
     try {
       vibrate(18);
       await saveProfile({ weeklyGoal: goal, onboarded: true });
+      track('onboarding_done'); // 只有事件名。每周目标是他的数据，不出境
       nav('/log');
     } catch (err) {
       submittingRef.current = false; // 写失败要允许重试
@@ -157,10 +159,15 @@ function BrandPanel() {
         <Stamp size={92} animate />
       </div>
       <h1 className="text-[26px] leading-[1.45] font-bold text-balance">你练过的，都有铁证。</h1>
+      {/* 这句是承诺，所以它得跟着构建走。接了埋点还印「数据只存你手机本地」就是撒谎；
+          可没配 id 的构建（dev / 自己的 preview）里埋点是哑的，那时候印「仅匿名使用统计」
+          又是反过来撒谎。两头都堵住：文案由 analyticsEnabled() 决定，任何一个构建里
+          屏幕上写的都是那个构建真实在做的事。
+          「训练数据」而不是「数据」—— 出境的是使用统计，训练明细一个字节都没走 */}
       <p className="mt-4 text-[13px] leading-[1.9] text-mute">
-        数据只存你手机本地
+        训练数据只存你手机本地
         <br />
-        无广告 · 无推销
+        无广告 · 无推销{analyticsEnabled() ? ' · 仅匿名使用统计' : ''}
       </p>
     </div>
   );

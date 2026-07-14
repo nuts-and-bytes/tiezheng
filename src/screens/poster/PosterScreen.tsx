@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
+import { track } from '../../lib/analytics';
 import { todayStr } from '../../lib/dates';
 import { downloadBlob } from '../../lib/download';
 import { canShareFiles, shareFiles, vibrate } from '../../lib/platform';
@@ -103,6 +104,9 @@ export function PosterScreen() {
   function exportPoster() {
     if (!ready) return;
     vibrate(18);
+    // track 是同步的 fire-and-forget，不消耗 user activation —— 放这儿不会毁掉 iOS 分享面板。
+    // 发出去的只有事件名：海报本身、照片、note 全程没离开过这台设备
+    track('poster_exported');
     if (shareFiles([ready.file], ready.title)) return; // ← 不许 await
     download(ready.file);
   }
