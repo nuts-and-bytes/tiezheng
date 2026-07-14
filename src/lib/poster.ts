@@ -305,8 +305,14 @@ const YEAR_GAP = 2;
 /** 月份刻度：格子底下 4px 处的一行 9px 小字（1..12） */
 const TICK_GAP = 4;
 const TICK_SIZE = 9;
-const YEAR_COLS = 53;
-const YEAR_CELL = (CW - YEAR_GAP * (YEAR_COLS - 1)) / YEAR_COLS; // 4.04
+/**
+ * 全年热力的格宽。列数**不是常量**：buildYearly 从「1/1 所在周的周一」数到
+ * 「12/31 所在周」，1/1 落在周日的闰年（2012、2040…）会数出 54 列。写死 53 的话
+ * 第 54 格会画到 X1 外面去。格宽只能由实际列数解出来。
+ */
+export function yearGrid(cols: number): { cell: number; gap: number } {
+  return { cell: (CW - YEAR_GAP * (cols - 1)) / cols, gap: YEAR_GAP };
+}
 const ROW_H = 20; // 分布行 / PR 行
 const BOTTOM_H = 74; // 钢印
 
@@ -334,7 +340,7 @@ function monthlyContentH(d: MonthlyPosterData): number {
 }
 
 function yearlyContentH(d: YearlyPosterData): number {
-  const gridH = 7 * YEAR_CELL + 6 * YEAR_GAP;
+  const gridH = 7 * yearGrid(d.columns.length).cell + 6 * YEAR_GAP;
   return (
     PAD_T +
     12 +
@@ -585,6 +591,67 @@ export interface PrRowLayout {
  * 让位是单向的：**成绩一个字都不能截**（PR 的载荷就是几公斤几次，截了这行就没意义了），
  * 名字是标识，长了可以省略号。所以先量成绩，剩下的宽度才轮到名字。
  */
+/* ── 三大数字那一排 ────────────────────────────────────────────────────── */
+
+const METRIC_SEP_W = 1;
+const METRIC_SEP_M = 14;
+/** 先丢字间距、再降字号——10px 已经是这排小字的下限，能不降就不降 */
+const METRIC_STEPS: readonly Step[] = [
+  [10, 1],
+  [10, 0],
+  [9, 1],
+  [9, 0],
+  [8, 0],
+];
+
+export interface MetricsCol {
+  x: number;
+  label: { text: string; size: number; track: number; width: number };
+}
+
+export interface MetricsLayout {
+  colW: number;
+  sepW: number;
+  cols: MetricsCol[];
+  /** 分隔线左缘，n-1 条 */
+  sepX: number[];
+}
+
+/**
+ * 等宽三列，值和标签都在列内左对齐。
+ *
+ * 一排标签必须共用同一字号：只把撑破的那列单独缩小，三列高矮不齐，比溢出更难看。
+ * 所以拿最宽的那个去解字号，整排跟着它降。
+ * （「最长连续 STREAK」在 10px + 1px 字间距下是 89.5，比 86.67 的列宽宽——
+ *  丢掉字间距就回到 78.5，字号一格都不用降。）
+ */
+export function metricsLayout(measure: Measure, labels: readonly string[]): MetricsLayout {
+  const n = labels.length;
+  const gutter = METRIC_SEP_W + METRIC_SEP_M * 2;
+  const colW = (CW - (n - 1) * gutter) / n;
+
+  const widest = labels.reduce((a, b) =>
+    lineW(measure, b, ui(10), 1) > lineW(measure, a, ui(10), 1) ? b : a,
+  );
+  const fit = fitLine(measure, widest, colW, METRIC_STEPS, (s) => ui(s));
+  const locked: readonly Step[] = [[fit.size, fit.track]];
+
+  const cols = labels.map((s, i) => {
+    const line = fitLine(measure, s, colW, locked, (t) => ui(t));
+    return {
+      x: X0 + i * (colW + gutter),
+      label: { text: line.text, size: line.size, track: line.track, width: line.width },
+    };
+  });
+
+  return {
+    colW,
+    sepW: METRIC_SEP_W,
+    cols,
+    sepX: cols.slice(0, -1).map((c) => c.x + colW + METRIC_SEP_M),
+  };
+}
+
 export function prRowLayout(measure: Measure, pr: PosterPr): PrRowLayout {
   const scoreText = `${pr.weight}kg × ${pr.reps}`;
   const scoreW = measure(scoreText, ui(PR_SIZE, 600));
@@ -746,9 +813,6 @@ function hero(ctx: CanvasRenderingContext2D, days: number, y: number): number {
 
 function metrics(ctx: CanvasRenderingContext2D, d: PosterData, y: number): number {
   const top = y + 22;
-  const sepW = 1;
-  const sepM = 14;
-  const colW = (CW - 2 * (sepW + sepM * 2)) / 3;
 
   const cols: { value: string; unit: string; label: string; color: string }[] = [
     { value: String(d.sets), unit: '', label: '总组数 SETS', color: INK },
@@ -758,20 +822,30 @@ function metrics(ctx: CanvasRenderingContext2D, d: PosterData, y: number): numbe
     { value: String(d.streak), unit: '', label: '最长连续 STREAK', color: AMBER },
   ];
 
+  const L = metricsLayout(
+    measureWith(ctx),
+    cols.map((c) => c.label),
+  );
+
   cols.forEach((c, i) => {
-    const x = X0 + i * (colW + sepW + sepM * 2);
+    const { x, label } = L.cols[i]!;
     const baseline = top + 28;
     text(ctx, c.value, x, baseline, { font: display(28), fill: c.color });
     if (c.unit) {
       const w = ctx.measureText(c.value).width;
       text(ctx, c.unit, x + w + 1, baseline, { font: display(16), fill: c.color });
     }
-    text(ctx, c.label, x, baseline + 9, { font: ui(10), fill: MUTE, baseline: 'top', track: 1 });
+    text(ctx, label.text, x, baseline + 9, {
+      font: ui(label.size),
+      fill: MUTE,
+      baseline: 'top',
+      track: label.track,
+    });
+  });
 
-    if (i < 2) {
-      ctx.fillStyle = LINE;
-      ctx.fillRect(x + colW + sepM, top + 4, sepW, 41);
-    }
+  L.sepX.forEach((sx) => {
+    ctx.fillStyle = LINE;
+    ctx.fillRect(sx, top + 4, L.sepW, 41);
   });
 
   return y + 22 + 49 + 22;
@@ -877,6 +951,7 @@ function monthGridBlock(ctx: CanvasRenderingContext2D, d: MonthlyPosterData, y: 
 
 function yearGridBlock(ctx: CanvasRenderingContext2D, d: YearlyPosterData, y: number): number {
   const top = sectionLabel(ctx, '全年热力 HEATMAP', y);
+  const { cell: YEAR_CELL, gap: YEAR_GAP } = yearGrid(d.columns.length);
   d.columns.forEach((col, c) => {
     col.forEach((cell, r) => {
       heatCell(

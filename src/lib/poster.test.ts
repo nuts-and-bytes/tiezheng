@@ -23,6 +23,8 @@ import {
   type YearlyPosterData,
   prRowLayout,
   type PosterPr,
+  metricsLayout,
+  yearGrid,
 } from './poster';
 import { BODY_PARTS } from '../data/bodyParts';
 import { EMPTY_HEAT, heatColor } from './heat';
@@ -965,5 +967,107 @@ describe('多部位日：一个格子涂两块部位色', () => {
     // 腿只在 07-03 出现，而那天没有第二块部位 —— 三角只该为双部位日画一次
     const clips = r.calls.filter((c) => c.fn === 'clip').length;
     expect(clips).toBe(1);
+  });
+});
+
+/* ── 三大数字那一排 ──────────────────────────────────────────────────────
+ * 原来 metrics() 直接 fillText(label, x)：从没量过标签宽。
+ * colW = (318 - 2*(1 + 14*2))/3 = 86.67，第三格 x = 36 + 2*115.67 = 267.33。
+ * 「最长连续 STREAK」在 ui(10)+track1 下是 4*10 + 7*5.5 + 11*1 = 89.5 →
+ * 右缘 356.8 > X1 = 354，伸出内容框、压进右边距。
+ */
+describe('metricsLayout', () => {
+  const X0 = 36;
+  const X1 = 354;
+  const VOLUME = ['总组数 SETS', '总容量 VOLUME', '最长连续 STREAK'] as const;
+  const REPS = ['总组数 SETS', '总次数 REPS', '最长连续 STREAK'] as const;
+  const MOVES = ['总组数 SETS', '动作数 MOVES', '最长连续 STREAK'] as const;
+
+  test.each([
+    ['容量', VOLUME],
+    ['次数', REPS],
+    ['动作数', MOVES],
+  ])('%s 版：三列标签都待在自己的列宽里，最右一列不越过 X1', (_name, labels) => {
+    const m = metricsLayout(fakeMeasure, [...labels]);
+
+    expect(m.cols).toHaveLength(3);
+    expect(m.cols[0]!.x).toBe(X0);
+    for (const c of m.cols) {
+      expect(c.label.width).toBeLessThanOrEqual(m.colW + 1e-6);
+      expect(c.x + c.label.width).toBeLessThanOrEqual(c.x + m.colW + 1e-6);
+    }
+    const last = m.cols[2]!;
+    expect(last.x + last.label.width).toBeLessThanOrEqual(X1 + 1e-6);
+  });
+
+  test('一排标签共用同一字号——只把撑破的那列缩小，三列高矮不齐', () => {
+    const m = metricsLayout(fakeMeasure, [...VOLUME]);
+    const sizes = new Set(m.cols.map((c) => c.label.size));
+    const tracks = new Set(m.cols.map((c) => c.label.track));
+
+    expect(sizes.size).toBe(1);
+    expect(tracks.size).toBe(1);
+  });
+
+  test('分隔线落在两列的间隙里，不压字', () => {
+    const m = metricsLayout(fakeMeasure, [...VOLUME]);
+
+    expect(m.sepX).toHaveLength(2);
+    m.sepX.forEach((sx, i) => {
+      const left = m.cols[i]!;
+      const right = m.cols[i + 1]!;
+      expect(sx).toBeGreaterThanOrEqual(left.x + left.label.width);
+      expect(sx + m.sepW).toBeLessThanOrEqual(right.x);
+    });
+  });
+
+  test('病态长标签：降到最小档还塞不下就截断，绝不越界', () => {
+    const m = metricsLayout(fakeMeasure, ['总组数 SETS', '总容量 VOLUME', '最长连续打卡天数 LONGEST STREAK']);
+
+    for (const c of m.cols) expect(c.label.width).toBeLessThanOrEqual(m.colW + 1e-6);
+    expect(m.cols[2]!.label.text).not.toBe('最长连续打卡天数 LONGEST STREAK');
+  });
+});
+
+/* ── 全年热力的列宽 ──────────────────────────────────────────────────────
+ * YEAR_COLS 写死 53：格宽 = (318 - 2*52)/53 = 4.04。可是列数是 buildYearly
+ * 从「1/1 所在周的周一」数到「12/31 所在周」数出来的——1/1 落在周日的闰年会数出
+ * 54 列。此时第 54 格右缘 = 36 + 53*6.04 + 4.04 = 360.2 > 354，直接画出框。
+ */
+describe('yearGrid', () => {
+  const X0 = 36;
+  const X1 = 354;
+
+  test('1/1 是周日的闰年会排出 54 列——53 是个会过期的假设', () => {
+    const empty: PosterInput = { items: [], dates: [], exMap: new Map() };
+    expect(buildYearly(2012, empty).columns.length).toBe(54);
+  });
+
+  test.each([52, 53, 54])('%i 列都排得下：最后一格右缘不越过 X1', (cols) => {
+    const g = yearGrid(cols);
+    const right = X0 + (cols - 1) * (g.cell + g.gap) + g.cell;
+
+    expect(right).toBeLessThanOrEqual(X1 + 1e-6);
+    expect(g.cell).toBeGreaterThan(0);
+  });
+
+  test('列数越多格子越窄——格宽不是常量', () => {
+    expect(yearGrid(54).cell).toBeLessThan(yearGrid(53).cell);
+  });
+
+  /* 热力格是 fillRound 画的（圆角路径，不是 fillRect），所以探针抓 arcTo：
+     roundPath 的第一段是 arcTo(x+w, …)，args[0] 就是格子右缘；半径 1 是年度格
+     的指纹（月度格是 3）。 */
+  test('画 54 列的那一年：没有任何热力格越过 X1', () => {
+    const empty: PosterInput = { items: [], dates: [], exMap: new Map() };
+    const d = buildYearly(2012, empty);
+    const r = recorder();
+    drawYearlyPoster(r.ctx, d);
+
+    const edges = r.calls
+      .filter((c) => c.fn === 'arcTo' && c.args[4] === 1)
+      .map((c) => Number(c.args[0]));
+    expect(edges.length).toBeGreaterThan(0);
+    expect(Math.max(...edges)).toBeLessThanOrEqual(X1 + 1e-6);
   });
 });
