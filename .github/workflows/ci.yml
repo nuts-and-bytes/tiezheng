@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# 同一分支只允许一条流水线在跑：连着两次 push 会让两个 deploy 抢着覆盖 tiezheng.pages.dev，
+# 谁后落地全看运气 —— 而我们要的语义是「后发的赢」。
+# 不开 cancel-in-progress：半途掐断一个正在上传的 deploy，可能在线上留下只传了一半资产的版本。
+concurrency:
+  group: ${{ github.ref }}
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -18,3 +24,29 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  # 上线。needs: ci —— typecheck / test / build 任何一个红，这一步根本不会开始。
+  # if 里两个条件缺一不可：PR 不该碰生产，别的分支也不该。
+  deploy:
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # 构建从此发生在 CI，不再是我本机 —— .env.local 在这儿不存在。
+      # 埋点改由这两个仓库变量激活：没设 = 空串 = analytics.ts 整个哑掉（不注入脚本、零网络请求）。
+      # 哪天想开，`gh variable set VITE_UMAMI_WEBSITE_ID --body <uuid>` 即可，不用改一行代码。
+      - run: npm run build
+        env:
+          VITE_UMAMI_WEBSITE_ID: ${{ vars.VITE_UMAMI_WEBSITE_ID }}
+          VITE_UMAMI_SRC: ${{ vars.VITE_UMAMI_SRC }}
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=tiezheng --branch=main
