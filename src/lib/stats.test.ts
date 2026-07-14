@@ -390,11 +390,19 @@ describe('longestStreak', () => {
   });
 });
 
+/**
+ * 它原本只吐**一个**主练部位——于是格子只能涂一个色，练了胸 18 + 背 18 的那天
+ * 和只练了胸的那天长得一模一样。渲染层想画出「练了两块」，数据层根本没给它。
+ *
+ * 现在带回全部部位（主练在前）。「一格至多涂两块」是**视觉**决策，归 heat.ts 的
+ * cellParts 管；数据层不替渲染层做截断——年度图的 tooltip 要念全部，筛选器也要能
+ * 命中「那天也练了臂，只是胸更多」的日子。
+ */
 describe('dailyPartLoad', () => {
-  it('每天给出主练部位和总组数', () => {
+  it('每天给出当天练到的全部部位（主练在前）和总组数', () => {
     const m = dailyPartLoad(ITEMS, EX);
-    expect(m.get('2026-07-03')).toEqual({ part: 'leg', sets: 4 }); // 腿 3 组 > 胸 1 组
-    expect(m.get('2026-07-01')).toEqual({ part: 'chest', sets: 2 });
+    expect(m.get('2026-07-03')).toEqual({ parts: ['leg', 'chest'], sets: 4 }); // 腿 3 组 > 胸 1 组
+    expect(m.get('2026-07-01')).toEqual({ parts: ['chest'], sets: 2 });
   });
 
   it('并列时取 BODY_PARTS 顺序靠前者（结果必须确定，不能靠 Map 迭代顺序）', () => {
@@ -402,7 +410,10 @@ describe('dailyPartLoad', () => {
       { date: '2026-07-05', exerciseId: 'e2', sets: [{}] }, // leg 1 组
       { date: '2026-07-05', exerciseId: 'e1', sets: [{}] }, // chest 1 组
     ];
-    expect(dailyPartLoad(tie, EX).get('2026-07-05')).toEqual({ part: 'chest', sets: 2 });
+    expect(dailyPartLoad(tie, EX).get('2026-07-05')).toEqual({
+      parts: ['chest', 'leg'],
+      sets: 2,
+    });
   });
 });
 
@@ -434,13 +445,13 @@ describe('dailyPartBreakdown', () => {
     ]);
   });
 
-  it('主练部位 = 明细的头一项，总组数 = 明细之和（两个函数不许各说各话）', () => {
+  it('部位列表 = 明细的部位序列，总组数 = 明细之和（两个函数不许各说各话）', () => {
     const brk = dailyPartBreakdown(ITEMS, EX);
     const load = dailyPartLoad(ITEMS, EX);
     expect([...brk.keys()].sort()).toEqual([...load.keys()].sort());
     for (const [date, rows] of brk) {
       expect(load.get(date)).toEqual({
-        part: rows[0].part,
+        parts: rows.map((r) => r.part),
         sets: rows.reduce((s, r) => s + r.sets, 0),
       });
     }

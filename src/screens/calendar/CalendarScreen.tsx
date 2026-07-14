@@ -4,7 +4,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { PartIcon } from '../../components/PartIcon';
 import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { monthGrid, shiftMonth, todayStr } from '../../lib/dates';
-import { EMPTY_HEAT, calendarHeatColor } from '../../lib/heat';
+import { calendarHeatColor, cellParts, heatBackground } from '../../lib/heat';
 import { THEME } from '../../lib/theme';
 import { dailyPartLoad, longestStreak, percentile } from '../../lib/stats';
 import type { BodyPart } from '../../lib/types';
@@ -43,15 +43,23 @@ const DAY_IRON = THEME.iron; // 今天且没练：空格子上唯一的热源
 const OVERFLOW_TRAINED = 0.7;
 const OVERFLOW_EMPTY = 0.35;
 
-/** 热力块的浓淡被压到 0.6 封顶后色相会变弱——底部这条实色部位色把「练了哪个部位」钉回来。 */
-function HueBar({ part }: { part: BodyPart }) {
+/**
+ * 热力块的浓淡被压到 0.6 封顶后色相会变弱——底部这条实色部位色把「练了哪个部位」钉回来。
+ * 混合日劈成两段（主练在左），跟格子的对角分割是同一件事的两个说法：
+ * 色块答「练了哪两块」，色条在饱和度被压低时替它兜底。
+ */
+function HueBar({ parts }: { parts: BodyPart[] }) {
   return (
-    <span
-      data-hue={part}
-      aria-hidden
-      className="absolute inset-x-0 bottom-0 h-[3px]"
-      style={{ backgroundColor: bodyPartInfo(part).color }}
-    />
+    <span aria-hidden className="absolute inset-x-0 bottom-0 flex h-[3px]">
+      {parts.map((p) => (
+        <span
+          key={p}
+          data-hue={p}
+          className="flex-1"
+          style={{ backgroundColor: bodyPartInfo(p).color }}
+        />
+      ))}
+    </span>
   );
 }
 
@@ -85,7 +93,9 @@ export function CalendarScreen() {
     const [items, photos] = await Promise.all([listItemsInRange(from, to), listPhotoDates(from, to)]);
     const exMap = await getExercisesByIds([...new Set(items.map((i) => i.exerciseId))]);
 
-    // 主练部位 + 当天总组数：日历格 / 年度热力图 / 海报 共用这一个函数
+    // 当天练到的全部部位（组数降序）+ 总组数：日历格 / 年度热力图 / 海报 共用这一个函数。
+    // 这里原先还手搓了一份「当天有哪些部位」的 Map 喂给图标行——排序规则跟 dailyPartLoad
+    // 不是同一套（它按记录顺序去重，再把主练提前），于是并列日的图标顺序和色块顺序可能打架。
     const load = dailyPartLoad(items, exMap);
 
     // 归一化取 p90 而非 max——一天练爆不该把整月其余日子全冲淡成灰
@@ -94,32 +104,12 @@ export function CalendarScreen() {
       90,
     );
 
-    // 格子上的图标：主练部位打头，其余按 BODY_PARTS 顺序跟随
-    const order = BODY_PARTS.map((p) => p.id);
-    const parts = new Map<string, BodyPart[]>();
-    for (const item of items) {
-      const part = exMap.get(item.exerciseId)?.bodyPart;
-      if (!part) continue;
-      const list = parts.get(item.date) ?? [];
-      if (!list.includes(part)) list.push(part);
-      parts.set(item.date, list);
-    }
-    for (const [date, list] of parts) {
-      const primary = load.get(date)?.part;
-      list.sort((a, b) => {
-        if (a === primary) return -1;
-        if (b === primary) return 1;
-        return order.indexOf(a) - order.indexOf(b);
-      });
-    }
-
     // 三项统计都按「当前浏览的这个月」算：翻到三月，看到的就该是三月的账
     const monthDates = [...load.keys()].filter((d) => d.startsWith(ym));
     const monthSets = monthDates.reduce((sum, d) => sum + (load.get(d)?.sets ?? 0), 0);
 
     return {
       load,
-      parts,
       photos,
       maxSets,
       days: monthDates.length,
@@ -196,7 +186,8 @@ export function CalendarScreen() {
         {grid.map((date) => {
           const inMonth = date.startsWith(ym);
           const day = data?.load.get(date);
-          const icons = (data?.parts.get(date) ?? []).slice(0, 2);
+          // 色块、图标、色相条共用这一份「至多两块」——三者绝不许各切各的
+          const shown = cellParts(day?.parts ?? []);
           const hasPhoto = data?.photos.has(date) ?? false;
           const isToday = date === today;
           const dayNum = Number(date.slice(8));
@@ -214,22 +205,24 @@ export function CalendarScreen() {
               to={`/day/${date}`}
               data-testid={`day-${date}`}
               aria-current={isToday ? 'date' : undefined}
+              /* 念**全部**部位而不只是主练：读屏用户拿不到色块和图标，
+                 aria-label 是他读到这一格的唯一通道，不能比视觉少一块信息。 */
               aria-label={
                 day
-                  ? `${label} ${bodyPartInfo(day.part).name} ${day.sets}组`
+                  ? `${label} ${day.parts.map((p) => bodyPartInfo(p).name).join(' ')} ${day.sets}组`
                   : `${label} 未训练`
               }
               style={{
-                backgroundColor: day
-                  ? calendarHeatColor(day.part, day.sets, data!.maxSets)
-                  : EMPTY_HEAT,
+                background: heatBackground(
+                  shown.map((p) => calendarHeatColor(p, day!.sets, data!.maxSets)),
+                ),
                 opacity: cellOpacity,
               }}
               className={`relative flex aspect-square flex-col items-center justify-center gap-[3px] overflow-hidden rounded-[11px] text-[11px] active:scale-95 ${
                 isToday ? 'ring-1 ring-iron' : ''
               }`}
             >
-              {day && <HueBar part={day.part} />}
+              {day && <HueBar parts={shown} />}
               {hasPhoto && (
                 <span
                   data-photo
@@ -248,9 +241,9 @@ export function CalendarScreen() {
               >
                 {dayNum}
               </span>
-              {icons.length > 0 && (
+              {shown.length > 0 && (
                 <span className="flex gap-[1px]" style={{ filter: ON_HEAT_SHADOW }}>
-                  {icons.map((p) => (
+                  {shown.map((p) => (
                     // 底色已经是部位色，图标再上同一个色只会糊成一片——这里只留形状
                     <span key={p} data-part={p} className="flex">
                       <PartIcon part={p} size={11} color="rgba(242,240,235,.92)" />

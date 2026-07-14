@@ -1,6 +1,6 @@
 import { BODY_PARTS, bodyPartInfo } from '../data/bodyParts';
 import { addDays, monthGrid, weekStartOf } from './dates';
-import { EMPTY_HEAT, heatColor } from './heat';
+import { CELL_PARTS_MAX, EMPTY_HEAT, cellParts, heatColor } from './heat';
 import {
   dailyPartLoad,
   longestStreak,
@@ -8,6 +8,7 @@ import {
   prsByExercise,
   setsByBodyPart,
   totals,
+  type DayLoad,
   type ExMap,
   type LoadItem,
 } from './stats';
@@ -89,10 +90,19 @@ const MONTH_EN = [
 
 /* ── 数据模型 ─────────────────────────────────────────────────────────── */
 
-/** 热力格：一天。part=null 表示当天没练（画 EMPTY_HEAT）。 */
+/**
+ * 热力格：一天。
+ *
+ * parts 是当天练到的**全部**部位（组数降序，parts[0] = 主练）；空数组 = 当天没练，画 EMPTY_HEAT。
+ * 它原本只存一个 `part: BodyPart | null`——于是胸 4 组 + 背 2 组的那天只涂胸色，
+ * 而同一张海报的部位分布条正写着胸 4 / 背 2。一格一色是有损压缩，这里把信息补回来。
+ *
+ * 「一格至多涂两块」是**视觉**决策，归 heat.ts 的 cellParts；数据层不截断。
+ */
 export interface HeatCell {
   date: string;
-  part: BodyPart | null;
+  parts: BodyPart[];
+  /** 当天**总**组数（不是主练部位的组数）——决定格子的浓淡。 */
   sets: number;
 }
 
@@ -150,7 +160,11 @@ const MAX_PR_ROWS = 3;
 
 /* ── 组装（纯函数）─────────────────────────────────────────────────────── */
 
-function baseOf(items: LoadItem[], dates: string[], exMap: ExMap): PosterBase & { load: Map<string, { part: BodyPart; sets: number }> } {
+function baseOf(
+  items: LoadItem[],
+  dates: string[],
+  exMap: ExMap,
+): PosterBase & { load: Map<string, DayLoad> } {
   const t = totals(items, dates);
   const bySet = setsByBodyPart(items, exMap);
   const split = BODY_PARTS.map((p) => ({ part: p.id, name: p.name, sets: bySet[p.id] }))
@@ -174,14 +188,10 @@ function baseOf(items: LoadItem[], dates: string[], exMap: ExMap): PosterBase & 
   };
 }
 
-function cellOf(
-  date: string,
-  prefix: string,
-  load: Map<string, { part: BodyPart; sets: number }>,
-): HeatCell | null {
+function cellOf(date: string, prefix: string, load: Map<string, DayLoad>): HeatCell | null {
   if (!date.startsWith(prefix)) return null;
   const hit = load.get(date);
-  return { date, part: hit?.part ?? null, sets: hit?.sets ?? 0 };
+  return { date, parts: hit?.parts ?? [], sets: hit?.sets ?? 0 };
 }
 
 /** ym = '2026-07' */
@@ -764,7 +774,17 @@ function distBlock(ctx: CanvasRenderingContext2D, split: SplitRow[], y: number):
   return cur + 6;
 }
 
-/** 热力格：颜色**只能**来自 heat.ts，日历页 / 数据页 / 海报三处同色。 */
+/**
+ * 热力格：颜色**只能**来自 heat.ts，日历页 / 数据页 / 海报三处同色。
+ *
+ * 一天练了两块（胸 4 + 背 2）时格子沿对角线劈开：左上主练、右下次练，分割线 ╱。
+ * 这跟 CSS 侧的 `linear-gradient(135deg, 主 0 50%, 次 50% 100%)` 是同一个几何——
+ * 日历页和海报上的同一天必须长得一模一样，所以「涂哪几块」由 heat.ts 的 cellParts 说了算，
+ * 两边都不许自己判断。
+ *
+ * 两块共享同一个 alpha（当天**总**组数）：格子的深浅答的是「这天练得狠不狠」，
+ * 不是「这块练了几组」——后者是部位分布条的活。
+ */
 function heatCell(
   ctx: CanvasRenderingContext2D,
   cell: HeatCell | null,
@@ -775,9 +795,29 @@ function heatCell(
   radius: number,
 ): void {
   if (cell === null) return; // 不属于本月/本年：留空，不画
-  const fill =
-    cell.part === null || cell.sets === 0 ? EMPTY_HEAT : heatColor(cell.part, cell.sets, maxSets);
-  fillRound(ctx, x, y, size, size, radius, fill);
+
+  const parts = cellParts(cell.parts);
+  if (parts.length === 0 || cell.sets === 0) {
+    fillRound(ctx, x, y, size, size, radius, EMPTY_HEAT);
+    return;
+  }
+
+  // 主练色先铺满整格——次练的三角盖在它上面。少一个圆角路径要算。
+  fillRound(ctx, x, y, size, size, radius, heatColor(parts[0], cell.sets, maxSets));
+  if (parts.length < CELL_PARTS_MAX) return;
+
+  // 次练：右下三角，切回圆角矩形里画（否则会啃掉格子右下的圆角）
+  ctx.save();
+  roundPath(ctx, x, y, size, size, radius);
+  ctx.clip();
+  ctx.beginPath();
+  ctx.moveTo(x + size, y); // 右上
+  ctx.lineTo(x, y + size); // 左下 —— 斜边即分割线 ╱
+  ctx.lineTo(x + size, y + size); // 右下
+  ctx.closePath();
+  ctx.fillStyle = heatColor(parts[1], cell.sets, maxSets);
+  ctx.fill();
+  ctx.restore();
 }
 
 function monthGridBlock(ctx: CanvasRenderingContext2D, d: MonthlyPosterData, y: number): number {

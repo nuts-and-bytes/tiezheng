@@ -53,3 +53,40 @@ export function calendarHeatColor(part: BodyPart, sets: number, maxSets: number)
   const a = Math.round(heatAlpha(sets, maxSets) * CALENDAR_ALPHA_CEIL * 1000) / 1000;
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
+
+/**
+ * 一个格子最多承载两块部位。
+ *
+ * 一格一色是一次有损压缩：胸 18 组 + 背 18 组的那天只涂胸色，而同屏的「部位分布」
+ * 正写着胸 18 / 背 18——两个模块在同一页上互相拆台。更要命的是，练一块和练两块的
+ * 日子长得一模一样，日历页最该一眼答出的问题（「这天练的什么」）它答不出。
+ *
+ * 为什么止步于 2：第三条色带在 4px 的海报年度格上不足 1px，画出来只是噪声；
+ * 日历格的图标行早就是 slice(0, 2)（CalendarScreen 一直这么画），色块跟上它就是了。
+ */
+export const CELL_PARTS_MAX = 2;
+
+/**
+ * 一格涂哪几块（主练在前）。
+ * 不排序——dailyPartBreakdown 已经排好，并列也已定好决胜规则；这里只负责「至多两块」这一刀。
+ */
+export function cellParts(parts: BodyPart[]): BodyPart[] {
+  return parts.slice(0, CELL_PARTS_MAX);
+}
+
+/**
+ * 1~2 个色 → 一块 CSS 背景。
+ *
+ * 对角分割，不是左右/上下对半：45° 是格子里最长的那条边，4px 的小格上仍然可辨；
+ * 横竖分割在小格上会跟网格自己的行列缝混成一片。
+ *
+ * 两个色标都落在 50%（硬边），不给插值区——否则两个部位色会在中缝糊出第三个颜色，
+ * 而那个颜色在色表里不存在，读者只会当成第三个部位。
+ *
+ * 135deg 的渐变线指向右下，所以分割线是 ╱，主练色占左上——跟 canvas 侧画的三角同向。
+ */
+export function heatBackground(colors: string[]): string {
+  if (colors.length === 0) return EMPTY_HEAT;
+  if (colors.length === 1) return colors[0];
+  return `linear-gradient(135deg, ${colors[0]} 0 50%, ${colors[1]} 50% 100%)`;
+}

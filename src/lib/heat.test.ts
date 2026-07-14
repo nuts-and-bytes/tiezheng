@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   CALENDAR_ALPHA_CEIL,
+  CELL_PARTS_MAX,
   EMPTY_HEAT,
   HEAT_FLOOR,
   calendarHeatColor,
+  cellParts,
   heatAlpha,
+  heatBackground,
   heatColor,
 } from './heat';
 
@@ -77,5 +80,63 @@ describe('calendarHeatColor', () => {
     const a = Number(calendarHeatColor('chest', 1, 20).match(/([\d.]+)\)$/)![1]);
     expect(a).toBeGreaterThanOrEqual(HEAT_FLOOR * CALENDAR_ALPHA_CEIL);
     expect(a).toBeGreaterThan(0.15);
+  });
+});
+
+/**
+ * 一格一色是一次**有损压缩**：练了胸 18 组 + 背 18 组的那天，格子只涂胸色，
+ * 而同一屏的「部位分布」正写着胸 18 / 背 18。两个模块在同一页上互相拆台。
+ * 更糟的是：练一个部位的日子和练两个部位的日子长得**一模一样**——
+ * 日历页最该一眼答出的那个问题（「这天练的什么」），它答不出。
+ *
+ * cellParts 是「一格涂哪几块」这条规则的唯一出处。它不做排序（dailyPartBreakdown
+ * 已经排好，并列也已定好决胜规则），只负责「至多两块」这一刀。
+ */
+describe('cellParts：一格至多两块，主练在前', () => {
+  it('单部位日：就一块', () => {
+    expect(cellParts(['chest'])).toEqual(['chest']);
+  });
+
+  it('双部位日：两块都上，顺序照抄输入（主练在前）', () => {
+    expect(cellParts(['back', 'chest'])).toEqual(['back', 'chest']);
+  });
+
+  it('三个及以上：截到两块。第三条色带在 4px 的年度格上不足 1px，画了只是噪声', () => {
+    expect(cellParts(['leg', 'core', 'arm', 'cardio'])).toEqual(['leg', 'core']);
+    expect(CELL_PARTS_MAX).toBe(2);
+  });
+
+  it('空日子：一块都没有（未训练日不该被当成有色格）', () => {
+    expect(cellParts([])).toEqual([]);
+  });
+});
+
+/**
+ * 对角分割而不是左右/上下对半：45° 的分割线在 4px 的小格上仍然可辨（对角是最长的那条边），
+ * 而横竖分割在小格上会跟网格的行列线混成一片。
+ */
+describe('heatBackground：把 1~2 个色变成一块 CSS 背景', () => {
+  it('没有色 → 空白格底色', () => {
+    expect(heatBackground([])).toBe(EMPTY_HEAT);
+  });
+
+  it('一个色 → 就是那个色，不套渐变（单部位日不该多一层 CSS）', () => {
+    expect(heatBackground(['rgba(232, 72, 63, 1)'])).toBe('rgba(232, 72, 63, 1)');
+  });
+
+  it('两个色 → 沿对角线劈开的硬边，不是柔和过渡', () => {
+    const bg = heatBackground(['rgba(232, 72, 63, 1)', 'rgba(79, 142, 247, 1)']);
+    expect(bg).toBe(
+      'linear-gradient(135deg, rgba(232, 72, 63, 1) 0 50%, rgba(79, 142, 247, 1) 50% 100%)',
+    );
+    // 硬边：两个色标都落在 50%，中间没有插值区。否则两个部位色会在中缝糊出第三个颜色
+    expect(bg).toContain('0 50%');
+    expect(bg).toContain('50% 100%');
+  });
+
+  it('主练色在左上（渐变的起点），跟 canvas 侧画的三角同向', () => {
+    const bg = heatBackground(['MAIN', 'SECOND']);
+    expect(bg.indexOf('MAIN')).toBeLessThan(bg.indexOf('SECOND'));
+    expect(bg).toContain('135deg');
   });
 });

@@ -57,6 +57,28 @@ function pageText(): string {
   return document.body.textContent ?? '';
 }
 
+/** 把任意合法色值折算成浏览器的规范写法，才能拿 '#1a1a1d' 和 'rgb(26, 26, 29)' 相互比对 */
+function norm(color: string): string {
+  const el = document.createElement('div');
+  el.style.backgroundColor = color;
+  return el.style.backgroundColor;
+}
+
+/**
+ * 混合日的格子背景是 linear-gradient，jsdom 不会把它展开进 backgroundColor。
+ * 所以别问「backgroundColor 是什么」——问「这块格子上落了哪几个色，按什么顺序」。
+ */
+function fillsOf(el: HTMLElement): string[] {
+  const s = el.style;
+  const bg = s.background || s.backgroundImage || s.backgroundColor;
+  return (bg.match(/rgba?\([^)]+\)|#[0-9a-f]{3,8}/gi) ?? []).map(norm);
+}
+
+function bgOf(el: HTMLElement): string {
+  const s = el.style;
+  return s.background || s.backgroundImage || s.backgroundColor;
+}
+
 describe('零数据（新用户）', () => {
   test('不渲染空图表框，只给一句人话和打卡入口', async () => {
     renderStats();
@@ -339,7 +361,7 @@ describe('年度热力图', () => {
 
     const cell = await screen.findByTestId('heat-2026-07-13');
     // 单日单组：percentile([1], 90) = 1 → alpha 打满
-    expect(cell).toHaveStyle({ backgroundColor: heatColor('chest', 1, 1) });
+    expect(fillsOf(cell)).toEqual([norm(heatColor('chest', 1, 1))]);
   });
 
   test('没练的日子不是黑洞，用 EMPTY_HEAT 兜底', async () => {
@@ -347,7 +369,7 @@ describe('年度热力图', () => {
     renderStats();
 
     const empty = await screen.findByTestId('heat-2026-07-14');
-    expect(empty).not.toHaveStyle({ backgroundColor: heatColor('chest', 1, 1) });
+    expect(fillsOf(empty)).toEqual([norm(EMPTY_HEAT)]);
   });
 
   test('有月份轴：不然用户根本不知道哪一列是几月', async () => {
@@ -416,10 +438,10 @@ describe('年度热力图', () => {
     const legend = await screen.findByTestId('heat-legend');
     await user.click(within(legend).getByRole('button', { name: '胸' }));
 
-    expect(screen.getByTestId('heat-2026-07-13')).toHaveStyle({
-      backgroundColor: heatColor('chest', 1, 1),
-    });
-    expect(screen.getByTestId('heat-2026-07-14')).toHaveStyle({ backgroundColor: EMPTY_HEAT });
+    expect(fillsOf(screen.getByTestId('heat-2026-07-13'))).toEqual([
+      norm(heatColor('chest', 1, 1)),
+    ]);
+    expect(fillsOf(screen.getByTestId('heat-2026-07-14'))).toEqual([norm(EMPTY_HEAT)]);
     expect(within(legend).getByRole('button', { name: '胸' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -436,9 +458,9 @@ describe('年度热力图', () => {
     await user.click(within(legend).getByRole('button', { name: '胸' }));
 
     // 那天只练了 1 组胸 → 筛出来的浓淡按「这个部位当天的组数」算，不是当天总组数
-    expect(screen.getByTestId('heat-2026-07-13')).toHaveStyle({
-      backgroundColor: heatColor('chest', 1, 1),
-    });
+    expect(fillsOf(screen.getByTestId('heat-2026-07-13'))).toEqual([
+      norm(heatColor('chest', 1, 1)),
+    ]);
   });
 
   test('再点一次取消筛选（不然用户被自己锁死在一个部位里）', async () => {
@@ -451,9 +473,59 @@ describe('年度热力图', () => {
     await user.click(within(legend).getByRole('button', { name: '胸' }));
     await user.click(within(legend).getByRole('button', { name: '胸' }));
 
-    expect(screen.getByTestId('heat-2026-07-14')).toHaveStyle({
-      backgroundColor: heatColor('leg', 1, 1),
-    });
+    expect(fillsOf(screen.getByTestId('heat-2026-07-14'))).toEqual([norm(heatColor('leg', 1, 1))]);
+  });
+});
+
+/**
+ * 一格一色是一次**有损压缩**：主练腿、顺带练胸的那天，格子只涂腿色——而同一页往上滚
+ * 两屏的「部位分布」正写着腿 2 / 胸 1。两个模块在同一页上互相拆台。
+ *
+ * 日历格、海报格、这里的年度格必须服从同一条规则（`cellParts` 是它唯一的出处）：
+ * 至多两块，对角劈开，主练在左上。三处同色同形，用户才不用重新学一遍怎么读。
+ */
+describe('年度热力图的混合日：一格看得出两块', () => {
+  test('主练腿 + 顺带胸：格子对角劈成腿色/胸色，浓淡按当天总组数', async () => {
+    await addWorkoutItem('2026-07-13', 'p-squat', [{ weight: 80, reps: 5 }, { weight: 80, reps: 5 }]);
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    const cell = await screen.findByTestId('heat-2026-07-13');
+    // 全年只有这一天 → percentile([3], 90) = 3。两块共用同一个 alpha：
+    // 格子的深浅答的是「这天练得狠不狠」，不是「这一块练了几组」
+    expect(fillsOf(cell)).toEqual([norm(heatColor('leg', 3, 3)), norm(heatColor('chest', 3, 3))]);
+    // 硬边对角、主练在左上——跟日历格和海报格同一个方向
+    expect(bgOf(cell)).toContain('135deg');
+  });
+
+  test('练了三块的一天只画前两块：9px 的格子上第三条色带不足 3px，画了只是噪声', async () => {
+    await addWorkoutItem('2026-07-13', 'p-squat', [
+      { weight: 80, reps: 5 },
+      { weight: 80, reps: 5 },
+      { weight: 80, reps: 5 },
+    ]);
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }, { weight: 60, reps: 8 }]);
+    await addWorkoutItem('2026-07-13', 'p-pullup', [{ weight: 0, reps: 8 }]);
+    renderStats();
+
+    const cell = await screen.findByTestId('heat-2026-07-13');
+    expect(fillsOf(cell)).toEqual([norm(heatColor('leg', 6, 6)), norm(heatColor('chest', 6, 6))]);
+    // 但 title 仍报全部真相——被截断的只是像素，不是账
+    expect(cell).toHaveAttribute('title', '2026-07-13 · 腿 3 组 · 胸 2 组 · 背 1 组');
+  });
+
+  test('筛选态回到单色：此时唯一的变量是浓淡，色觉障碍者才读得全', async () => {
+    await addWorkoutItem('2026-07-13', 'p-squat', [{ weight: 80, reps: 5 }, { weight: 80, reps: 5 }]);
+    await addWorkoutItem('2026-07-13', 'p-bench', [{ weight: 60, reps: 8 }]);
+    const user = userEvent.setup();
+    renderStats();
+
+    const legend = await screen.findByTestId('heat-legend');
+    await user.click(within(legend).getByRole('button', { name: '腿' }));
+
+    const cell = screen.getByTestId('heat-2026-07-13');
+    expect(fillsOf(cell)).toEqual([norm(heatColor('leg', 2, 2))]);
+    expect(bgOf(cell)).not.toContain('gradient'); // 筛出来的图不该还劈着
   });
 });
 

@@ -119,6 +119,7 @@ function recorder(): Recorder {
     arcTo: rec('arcTo'),
     fill: rec('fill'),
     stroke: rec('stroke'),
+    clip: rec('clip'),
     fillRect: rec('fillRect'),
     strokeRect: rec('strokeRect'),
     clearRect: rec('clearRect'),
@@ -391,11 +392,11 @@ describe('buildMonthly', () => {
 
     // 2026-07-01 是周三 → 该行前两格（周一、周二）是 null
     expect(d.weeks[0]!.slice(0, 2)).toEqual([null, null]);
-    expect(d.weeks[0]![2]).toMatchObject({ date: '2026-07-01', part: 'chest', sets: 4 });
+    expect(d.weeks[0]![2]).toMatchObject({ date: '2026-07-01', parts: ['chest'], sets: 4 });
 
     // 没练的日子留格但无部位
     const d7 = flat.find((c) => c?.date === '2026-07-07');
-    expect(d7).toMatchObject({ part: null, sets: 0 });
+    expect(d7).toMatchObject({ parts: [], sets: 0 });
   });
 
   test('maxSets 用 90 分位而不是 max —— 一天练爆不许冲淡全月', () => {
@@ -438,7 +439,7 @@ describe('buildYearly', () => {
     expect(cells.every((c) => c!.date.startsWith('2026-'))).toBe(true);
 
     const jul1 = cells.find((c) => c!.date === '2026-07-01');
-    expect(jul1).toMatchObject({ part: 'chest', sets: 4 });
+    expect(jul1).toMatchObject({ parts: ['chest'], sets: 4 });
   });
 
   test('PR 亮点取 e1RM 最高的几条', () => {
@@ -780,5 +781,87 @@ describe('monthTicks：年度热力图得有时间轴', () => {
     for (const m of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
       expect(r.texts).toContain(String(m));
     }
+  });
+});
+
+/**
+ * 一格一色是一次**有损压缩**。练了胸 4 组 + 背 2 组的那天，海报格只涂胸色——
+ * 而同一张海报的「部位分布」条形图正写着胸 4 / 背 2。两个模块在同一张图上互相拆台。
+ *
+ * 规则本身归 heat.ts（cellParts / heatBackground）。这里只钉 canvas 侧：
+ * 双部位日必须落下**两个**部位色，且和 CSS 的 135deg 同向（主练色在左上）。
+ * 浓淡由当天**总组数**决定（两块共享同一个 alpha）——格子的深浅答的是「这天练得狠不狠」，
+ * 不是「这块练了几组」；后者是条形图的活。
+ */
+describe('多部位日：一个格子涂两块部位色', () => {
+  /** 2026-07-01：胸 4 组 + 背 2 组（同一天）；07-03：腿 3 组（单部位对照） */
+  function twoPartInput(): PosterInput {
+    return {
+      items: [
+        item('2026-07-01', 'e-bench', 4, 60, 8),
+        item('2026-07-01', 'e-row', 2, 50, 10),
+        item('2026-07-03', 'e-squat', 3, 100, 5),
+      ],
+      dates: ['2026-07-01', '2026-07-03'],
+      exMap: EX_MAP,
+    };
+  }
+
+  test('数据层：格子带着当天全部部位，组数降序，总组数决定浓淡', () => {
+    const d = buildMonthly('2026-07', twoPartInput());
+    expect(d.weeks[0]![2]).toMatchObject({
+      date: '2026-07-01',
+      parts: ['chest', 'back'], // 胸 4 > 背 2
+      sets: 6, // 4 + 2 —— 不是主练部位的 4
+    });
+  });
+
+  test('canvas：双部位日落下两个部位色，同一个 alpha', () => {
+    const d = buildMonthly('2026-07', twoPartInput());
+    const r = recorder();
+    drawMonthlyPoster(r.ctx, d);
+    const styles = r.calls.filter((c) => c.fn === 'fill').map((c) => c.fillStyle);
+
+    expect(styles).toContain(heatColor('chest', 6, d.maxSets));
+    expect(styles).toContain(heatColor('back', 6, d.maxSets)); // 次练也上色
+  });
+
+  test('canvas：次练色画成三角形——分割线是 ╱，和 CSS 的 135deg 同向', () => {
+    const d = buildMonthly('2026-07', twoPartInput());
+    const r = recorder();
+    drawMonthlyPoster(r.ctx, d);
+
+    // 次练色那次 fill 之前，必须先 clip（切回圆角），再走三条直线围出右下三角
+    const i = r.calls.findIndex(
+      (c) => c.fn === 'fill' && c.fillStyle === heatColor('back', 6, d.maxSets),
+    );
+    expect(i).toBeGreaterThan(-1);
+
+    const before = r.calls.slice(0, i);
+    expect(before.some((c) => c.fn === 'clip')).toBe(true);
+
+    // 三角的三个顶点：右上 → 左下 → 右下。moveTo(x+size, y) 是关键——起点在右上角，
+    // 斜边由此指向左下，围出的是**右下**三角（左上留给主练色）。
+    const tri = before.slice(before.map((c) => c.fn).lastIndexOf('beginPath'));
+    const pts = tri.filter((c) => c.fn === 'moveTo' || c.fn === 'lineTo').map((c) => c.args);
+    expect(pts).toHaveLength(3);
+    const [p0, p1, p2] = pts as [number, number][];
+    const size = p2[0] - p1[0]; // 右下.x - 左下.x = 格子边长
+    expect(size).toBeGreaterThan(0);
+    expect(p0[0]).toBeCloseTo(p2[0], 6); // 右上 与 右下 同一列
+    expect(p1[1]).toBeCloseTo(p2[1], 6); // 左下 与 右下 同一行
+    expect(p1[1] - p0[1]).toBeCloseTo(size, 6); // 斜边正好 45°：它是正方形的对角线
+  });
+
+  test('单部位日不多画一层：只有它自己的色，没有第二个三角', () => {
+    const d = buildMonthly('2026-07', twoPartInput());
+    const r = recorder();
+    drawMonthlyPoster(r.ctx, d);
+    const styles = r.calls.filter((c) => c.fn === 'fill').map((c) => c.fillStyle);
+
+    expect(styles).toContain(heatColor('leg', 3, d.maxSets));
+    // 腿只在 07-03 出现，而那天没有第二块部位 —— 三角只该为双部位日画一次
+    const clips = r.calls.filter((c) => c.fn === 'clip').length;
+    expect(clips).toBe(1);
   });
 });

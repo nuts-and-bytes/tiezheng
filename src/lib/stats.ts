@@ -430,13 +430,32 @@ export function dailyPartBreakdown(items: LoadItem[], exMap: ExMap): Map<string,
   return out;
 }
 
-/** 每天的主练部位（组数最多者；并列取 BODY_PARTS 顺序靠前者）+ 当天总组数。
-    日历格上色和年度海报热力图共用这一个函数——两处颜色规则必须完全一致。
-    派生自 dailyPartBreakdown：决胜规则只写一遍，两个函数不可能各说各话 */
-export function dailyPartLoad(items: LoadItem[], exMap: ExMap): Map<string, DayPartLoad> {
-  const out = new Map<string, DayPartLoad>();
+/** 一天的格子要画出来所需要的全部信息。 */
+export interface DayLoad {
+  /** 当天练到的**全部**部位，组数降序（并列取 BODY_PARTS 顺序）。parts[0] = 主练。 */
+  parts: BodyPart[];
+  /** 当天总组数——决定格子的浓淡。 */
+  sets: number;
+}
+
+/**
+ * 每天的部位 + 总组数。日历格、数据页年度图、海报三处共用这一个函数——
+ * 同一个训练日在三个地方必须长同一个样。派生自 dailyPartBreakdown：决胜规则只写一遍。
+ *
+ * 它原本只吐一个「主练部位」，于是格子只能涂一个色：练了胸 18 + 背 18 的那天，
+ * 和只练了胸的那天长得一模一样，而同屏的「部位分布」正写着胸 18 / 背 18。
+ * 渲染层想画出「练了两块」，数据层根本没给它。
+ *
+ * 这里不做截断——「一格至多涂两块」是视觉决策，归 heat.ts 的 cellParts 管。
+ * 年度图的 tooltip 要念全部部位，筛选器也要能命中「那天也练了臂，只是胸更多」的日子。
+ */
+export function dailyPartLoad(items: LoadItem[], exMap: ExMap): Map<string, DayLoad> {
+  const out = new Map<string, DayLoad>();
   for (const [date, rows] of dailyPartBreakdown(items, exMap)) {
-    out.set(date, { part: rows[0].part, sets: rows.reduce((s, r) => s + r.sets, 0) });
+    out.set(date, {
+      parts: rows.map((r) => r.part),
+      sets: rows.reduce((s, r) => s + r.sets, 0),
+    });
   }
   return out;
 }

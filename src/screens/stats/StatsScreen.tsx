@@ -7,7 +7,7 @@ import { PhotoTimeline } from '../../components/PhotoTimeline';
 import { Stamp } from '../../components/Stamp';
 import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
 import { addDays, todayStr } from '../../lib/dates';
-import { EMPTY_HEAT, heatColor } from '../../lib/heat';
+import { EMPTY_HEAT, cellParts, heatBackground, heatColor } from '../../lib/heat';
 import { vibrate } from '../../lib/platform';
 import { THEME } from '../../lib/theme';
 import {
@@ -437,8 +437,14 @@ function Balance({
   );
 }
 
-/** 年度热力图：与日历页共用 heatColor —— 同一个训练日在两处必须长同一个颜色 */
+/** 年度热力图：与日历页 / 海报共用 heatColor + cellParts —— 同一个训练日在三处必须长同一个样 */
 const partName = (p: BodyPart) => bodyPartInfo(p).name;
+
+/** 一个格子要画的东西：涂哪几块（主练在前）、多浓（当天总组数） */
+interface HeatCell {
+  parts: BodyPart[];
+  sets: number;
+}
 
 function Heat({
   items, exMap, dates, year, onYear, today,
@@ -466,12 +472,18 @@ function Heat({
   const [pick, setPick] = useState<BodyPart | null>(null);
 
   const breakdown = dailyPartBreakdown(items, exMap);
-  /** 筛选态下，格子代表的是「这一天的这个部位」；无筛选时代表「这一天的主练部位 + 总组数」 */
-  const shownOf = (rows: DayPartLoad[] | undefined): DayPartLoad | undefined => {
+  /**
+   * 筛选态下，格子代表的是「这一天的这个部位」——单色，唯一的变量是浓淡。
+   * 无筛选时代表「这一天练到的部位（主练在前）+ 总组数」：主练腿、顺带练胸的那天，
+   * 只涂腿色就是在跟同一页的「部位分布」互相拆台。视觉上截到几块由 cellParts 一处裁决。
+   */
+  const shownOf = (rows: DayPartLoad[] | undefined): HeatCell | undefined => {
     if (!rows) return undefined;
-    if (pick === null) return { part: rows[0].part, sets: rows.reduce((s, r) => s + r.sets, 0) };
+    if (pick === null) {
+      return { parts: rows.map((r) => r.part), sets: rows.reduce((s, r) => s + r.sets, 0) };
+    }
     const hit = rows.find((r) => r.part === pick);
-    return hit && { part: pick, sets: hit.sets };
+    return hit && { parts: [pick], sets: hit.sets };
   };
 
   // 浓淡的分母跟着筛选走：筛「胸」时拿全年总组数当分母，胸的格子会集体发灰
@@ -542,10 +554,14 @@ function Heat({
                     : { 'aria-hidden': true })}
                   className="size-[9px] rounded-[2px]"
                   style={{
-                    backgroundColor: !d.startsWith(String(y))
+                    // 混合日对角劈成两块（heatBackground），两块共用当天总组数算出的同一个 alpha：
+                    // 格子的深浅答的是「这天练得狠不狠」，不是「这一块练了几组」
+                    background: !d.startsWith(String(y))
                       ? 'transparent'
                       : hit
-                        ? heatColor(hit.part, hit.sets, maxSets)
+                        ? heatBackground(
+                            cellParts(hit.parts).map((p) => heatColor(p, hit.sets, maxSets)),
+                          )
                         : EMPTY_HEAT,
                   }}
                 />
