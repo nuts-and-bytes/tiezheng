@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Line } from '../../components/charts';
+import { CHART_GRID, Line } from '../../components/charts';
 import { PartIcon } from '../../components/PartIcon';
 import { PhotoTimeline } from '../../components/PhotoTimeline';
 import { Stamp } from '../../components/Stamp';
@@ -357,7 +357,7 @@ function Strength({
           scales: {
             x: { grid: { display: false }, ticks: { maxTicksLimit: 5, font: { size: 9 } } },
             y: {
-              grid: { color: 'rgba(255,255,255,0.05)' },
+              grid: { color: CHART_GRID },
               border: { display: false },
               ticks: { maxTicksLimit: 4, font: { size: 9 } },
             },
@@ -627,7 +627,7 @@ function Weight({ weights }: { weights: { date: string; weightKg: number }[] }) 
           scales: {
             x: { grid: { display: false }, ticks: { maxTicksLimit: 5, font: { size: 9 } } },
             y: {
-              grid: { color: 'rgba(255,255,255,0.05)' },
+              grid: { color: CHART_GRID },
               border: { display: false },
               ticks: { maxTicksLimit: 4, font: { size: 9 } },
             },
