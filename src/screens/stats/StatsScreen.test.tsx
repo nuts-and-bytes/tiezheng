@@ -295,17 +295,21 @@ describe('力量趋势（进步曲线：脱离上方的范围切换器）', () =
 });
 
 describe('部位均衡', () => {
-  test('副标题把两个时间语义标在脸上（柱长=范围内组数，右侧=全时段距上次训练）', async () => {
+  test('副标题指代的是颜色不是位置——因为「右侧」那一列会骗人', async () => {
     await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }]);
     const user = userEvent.setup();
     renderStats();
 
-    expect(await screen.findByText(/柱长 = 本周组数 · 右侧 = 距上次训练/)).toBeInTheDocument();
+    // 右侧那一列其实是两行：组数（永远在）+ 琥珀色的「距上次训练」（只在 ≥7 天没练时出现）。
+    // 旧文案写「右侧 = 距上次训练」，可对最近练过的部位，右侧唯一在场的恰恰是组数，
+    // 副标题声称的那一行根本不显示——用位置指代一个条件渲染的东西，必然说谎。
+    // 颜色不会：琥珀行可以不出现，但只要出现就一定是琥珀色。
+    expect(await screen.findByText(/柱长 \/ 数字 = 本周组数 · 琥珀 = 距上次训练/)).toBeInTheDocument();
 
     // 范围一换，柱长的口径也换了——文案必须跟着走，不能永远写「本周」
     await user.click(screen.getByRole('button', { name: '月' }));
-    expect(await screen.findByText(/柱长 = 本月组数/)).toBeInTheDocument();
-    expect(screen.queryByText(/柱长 = 本周组数/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/柱长 \/ 数字 = 本月组数/)).toBeInTheDocument();
+    expect(screen.queryByText(/柱长 \/ 数字 = 本周组数/)).not.toBeInTheDocument();
   });
 
   test('显示每个部位的组数，以及久疏于练的天数', async () => {
@@ -321,6 +325,10 @@ describe('部位均衡', () => {
 
     const chest = screen.getByTestId('part-chest');
     expect(within(chest).getByText('2 组')).toBeInTheDocument();
+
+    // 副标题许诺「琥珀 = 距上次训练」，那它就得真的只在琥珀行出现。
+    // 今天刚练的胸不该有这一行——这条断言是副标题那句话的兑现凭据。
+    expect(within(chest).queryByText(/天没练/)).not.toBeInTheDocument();
   });
 });
 
