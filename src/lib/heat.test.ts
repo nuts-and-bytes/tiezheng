@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BODY_PARTS } from '../data/bodyParts';
-import { AA_TEXT, compositeOver, contrastRatio, parseColor } from './contrast';
+import { AA_NONTEXT, AA_TEXT, compositeOver, contrastRatio, parseColor } from './contrast';
 import { THEME } from './theme';
 import type { BodyPart } from './types';
 import {
@@ -42,12 +42,18 @@ describe('heatAlpha', () => {
 
 describe('heatColor', () => {
   it('用该部位的本色，不是统一的铁橙', () => {
-    expect(heatColor('chest', 10, 10)).toBe('rgba(232, 72, 63, 1)');
-    expect(heatColor('back', 10, 10)).toBe('rgba(79, 142, 247, 1)');
+    expect(heatColor('chest')).toBe('#E8483F');
+    expect(heatColor('back')).toBe('#4F8EF7');
   });
 
-  it('低强度日返回同色低透明度，色相不变', () => {
-    expect(heatColor('chest', 1, 100)).toMatch(/^rgba\(232, 72, 63, 0\.\d+\)$/);
+  /**
+   * 这条曾经写的是「低强度日返回同色低透明度，色相不变」——它钉住的是一个**已经被砍掉**的通道。
+   * 留着它就是留着一份过期契约：它会在下一个人想恢复浓淡时点头，而不是拦住。
+   * 现在钉相反的一面：组数进不来，色就不会因为练多练少而变。
+   */
+  it('强度不再走不透明度：返回的是不掺 alpha 的本色（理由见 heat.ts）', () => {
+    expect(heatColor('chest')).not.toMatch(/rgba/);
+    expect(parseColor(heatColor('chest')).alpha).toBe(1);
   });
 
   it('EMPTY_HEAT 是未训练日的底色，与任何部位色都不同', () => {
@@ -57,8 +63,9 @@ describe('heatColor', () => {
 
 /**
  * 日历格和年度小格/海报格的差别只有一条：**日历格上要压一个白色日期数字**。
- * 满 alpha 的饱和红/紫上压白字，对比度不够；所以日历格的浓度必须有天花板。
- * 色相不能动——「一眼看出练了哪个部位」全靠色相。
+ * 所以只有日历格需要浓度天花板（满色会把字吃掉），也只有日历格还留着浓淡——
+ * 它有日期数字和部位图标兜底「练没练」，色块不必独自扛这件事，可以腾出来说强度。
+ * 色相在三处都不能动——「一眼看出练了哪个部位」全靠色相。
  */
 describe('calendarHeatColor', () => {
   it('浓度封顶，白色日期数字才压得住', () => {
@@ -186,5 +193,43 @@ describe('日历格的白字必须读得出（WCAG AA 4.5:1）', () => {
     const faded = parseColor(calendarHeatColor('chest', 20, 20, OVERFLOW_HEAT_FADE)).alpha;
     expect(faded).toBeLessThan(full * 0.8); // 看得出不是本月
     expect(faded).toBeGreaterThan(0); // 但色块还在，练没练仍一眼可辨
+  });
+});
+
+/**
+ * 年度热力格 / 海报格：色块是**唯一**的通道。
+ *
+ * 日历格里「这天练没练」有三个通道在说：底色、部位图标、日期数字的颜色。年度图的 9px 小格里
+ * 只剩底色一个——它于是从装饰变成了内容，受 WCAG 1.4.11（非文本 3:1）管。
+ *
+ * 而 HEAT_FLOOR = 0.3 兑现不了它自己那句注释（「练了一组也必须一眼看得出与空白格的区别」）：
+ * 练一组的格子和空白格实测只有 1.24–1.67:1。要把最暗的胸推过 3:1，floor 得抬到 0.773——
+ * 浓淡区间只剩 [0.77, 1.0]，等于强度这个通道死了，但代码里还留着一个骗人的 heatAlpha()。
+ *
+ * 而且它本来就在骗人：α=0.7 的手臂（L=0.250）比 **α=1.0 的胸**（L=0.221）还亮。跨部位比浓淡，
+ * 比出来的是色相自己的亮度，不是训练强度。近黑底上暗色相压根没有亮度余量——
+ * 「用不透明度编码强度」和「练了就看得见」在数学上互斥。砍掉前者：练了就是满色。
+ */
+describe('年度/海报热力格：练了就看得见（WCAG 1.4.11 非文本 3:1）', () => {
+  const EMPTY = parseColor(EMPTY_HEAT).rgb;
+
+  it.each(BODY_PARTS.map((p) => [p.name, p.id] as const))(
+    '%s：只练一组的格子，也和空白格拉得开',
+    (_name, id) => {
+      const { rgb, alpha } = parseColor(heatColor(id));
+      expect(contrastRatio(compositeOver(rgb, parseColor(THEME.bg).rgb, alpha), EMPTY)).toBeGreaterThanOrEqual(
+        AA_NONTEXT,
+      );
+    },
+  );
+
+  /**
+   * 「不带浓淡」这件事由类型兜住（heatColor 压根收不到 sets），这条只钉住它返回的是**本色**——
+   * 谁要是哪天又想往里掺一层 alpha 或者把它调暗一档，这里会红。
+   */
+  it('格子只说部位，不说练了几组 —— 返回的就是部位本色', () => {
+    for (const p of BODY_PARTS) {
+      expect(heatColor(p.id)).toBe(p.color);
+    }
   });
 });

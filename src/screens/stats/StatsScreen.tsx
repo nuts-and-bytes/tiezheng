@@ -12,7 +12,7 @@ import { vibrate } from '../../lib/platform';
 import { THEME } from '../../lib/theme';
 import {
   PROGRESSION_POINTS, compare, currentStreak, dailyMovingAverage, dailyPartBreakdown, hasWeightData,
-  heatMonthLabels, heatWeekStarts, lastTrainedByBodyPart, longestStreak, percentile, prevRangeOf,
+  heatMonthLabels, heatWeekStarts, lastTrainedByBodyPart, longestStreak, prevRangeOf,
   rangeOf, recentE1rmSeries, setsByBodyPart, topExerciseIds, yearsWithData,
 } from '../../lib/stats';
 import type { DayPartLoad, Delta, ExMap, LoadItem, Segment } from '../../lib/stats';
@@ -486,13 +486,6 @@ function Heat({
     return hit && { parts: [pick], sets: hit.sets };
   };
 
-  // 浓淡的分母跟着筛选走：筛「胸」时拿全年总组数当分母，胸的格子会集体发灰
-  const inYear = [...breakdown.entries()].filter(([d]) => d.startsWith(String(y)));
-  const maxSets = percentile(
-    inYear.map(([, rows]) => shownOf(rows)?.sets ?? 0).filter((n) => n > 0),
-    90,
-  );
-
   // 一列 = 一周（7 行）。月份标签与格子共用同一份列定义，才能真正对齐到列
   const weekStarts = heatWeekStarts(y);
   const months = heatMonthLabels(weekStarts, y);
@@ -560,7 +553,7 @@ function Heat({
                       ? 'transparent'
                       : hit
                         ? heatBackground(
-                            cellParts(hit.parts).map((p) => heatColor(p, hit.sets, maxSets)),
+                            cellParts(hit.parts).map((p) => heatColor(p)),
                           )
                         : EMPTY_HEAT,
                   }}

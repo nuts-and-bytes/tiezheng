@@ -218,7 +218,6 @@ function monthlyOf(weeks: number, rows: number): MonthlyPosterData {
     volumeKg: 96000,
     streak: 14,
     split: splitOf(rows),
-    maxSets: 8,
     weeks: Array.from({ length: weeks }, () => Array.from({ length: 7 }, () => null)),
   };
 }
@@ -233,7 +232,6 @@ function yearlyOf(rows: number, prs: number): YearlyPosterData {
     volumeKg: 960000,
     streak: 42,
     split: splitOf(rows),
-    maxSets: 8,
     columns: Array.from({ length: 53 }, () => Array.from({ length: 7 }, () => null)),
     prs: Array.from({ length: prs }, (_, i) => ({
       name: `动作${i}`,
@@ -399,13 +397,6 @@ describe('buildMonthly', () => {
     expect(d7).toMatchObject({ parts: [], sets: 0 });
   });
 
-  test('maxSets 用 90 分位而不是 max —— 一天练爆不许冲淡全月', () => {
-    const input = julyInput();
-    input.items.push(item('2026-07-10', 'e-bench', 40)); // 极端值
-    const d = buildMonthly('2026-07', input);
-    expect(d.maxSets).toBeGreaterThan(0);
-    expect(d.maxSets).toBeLessThan(40);
-  });
 
   test('空月份不炸：全 0，网格全是空格', () => {
     const d = buildMonthly('2026-02', { items: [], dates: [], exMap: EX_MAP });
@@ -414,7 +405,6 @@ describe('buildMonthly', () => {
     expect(d.volumeKg).toBe(0);
     expect(d.streak).toBe(0);
     expect(d.split).toEqual([]);
-    expect(d.maxSets).toBe(0);
     expect(d.weeks.flat().filter((c) => c !== null)).toHaveLength(28); // 2026 年 2 月 28 天
   });
 });
@@ -517,9 +507,9 @@ describe('drawMonthlyPoster', () => {
     drawMonthlyPoster(r.ctx, d);
 
     const styles = r.fills.map((f) => String(f.fillStyle));
-    expect(styles).toContain(heatColor('chest', 4, d.maxSets));
-    expect(styles).toContain(heatColor('back', 2, d.maxSets));
-    expect(styles).toContain(heatColor('leg', 3, d.maxSets));
+    expect(styles).toContain(heatColor('chest'));
+    expect(styles).toContain(heatColor('back'));
+    expect(styles).toContain(heatColor('leg'));
 
     // 7 月 31 天，练了 3 天 → 28 个空格，一个不多一个不少
     // （EMPTY_HEAT 在海报里只有这一处用途，所以这个数字是可数的）
@@ -572,7 +562,7 @@ describe('drawYearlyPoster', () => {
     drawYearlyPoster(r.ctx, d);
 
     const styles = r.fills.map((f) => String(f.fillStyle));
-    expect(styles).toContain(heatColor('chest', 4, d.maxSets));
+    expect(styles).toContain(heatColor('chest'));
 
     // 2026 年 365 天，练了 4 天 → 361 个空格
     expect(styles.filter((s) => s === EMPTY_HEAT)).toHaveLength(361);
@@ -816,35 +806,51 @@ describe('多部位日：一个格子涂两块部位色', () => {
     });
   });
 
-  test('canvas：双部位日落下两个部位色，同一个 alpha', () => {
+  test('canvas：双部位日落下两个部位色（主练 + 次练都上色）', () => {
     const d = buildMonthly('2026-07', twoPartInput());
     const r = recorder();
     drawMonthlyPoster(r.ctx, d);
     const styles = r.calls.filter((c) => c.fn === 'fill').map((c) => c.fillStyle);
 
-    expect(styles).toContain(heatColor('chest', 6, d.maxSets));
-    expect(styles).toContain(heatColor('back', 6, d.maxSets)); // 次练也上色
+    expect(styles).toContain(heatColor('chest'));
+    expect(styles).toContain(heatColor('back')); // 次练也上色
   });
 
+  /**
+   * 定位「次练色那次 fill」不能只按颜色找。热力格不再掺 alpha 之后，它和**分布条**用的是
+   * 同一个 hex（同一个部位就该同一个色，这是设计不是巧合），而月度海报里 distBlock 画在
+   * monthGridBlock 之前——按颜色 findIndex 会先撞上分布条，然后在「它前面没有 clip」上假红。
+   *
+   * 所以按**路径形状**定位：三角是海报上唯一一处「beginPath 后正好三个顶点再 fill」的画法
+   * （分布条走 roundRect，主练色走整格 fill）。找不到这样一次 fill，下面就是空数组 → 红。
+   */
   test('canvas：次练色画成三角形——分割线是 ╱，和 CSS 的 135deg 同向', () => {
     const d = buildMonthly('2026-07', twoPartInput());
     const r = recorder();
     drawMonthlyPoster(r.ctx, d);
 
-    // 次练色那次 fill 之前，必须先 clip（切回圆角），再走三条直线围出右下三角
-    const i = r.calls.findIndex(
-      (c) => c.fn === 'fill' && c.fillStyle === heatColor('back', 6, d.maxSets),
-    );
-    expect(i).toBeGreaterThan(-1);
+    const vertsBefore = (i: number) => {
+      const path = r.calls.slice(0, i);
+      return path
+        .slice(path.map((c) => c.fn).lastIndexOf('beginPath'))
+        .filter((c) => c.fn === 'moveTo' || c.fn === 'lineTo')
+        .map((c) => c.args);
+    };
 
-    const before = r.calls.slice(0, i);
-    expect(before.some((c) => c.fn === 'clip')).toBe(true);
+    const tris = r.calls
+      .map((c, i) => ({ c, i }))
+      .filter(({ c, i }) => c.fn === 'fill' && c.fillStyle === heatColor('back') && vertsBefore(i).length === 3);
+
+    // 样本里只有一个双部位日 —— 多一个三角说明单部位日也被切了，少一个说明次练色压根没画
+    expect(tris).toHaveLength(1);
+    const i = tris[0]!.i;
+
+    // 三角那次 fill 之前必须先 clip（切回圆角），否则斜边会捅出格子的圆角
+    expect(r.calls.slice(0, i).some((c) => c.fn === 'clip')).toBe(true);
 
     // 三角的三个顶点：右上 → 左下 → 右下。moveTo(x+size, y) 是关键——起点在右上角，
     // 斜边由此指向左下，围出的是**右下**三角（左上留给主练色）。
-    const tri = before.slice(before.map((c) => c.fn).lastIndexOf('beginPath'));
-    const pts = tri.filter((c) => c.fn === 'moveTo' || c.fn === 'lineTo').map((c) => c.args);
-    expect(pts).toHaveLength(3);
+    const pts = vertsBefore(i);
     const [p0, p1, p2] = pts as [number, number][];
     const size = p2[0] - p1[0]; // 右下.x - 左下.x = 格子边长
     expect(size).toBeGreaterThan(0);
@@ -859,7 +865,7 @@ describe('多部位日：一个格子涂两块部位色', () => {
     drawMonthlyPoster(r.ctx, d);
     const styles = r.calls.filter((c) => c.fn === 'fill').map((c) => c.fillStyle);
 
-    expect(styles).toContain(heatColor('leg', 3, d.maxSets));
+    expect(styles).toContain(heatColor('leg'));
     // 腿只在 07-03 出现，而那天没有第二块部位 —— 三角只该为双部位日画一次
     const clips = r.calls.filter((c) => c.fn === 'clip').length;
     expect(clips).toBe(1);

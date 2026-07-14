@@ -15,6 +15,12 @@ export type RGB = [number, number, number];
 /** AA 级正文对比度门槛。日历格里的日期数字是正文，不是装饰。 */
 export const AA_TEXT = 4.5;
 
+/**
+ * 非文本门槛（WCAG 1.4.11）。年度热力格里没有字，色块**本身就是内容**——
+ * 「这天练没练」只有它一个通道在说，所以它受这条约束，而不是「装饰随便画」。
+ */
+export const AA_NONTEXT = 3;
+
 function channelLuminance(c: number): number {
   const s = c / 255;
   return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;

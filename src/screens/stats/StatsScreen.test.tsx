@@ -361,7 +361,7 @@ describe('年度热力图', () => {
 
     const cell = await screen.findByTestId('heat-2026-07-13');
     // 单日单组：percentile([1], 90) = 1 → alpha 打满
-    expect(fillsOf(cell)).toEqual([norm(heatColor('chest', 1, 1))]);
+    expect(fillsOf(cell)).toEqual([norm(heatColor('chest'))]);
   });
 
   test('没练的日子不是黑洞，用 EMPTY_HEAT 兜底', async () => {
@@ -439,7 +439,7 @@ describe('年度热力图', () => {
     await user.click(within(legend).getByRole('button', { name: '胸' }));
 
     expect(fillsOf(screen.getByTestId('heat-2026-07-13'))).toEqual([
-      norm(heatColor('chest', 1, 1)),
+      norm(heatColor('chest')),
     ]);
     expect(fillsOf(screen.getByTestId('heat-2026-07-14'))).toEqual([norm(EMPTY_HEAT)]);
     expect(within(legend).getByRole('button', { name: '胸' })).toHaveAttribute(
@@ -459,7 +459,7 @@ describe('年度热力图', () => {
 
     // 那天只练了 1 组胸 → 筛出来的浓淡按「这个部位当天的组数」算，不是当天总组数
     expect(fillsOf(screen.getByTestId('heat-2026-07-13'))).toEqual([
-      norm(heatColor('chest', 1, 1)),
+      norm(heatColor('chest')),
     ]);
   });
 
@@ -473,7 +473,7 @@ describe('年度热力图', () => {
     await user.click(within(legend).getByRole('button', { name: '胸' }));
     await user.click(within(legend).getByRole('button', { name: '胸' }));
 
-    expect(fillsOf(screen.getByTestId('heat-2026-07-14'))).toEqual([norm(heatColor('leg', 1, 1))]);
+    expect(fillsOf(screen.getByTestId('heat-2026-07-14'))).toEqual([norm(heatColor('leg'))]);
   });
 });
 
@@ -493,7 +493,7 @@ describe('年度热力图的混合日：一格看得出两块', () => {
     const cell = await screen.findByTestId('heat-2026-07-13');
     // 全年只有这一天 → percentile([3], 90) = 3。两块共用同一个 alpha：
     // 格子的深浅答的是「这天练得狠不狠」，不是「这一块练了几组」
-    expect(fillsOf(cell)).toEqual([norm(heatColor('leg', 3, 3)), norm(heatColor('chest', 3, 3))]);
+    expect(fillsOf(cell)).toEqual([norm(heatColor('leg')), norm(heatColor('chest'))]);
     // 硬边对角、主练在左上——跟日历格和海报格同一个方向
     expect(bgOf(cell)).toContain('135deg');
   });
@@ -509,7 +509,7 @@ describe('年度热力图的混合日：一格看得出两块', () => {
     renderStats();
 
     const cell = await screen.findByTestId('heat-2026-07-13');
-    expect(fillsOf(cell)).toEqual([norm(heatColor('leg', 6, 6)), norm(heatColor('chest', 6, 6))]);
+    expect(fillsOf(cell)).toEqual([norm(heatColor('leg')), norm(heatColor('chest'))]);
     // 但 title 仍报全部真相——被截断的只是像素，不是账
     expect(cell).toHaveAttribute('title', '2026-07-13 · 腿 3 组 · 胸 2 组 · 背 1 组');
   });
@@ -524,7 +524,7 @@ describe('年度热力图的混合日：一格看得出两块', () => {
     await user.click(within(legend).getByRole('button', { name: '腿' }));
 
     const cell = screen.getByTestId('heat-2026-07-13');
-    expect(fillsOf(cell)).toEqual([norm(heatColor('leg', 2, 2))]);
+    expect(fillsOf(cell)).toEqual([norm(heatColor('leg'))]);
     expect(bgOf(cell)).not.toContain('gradient'); // 筛出来的图不该还劈着
   });
 });

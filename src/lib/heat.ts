@@ -35,11 +35,26 @@ function rgb(part: BodyPart): [number, number, number] {
   ];
 }
 
-/** 当日主练部位的本色 + 由组数决定的浓淡。返回值可直接给 CSS 或 canvas fillStyle。 */
-export function heatColor(part: BodyPart, sets: number, maxSets: number): string {
-  const [r, g, b] = rgb(part);
-  const a = Math.round(heatAlpha(sets, maxSets) * 1000) / 1000;
-  return `rgba(${r}, ${g}, ${b}, ${a})`;
+/**
+ * 年度热力格 / 海报格的颜色：**部位本色，满色，不带浓淡**。
+ *
+ * 它曾经是 `rgba(部位色, heatAlpha(sets, maxSets))`——用不透明度编码「练得狠不狠」。
+ * 两条独立的理由把这个通道判了死刑：
+ *
+ * 1. 它压垮了「练没练」。9px 的小格里没有字也没有图标，色块是**唯一**的通道，因此受
+ *    WCAG 1.4.11（非文本 3:1）管。而 floor=0.3 的格子和空白格实测只有 1.24–1.67:1。
+ *    要把最暗的胸推过 3:1，floor 得抬到 0.773——浓淡区间只剩 [0.77, 1.0]，强度实际已死，
+ *    却还在代码里留着一个骗人的旋钮。近黑底上暗色相就是没有亮度余量，这是算术，不是调参。
+ *
+ * 2. 它本来就在骗人。α=0.7 的手臂（L=0.250）比 **α=1.0 的胸**（L=0.221）还亮——跨部位比浓淡，
+ *    比出来的是色相自己的亮度，不是训练强度。而年度图里的比较绝大多数是跨部位的。
+ *
+ * 于是这一格只回答两个它答得准的问题：**练没练**、**练的什么部位**。满色 vs 空白格是
+ * 4.49–9.53:1，两个问题都一眼可辨。日历格是另一回事——那里有日期数字压在上面，
+ * 满色会把字吃掉，所以它走 calendarHeatColor 的求解式天花板，浓淡也就还留着（见下）。
+ */
+export function heatColor(part: BodyPart): string {
+  return bodyPartInfo(part).color;
 }
 
 /**

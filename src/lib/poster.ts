@@ -4,7 +4,6 @@ import { CELL_PARTS_MAX, EMPTY_HEAT, cellParts, heatColor } from './heat';
 import {
   dailyPartLoad,
   longestStreak,
-  percentile,
   prsByExercise,
   setsByBodyPart,
   totals,
@@ -127,7 +126,6 @@ interface PosterBase {
   volumeKg: number;
   streak: number;
   split: SplitRow[];
-  maxSets: number;
 }
 
 export interface MonthlyPosterData extends PosterBase {
@@ -173,8 +171,6 @@ function baseOf(
     .slice(0, MAX_SPLIT_ROWS);
 
   const load = dailyPartLoad(items, exMap);
-  // 90 分位而不是 max：一天练爆不许把其余日子的颜色全冲淡（见 heat.ts）
-  const maxSets = percentile([...load.values()].map((v) => v.sets), 90);
 
   return {
     days: t.days,
@@ -183,7 +179,6 @@ function baseOf(
     volumeKg: t.volumeKg,
     streak: longestStreak(dates),
     split,
-    maxSets,
     load,
   };
 }
@@ -791,7 +786,6 @@ function heatCell(
   x: number,
   y: number,
   size: number,
-  maxSets: number,
   radius: number,
 ): void {
   if (cell === null) return; // 不属于本月/本年：留空，不画
@@ -803,7 +797,7 @@ function heatCell(
   }
 
   // 主练色先铺满整格——次练的三角盖在它上面。少一个圆角路径要算。
-  fillRound(ctx, x, y, size, size, radius, heatColor(parts[0], cell.sets, maxSets));
+  fillRound(ctx, x, y, size, size, radius, heatColor(parts[0]));
   if (parts.length < CELL_PARTS_MAX) return;
 
   // 次练：右下三角，切回圆角矩形里画（否则会啃掉格子右下的圆角）
@@ -815,7 +809,7 @@ function heatCell(
   ctx.lineTo(x, y + size); // 左下 —— 斜边即分割线 ╱
   ctx.lineTo(x + size, y + size); // 右下
   ctx.closePath();
-  ctx.fillStyle = heatColor(parts[1], cell.sets, maxSets);
+  ctx.fillStyle = heatColor(parts[1]);
   ctx.fill();
   ctx.restore();
 }
@@ -830,7 +824,6 @@ function monthGridBlock(ctx: CanvasRenderingContext2D, d: MonthlyPosterData, y: 
         X0 + c * (MONTH_CELL + GRID_GAP),
         top + r * (MONTH_CELL + GRID_GAP),
         MONTH_CELL,
-        d.maxSets,
         3,
       );
     });
@@ -849,7 +842,6 @@ function yearGridBlock(ctx: CanvasRenderingContext2D, d: YearlyPosterData, y: nu
         X0 + c * (YEAR_CELL + YEAR_GAP),
         top + r * (YEAR_CELL + YEAR_GAP),
         YEAR_CELL,
-        d.maxSets,
         1,
       );
     });
