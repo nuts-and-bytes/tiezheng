@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { FONT, THEME } from './theme';
 
 /**
@@ -52,4 +52,55 @@ test('theme.css 的每个 --font-* 在 FONT 里逐字一致', () => {
 test('JS 侧不许自己发明 token：THEME / FONT 的键与 theme.css 完全对齐', () => {
   expect(Object.keys(THEME).sort()).toEqual([...cssColors.keys()].sort());
   expect(Object.keys(FONT).sort()).toEqual([...cssFonts.keys()].sort());
+});
+
+/**
+ * 上面那几条只钉住「JS 常量 == CSS token」。它们钉不住的是：
+ * 有没有人在别的文件里，把同一个色值又手抄了一遍。
+ *
+ * 抄本不会让上面任何一条变红——它只是躺在那儿，等下次改 token 时静默漂移。
+ * 004ed03 自称消灭了「各处自己抄一份」，实际漏了两处（StatsScreen 的 pointBackgroundColor
+ * 和 borderColor）。漏网的原因不是不够仔细，是「grep 一次」根本不是个能持续的机制。
+ * 所以把它变成常驻断言：token 的 hex 值，在 src 下只准出现在 theme.ts 里。
+ */
+const SRC = resolve(process.cwd(), 'src');
+
+const walk = (dir: string): string[] =>
+  readdirSync(dir).flatMap((name) => {
+    const p = join(dir, name);
+    return statSync(p).isDirectory() ? walk(p) : /\.tsx?$/.test(p) ? [p] : [];
+  });
+
+/**
+ * 豁免名单。每一条都必须带理由——否则这条测试迟早被豁免掏空：
+ *
+ * - theme.ts：token 的出处，本来就该写字面量。
+ * - *.test.ts(x)：测试写字面量正是它的职责。改成 THEME.x 会让断言变成同义反复——
+ *   用被测代码的常量去验证被测代码，等于什么都没测。
+ * - data/bodyParts.ts：部位色是另一个独立的真相源，不跟随 THEME。肩部 #FFB340 与
+ *   THEME.amber 撞了同一个 hex，但那是巧合不是抄本：改 amber 时肩部不该跟着变。
+ *   （撞色本身是个设计问题——琥珀是「警示 / PR」语义，肩是部位语义，同屏同色会混淆。
+ *   那是配色决策，不是 token 卫生问题，另案。）
+ */
+const isExempt = (file: string) =>
+  /\.test\.tsx?$/.test(file) || file.endsWith('lib/theme.ts') || file.endsWith('data/bodyParts.ts');
+
+test('THEME 的色值不许被手抄进别的文件——theme.ts 是唯一出处', () => {
+  const hexTokens = Object.entries(THEME).filter(([, v]) => v.startsWith('#'));
+  const offenders: string[] = [];
+
+  for (const file of walk(SRC)) {
+    if (isExempt(file)) continue;
+    readFileSync(file, 'utf8')
+      .split('\n')
+      .forEach((line, i) => {
+        for (const [name, value] of hexTokens) {
+          if (line.toLowerCase().includes(value.toLowerCase())) {
+            offenders.push(`${file.slice(SRC.length + 1)}:${i + 1} 抄了 ${value}，应为 THEME.${name}`);
+          }
+        }
+      });
+  }
+
+  expect(offenders).toEqual([]);
 });

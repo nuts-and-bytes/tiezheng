@@ -348,7 +348,7 @@ function Strength({
               // 12 个点不会把线糊成毛毛虫，而每一个点都是用户真练过的一次，值得看得见。
               pointRadius: 3,
               pointHoverRadius: 4,
-              pointBackgroundColor: '#FFB340',
+              pointBackgroundColor: THEME.amber,
             },
           ],
         }}
@@ -606,7 +606,7 @@ function Weight({ weights }: { weights: { date: string; weightKg: number }[] }) 
           datasets: [
             {
               data: ma.map((p) => p.value),
-              borderColor: '#8B8B85',
+              borderColor: THEME.mute,
               borderWidth: 2,
               tension: 0.35,
               pointRadius: 0,
