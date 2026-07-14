@@ -56,11 +56,17 @@ export function StatsScreen() {
   const { items, dates, weights, exMap } = data;
 
   // ---- 零数据：新用户不该看到一排 0 和几个空坐标轴 ----
+  //
+  // 门闩只看 dates —— 但它换掉的是**整页**，而体重是独立于打卡的另一条数据流：
+  // TodayScreen 上可以只称重、不打卡（setWeight 跟 addWorkoutItem 没有任何耦合）。
+  // 于是「先称了两天体重、还没练第一次」的用户，weights 明明已经从库里取回来了，
+  // 却被这道门闩连页面一起没收。空态的职责是不画一排 0 和空坐标轴，
+  // 不是把用户真有的数据也一并扣下——所以体重跟在空态块后面继续画。
   if (dates.length === 0) {
     return (
-      <div className="px-5 pt-6">
+      <div className="px-5 pt-6 pb-4">
         <h1 className="text-[22px] font-extrabold">数据</h1>
-        <div className="flex flex-col items-center gap-4 pt-24 text-center">
+        <div className="flex flex-col items-center gap-4 py-16 text-center">
           {/* 插图。它要说的话，底下那句文案已经说了——读屏没必要念第二遍 */}
           <Stamp size={64} decorative />
           <p className="text-sm text-mute">
@@ -75,6 +81,7 @@ export function StatsScreen() {
             去打卡
           </Link>
         </div>
+        <Weight weights={weights} />
       </div>
     );
   }
@@ -605,6 +612,33 @@ function Heat({
 
 function Weight({ weights }: { weights: { date: string; weightKg: number }[] }) {
   if (weights.length === 0) return null;
+
+  // 一个点画不出线，更画不出「7 日均线」——均线那条 dataset 的 pointRadius 是 0，
+  // 单点上它一笔都不落。剩下的是一个空坐标轴框、一个 2px 的橙点，和一行标题在那儿
+  // 宣称这是均线。力量趋势早就懂这件事（series.length < 2 → 亮数字 + 说下一步），
+  // 体重却只挡了 length === 0：不是取舍，是漏了。这里跟上它。
+  if (weights.length < 2) {
+    const only = weights[0];
+    return (
+      <>
+        <Section title="体重" />
+        <div
+          data-testid="weight-single"
+          className="rounded-xl border border-dashed border-line px-4 py-5 text-center"
+        >
+          <p className="flex items-baseline justify-center gap-1">
+            <span className="display text-[32px] leading-none text-ink">
+              {only.weightKg.toFixed(1)}
+            </span>
+            <span className="text-xs text-mute">kg</span>
+          </p>
+          <p className="mt-1.5 text-[11px] text-mute">{only.date.slice(5)} · 目前唯一一次称重</p>
+          <p className="mt-2.5 text-xs text-mute">再称一次，这里就会长出曲线。</p>
+        </div>
+      </>
+    );
+  }
+
   // 按自然日开窗——隔了 30 天的两次称重不该被当成相邻点互相平滑
   const ma = dailyMovingAverage(
     weights.map((w) => ({ date: w.date, value: w.weightKg })),

@@ -562,6 +562,41 @@ describe('体重趋势', () => {
     expect(await screen.findByText(/体重/)).toBeInTheDocument();
     expect(pageText()).not.toMatch(/NaN|Infinity/);
   });
+
+  /**
+   * 一个点画不出线，也画不出「7 日均线」——均线组的 pointRadius 是 0，那条 dataset 在
+   * 单点上根本不落笔。用户看到的是一个坐标轴框、一个 2px 的橙点，和一行标题在那儿
+   * 宣称这是「7 日均线」。力量趋势早就懂这个道理（series.length < 2 → 亮数字 + 下一步），
+   * 体重却只挡了 === 0。同一个文件里两套标准，说明这不是取舍，是漏了。
+   */
+  test('只称过一次：不画只有一个点的均线图，把那个数字亮出来', async () => {
+    await addWorkoutItem(TODAY, 'p-bench', [{ weight: 60, reps: 8 }]);
+    await setWeight(TODAY, 70);
+    renderStats();
+
+    const single = await screen.findByTestId('weight-single');
+    expect(single).toHaveTextContent('70.0');
+    // 标题不许再说「7 日均线」——没有均线
+    expect(screen.queryByText(/7 日均线/)).toBeNull();
+  });
+
+  /**
+   * 体重是独立于打卡的一条数据流：TodayScreen 上可以只称重、不打卡。
+   * 而数据页的空态门闩写的是 `dates.length === 0` —— 一个「先称了两天体重、还没练第一次」
+   * 的用户，weights 已经从 IndexedDB 取回来了，却被这道门闩连页面一起换掉、当场丢弃。
+   * 空态该做的是不画一排 0 和空坐标轴，不是把用户真有的数据也一并没收。
+   */
+  test('只称了体重、还没打过卡：空态还在，但体重不许被丢掉', async () => {
+    await setWeight('2026-07-14', 70);
+    await setWeight(TODAY, 72);
+    renderStats();
+
+    expect(await screen.findByText(/还没有.*铁证|还没有任何记录/)).toBeInTheDocument();
+    // 两次称重都进了图（Line mock 只把 data 摊平成属性，textContent 是空的——问属性）
+    const chart = await screen.findByTestId('line-chart');
+    expect(JSON.parse(chart.dataset.labels ?? '[]')).toEqual(['07-14', '07-15']);
+    expect(pageText()).not.toMatch(/NaN|Infinity/);
+  });
 });
 
 describe('大数字三格的口径（K）', () => {
