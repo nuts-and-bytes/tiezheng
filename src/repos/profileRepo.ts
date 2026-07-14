@@ -1,10 +1,15 @@
-import { db } from '../lib/db';
+import { DEFAULT_PROFILE, db } from '../lib/db';
 import type { Profile } from '../lib/types';
 
-const DEFAULT: Profile = { id: 'me', weeklyGoal: 4, onboarded: false, updatedAt: 0 };
-
+/**
+ * IndexedDB 不强制 schema：读出来的记录是不可信输入，而类型声明说 onboarded 是 boolean。
+ * 重构前写入的记录里它是 undefined —— 这个谎言不能带进 UI（见 db.ts 的 v3 迁移）。
+ * 用显式赋值而不是 spread 兜底：{...DEFAULT, ...row} 会把 row 里的 undefined 也铺上去。
+ */
 export async function getProfile(): Promise<Profile> {
-  return (await db.profile.get('me')) ?? { ...DEFAULT };
+  const row = await db.profile.get('me');
+  if (!row) return { ...DEFAULT_PROFILE };
+  return { ...DEFAULT_PROFILE, ...row, onboarded: row.onboarded ?? DEFAULT_PROFILE.onboarded };
 }
 
 export async function saveProfile(patch: Partial<Omit<Profile, 'id'>>): Promise<Profile> {
