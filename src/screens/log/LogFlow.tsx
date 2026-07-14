@@ -94,16 +94,23 @@ function PickParts({ onNext }: { onNext: () => void }) {
     <div className="flex flex-1 flex-col">
       <StepTitle step={1}>今天练哪儿？</StepTitle>
       <div className="etch" />
-      <div className="grid grid-cols-2 gap-2.5">
-        {BODY_PARTS.map((p) => {
+      {/* 七个部位、两列，除不尽 —— 末位孤零零占半行，剩下的高度全塌成空白，
+          这一屏"空且呆"就是这么来的。让最后一个（有氧）横跨整行补上缺口，
+          再把网格 flex-1 撑满：四行等分剩余高度，格子自己长高把空白吃掉。
+          minmax(72px, 1fr)：小机型上有下限不至于压扁，大机型上按 1fr 长开。 */}
+      <div className="grid min-h-0 flex-1 grid-cols-2 grid-rows-[repeat(4,minmax(72px,1fr))] gap-2.5">
+        {BODY_PARTS.map((p, i) => {
           const selected = parts.includes(p.id);
+          const wide = i === BODY_PARTS.length - 1;
           return (
             <button
               key={p.id}
               type="button"
               aria-pressed={selected}
               onClick={() => togglePart(p.id)}
-              className="flex items-center gap-2.5 rounded-[14px] px-4 py-3.5 text-left text-[15px] font-semibold active:scale-[.97]"
+              className={`flex items-center justify-center rounded-[14px] text-[15px] font-semibold active:scale-[.97] ${
+                wide ? 'col-span-2 flex-row gap-3' : 'flex-col gap-2'
+              }`}
               style={
                 selected
                   ? { border: `1.5px solid ${p.color}`, color: p.color, background: `${p.color}1a` }
@@ -114,18 +121,16 @@ function PickParts({ onNext }: { onNext: () => void }) {
                     }
               }
             >
-              <PartIcon part={p.id} size={20} color={p.color} />
+              {/* 瓷砖长高到 ~140px 后，28px 的图标又在格子里显得空 —— 空病会跟着容器
+                  往下沉一层。图标得按容器配重：40px 撑得住这个格子，而放大本身零成本，
+                  这七枚的糊化只发生在 20px 那一头 */}
+              <PartIcon part={p.id} size={40} color={p.color} />
               {p.name}
             </button>
           );
         })}
       </div>
-      <button
-        type="button"
-        disabled={parts.length === 0}
-        onClick={onNext}
-        className={`mt-auto pt-0 ${CTA}`}
-      >
+      <button type="button" disabled={parts.length === 0} onClick={onNext} className={`mt-3 ${CTA}`}>
         下一步 · 选动作
       </button>
     </div>
