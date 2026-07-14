@@ -93,6 +93,27 @@ test('纯自重训练者：第四格立的是「总次数」，而不是一个 4
   expect(within(await statCell('总组数')).getByText('4')).toBeInTheDocument();
 });
 
+/**
+ * 梯子的第三级。sanitizeSets 允许「全空时保留组数——徒手训练允许只记组数不记次数」，
+ * 于是这类人的 volumeKg 和 reps 双 0：上面那条测试守的「总次数」自己也塌成了 0。
+ * 一个 42px 的「0」和一个 42px 的「0 kg」，对读它的人是同一件事。
+ * 他记录里唯一没被前三格用掉的真实维度是动作数，那个数字是真的。
+ */
+test('只记组数、连次数都不记的人：第四格立的是「动作数」，不是塌成 0 的总次数', async () => {
+  const today = todayStr();
+  await addWorkoutItem(today, 'p-pushup', [{}, {}, {}]);
+  await addWorkoutItem(today, 'p-pullup', [{}, {}]);
+  renderProfile();
+
+  const moves = await statCell('动作数');
+  expect(within(moves).getByText('2')).toBeInTheDocument();
+  expect(screen.queryByText('总次数')).not.toBeInTheDocument();
+  expect(screen.queryByText('累计容量')).not.toBeInTheDocument();
+
+  // 总组数照旧算全部 5 组——动作数不是拿它换来的
+  expect(within(await statCell('总组数')).getByText('5')).toBeInTheDocument();
+});
+
 /** 对抗式：证明上面那条不是把容量整个删了——填过重量的人必须还看得见它 */
 test('填过重量的人仍看到「累计容量」，看不到「总次数」', async () => {
   await seedTraining();

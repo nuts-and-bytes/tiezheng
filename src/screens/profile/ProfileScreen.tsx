@@ -8,7 +8,7 @@ import { Stamp } from '../../components/Stamp';
 import { todayStr } from '../../lib/dates';
 import { buildJsonExport, buildWorkoutCsv, downloadText } from '../../lib/exportData';
 import { log } from '../../lib/logger';
-import { daysBetween, hasWeightData, longestStreak, prsByExercise, totals } from '../../lib/stats';
+import { daysBetween, loadKind, longestStreak, prsByExercise, totals } from '../../lib/stats';
 import { getExercisesByIds } from '../../repos/exerciseRepo';
 import { adjustWeeklyGoal, getProfile } from '../../repos/profileRepo';
 import { listAllItems, listAllWorkoutDates } from '../../repos/workoutRepo';
@@ -55,6 +55,7 @@ export function ProfileScreen() {
   const { profile, items, dates, exMap } = data;
 
   const t = totals(items, dates);
+  const kind = loadKind(items);
   const prs = prsByExercise(items, exMap);
   const empty = items.length === 0 && dates.length === 0;
   // 铁龄：从第一条铁证那天算起（含当天）
@@ -99,14 +100,19 @@ export function ProfileScreen() {
           {/* 第四格是「负荷」，不是「容量」。容量 = 重量 × 次数，练俯卧撑和引体向上的人恒为 0 ——
               而这是一个 42px 的战绩数字，跟总打卡并排立着，他读到的不是「我没记重量」，
               是「我练了等于零」。也不降级成「—」：那还是「本该有东西但没有」。
-              自重训练者的负荷维度本来就是次数。
-              同一个根因的四处：数据页（weighted）、今日页（volume > 0）、这里（hasWeightData）、
-              海报（poster.ts 的 loadMetric）。海报那处一度被记成「堵过了」，其实它画的正是
-              这条注释否掉的那个「—」——最后一处补上的反而是它，也是唯一要分享出去的那一处。 */}
-          {hasWeightData(items) ? (
+
+              而降级到「总次数」还不够：只记组数、连次数都不记的人（sanitizeSets 白纸黑字允许
+              「全空时保留组数」）volumeKg 和 reps **双 0** ——「总次数」这一级自己也塌成了 0。
+              一个 42px 的「0」和一个 42px 的「0 kg」，对读它的人是同一件事。第三级给动作数。
+
+              梯子的唯一真相源是 stats.ts 的 loadKind，数据页和海报共用它。今日页不在其列：
+              那里是 `group.volume > 0 &&`，为 0 时整行不画，从来没骗过人。 */}
+          {kind === 'volume' ? (
             <Volume kg={t.volumeKg} className="pl-5" />
-          ) : (
+          ) : kind === 'reps' ? (
             <Stat value={t.reps} unit="次" label="总次数" className="pl-5" />
+          ) : (
+            <Stat value={t.moves} unit="个" label="动作数" className="pl-5" />
           )}
         </div>
       )}

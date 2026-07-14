@@ -124,6 +124,8 @@ interface PosterBase {
   /** 跟 volumeKg 平级带上来：纯自重训练者的容量恒为 0，次数才是他的负荷维度（见 loadMetric） */
   reps: number;
   volumeKg: number;
+  /** 梯子的最后一级：只记组数的人容量和次数双 0，动作数是他唯一还剩下的真数字（见 loadMetric） */
+  moves: number;
   streak: number;
   split: SplitRow[];
 }
@@ -177,6 +179,7 @@ function baseOf(
     sets: t.sets,
     reps: t.reps,
     volumeKg: t.volumeKg,
+    moves: t.moves,
     streak: longestStreak(dates),
     split,
     load,
@@ -246,16 +249,24 @@ export function formatVolume(kg: number): { value: string; unit: string } {
  * 28px 大字。他读到的不是「我没记重量」，是「我练了等于零」。降级成「—」也一样：
  * 那还是「本该有东西但没有」。他的负荷维度本来就是次数，那个数字是真的。
  *
- * 数据页（weighted ? Volume : 总次数）和资料页（hasWeightData ? Volume : 总次数）
- * 早就是这条口径了，海报是最后一处补上的。
+ * 但这条梯子还差一级：sanitizeSets 明确允许「全空时保留组数——徒手训练允许只记组数不记
+ * 次数」。这类人的 volumeKg 和 reps **双 0**，于是「总次数」这一级自己也塌成了 0——
+ * 他练了一整个月，海报上印着「总次数 0」，然后把这张图发出去。0 kg 和 0 次，
+ * 对读它的人是同一件事。
+ *
+ * 第三级是动作数：他记录里唯一还没被前两格（打卡天数 / 总组数）用掉的真实维度。
+ * 判定口径与数据页 / 资料页共用 stats.ts 的 loadKind——只是那两处吃全时段 items
+ * （「你是不是一个搬铁的人」是人的属性），海报吃的是这个周期的 totals（海报本来就是
+ * 那个周期的快照，一月自重、二月举铁，两张海报本就该长得不一样）。
  */
-export function loadMetric(d: { volumeKg: number; reps: number }): {
+export function loadMetric(d: { volumeKg: number; reps: number; moves: number }): {
   value: string;
   unit: string;
   label: string;
 } {
-  if (!(d.volumeKg > 0)) return { value: String(d.reps), unit: '', label: '总次数 REPS' };
-  return { ...formatVolume(d.volumeKg), label: '总容量 VOLUME' };
+  if (d.volumeKg > 0) return { ...formatVolume(d.volumeKg), label: '总容量 VOLUME' };
+  if (d.reps > 0) return { value: String(d.reps), unit: '', label: '总次数 REPS' };
+  return { value: String(d.moves), unit: '', label: '动作数 MOVES' };
 }
 
 /**

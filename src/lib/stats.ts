@@ -57,20 +57,43 @@ export function maxWeightSeries(
  * reps 是他唯一挣得到的负荷维度，跟 volumeKg 平级返回，让调用方自己决定摆哪一个。
  */
 export function totals(
-  items: { sets: SetEntry[] }[],
+  items: { exerciseId: string; sets: SetEntry[] }[],
   workoutDates: string[],
-): { days: number; sets: number; reps: number; volumeKg: number } {
+): { days: number; sets: number; reps: number; volumeKg: number; moves: number } {
   let sets = 0;
   let reps = 0;
   let volumeKg = 0;
+  const moves = new Set<string>();
   for (const item of items) {
     sets += item.sets.length;
+    moves.add(item.exerciseId);
     for (const s of item.sets) {
       if (s.reps !== undefined) reps += s.reps;
       if (s.weight !== undefined && s.reps !== undefined) volumeKg += s.weight * s.reps;
     }
   }
-  return { days: new Set(workoutDates).size, sets, reps, volumeKg };
+  return { days: new Set(workoutDates).size, sets, reps, volumeKg, moves: moves.size };
+}
+
+export type LoadKind = 'volume' | 'reps' | 'moves';
+
+/**
+ * 三大数字里「负荷」那一格摆哪个数——数据页 / 资料页 / 海报三处唯一的梯子。
+ *
+ * 原来只有两级：有重量 → 容量，否则 → 总次数。可 sanitizeSets 的注释白纸黑字允许
+ * 「全空时保留组数——徒手训练允许只记组数不记次数」。这类人的 volumeKg 和 reps 双 0，
+ * 第二级于是也塌了：他练了 48 组，海报上却印着「总次数 0」，然后把这张图发出去。
+ * 一个 42px 的「0」和一个 42px 的「0 kg」，对读它的人是同一件事。
+ *
+ * 他的记录里唯一还没被前两格（打卡天数 / 总组数）用掉的真实维度，是动作数。
+ * 那个数字是真的，且只要打过卡就 ≥1。
+ *
+ * reps 判 > 0 而不是 !== undefined：0 次和「没记」是同一件事，不该把梯子卡在第二级。
+ */
+export function loadKind(items: LoadItem[]): LoadKind {
+  if (hasWeightData(items)) return 'volume';
+  if (items.some((i) => i.sets.some((s) => s.reps !== undefined && s.reps > 0))) return 'reps';
+  return 'moves';
 }
 
 /** 连续打卡天数：今天没练则从昨天起算（今天还没练不算断） */
@@ -205,7 +228,7 @@ export function compare(
   dates: string[],
   cur: Range,
   prev: Range,
-): { days: Delta; sets: Delta; reps: Delta; volumeKg: Delta } {
+): { days: Delta; sets: Delta; reps: Delta; volumeKg: Delta; moves: Delta } {
   const a = totals(inRange(items, cur.from, cur.to), dates.filter((d) => d >= cur.from && d <= cur.to));
   const b = totals(inRange(items, prev.from, prev.to), dates.filter((d) => d >= prev.from && d <= prev.to));
   return {
@@ -215,6 +238,9 @@ export function compare(
     // totals() 一直在算，compare() 之前却没往外传。
     reps: { cur: a.reps, prev: b.reps, pct: pct(a.reps, b.reps) },
     volumeKg: { cur: a.volumeKg, prev: b.volumeKg, pct: pct(a.volumeKg, b.volumeKg) },
+    // 动作数要能上第三格（loadKind === 'moves' 的人），就得跟另外三个指标一样带环比——
+    // 否则那一格是个没有对照的孤数字，而这一排存在的全部理由是「没有对比的数字没有意义」。
+    moves: { cur: a.moves, prev: b.moves, pct: pct(a.moves, b.moves) },
   };
 }
 

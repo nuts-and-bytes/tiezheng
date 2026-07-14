@@ -11,7 +11,7 @@ import { EMPTY_HEAT, cellParts, heatBackground, heatColor } from '../../lib/heat
 import { vibrate } from '../../lib/platform';
 import { THEME } from '../../lib/theme';
 import {
-  PROGRESSION_POINTS, compare, currentStreak, dailyMovingAverage, dailyPartBreakdown, hasWeightData,
+  PROGRESSION_POINTS, compare, currentStreak, dailyMovingAverage, dailyPartBreakdown, hasWeightData, loadKind,
   heatMonthLabels, heatWeekStarts, lastTrainedByBodyPart, longestStreak, prevRangeOf,
   rangeOf, recentE1rmSeries, setsByBodyPart, topExerciseIds, yearsWithData,
 } from '../../lib/stats';
@@ -93,7 +93,11 @@ export function StatsScreen() {
   // 用 scoped 会让一个举铁的人在「本周只练了自重」时整块容量口径消失、下周一又回来——
   // 页面结构随最近三天的偶然性漂移。而下面的「力量趋势」本来就吃全时段（见 :126），
   // 两处口径必须一致，否则会出现「曲线画着卧推，上面的大数字却当他没重量数据」。
-  const weighted = hasWeightData(items);
+  //
+  // 同一条理由往下再走一级：「你记不记次数」也是这个人的属性。只记组数、连次数都不记的人
+  // （sanitizeSets 明确允许）volumeKg 和 reps 双 0——降级到「总次数」还是个 0，
+  // 旁边「总组数 5」正亮着，两个数字在同一排互相拆台。第三级给动作数（见 loadKind）。
+  const kind = loadKind(items);
 
   return (
     <div className="px-5 pt-6 pb-4">
@@ -120,12 +124,15 @@ export function StatsScreen() {
         <Sep />
         <Hero testId="hero-sets" label="总组数" value={cmp.sets.cur} delta={cmp.sets} seg={seg} />
         <Sep />
-        {weighted ? (
+        {kind === 'volume' ? (
           <Volume kg={cmp.volumeKg.cur} />
-        ) : (
+        ) : kind === 'reps' ? (
           // 自重训练者的 volumeKg 恒为 0，但次数是真的——那才是他的负荷维度。
           // （这一格原本给了「当前连续」，而它下面 4px 处的小字里已经印过一遍。）
           <Hero testId="hero-reps" label="总次数" value={cmp.reps.cur} delta={cmp.reps} seg={seg} />
+        ) : (
+          // 连次数都不记的人：容量和次数双 0，动作数是他唯一还剩下的真数字。
+          <Hero testId="hero-moves" label="动作数" value={cmp.moves.cur} delta={cmp.moves} seg={seg} />
         )}
       </div>
       <div className="etch" />
@@ -190,10 +197,20 @@ function Section({
 /** 环比。pct 为 null 意味着上期是 0——绝不能除出 Infinity，更不能渲染 NaN% */
 function DeltaTag({ delta, seg }: { delta: Delta; seg: Segment }) {
   if (seg === 'all') return <span className="text-[11px] text-mute">累计</span>;
-  if (delta.pct === null) {
-    if (delta.cur === 0) return <span className="text-[11px] text-mute">—</span>;
-    return <span className="text-[11px] font-semibold text-iron">新增</span>;
+
+  // cur = 0 先接管，不让它掉进百分比分支。
+  //
+  // 那里算出来的必然是 -100%，而「↓ 100%」在周期开头是**常态，不是新闻**：prevRangeOf 是
+  // 同相位对照，所以周一早上只要你上周一练过，就必然 -100%。天天见的最大负值，用户三周
+  // 就学会无视它——而那正是它本该报警的时候。代价说清楚：周期末尾真的一次没练时，它也只说
+  // 「未开张」，不会喊「↓100%」；严厉程度被拉平，换来的是那个红灯不再叫狼来了。
+  //
+  // pct === null 是上期也为 0：没有可开张的对照，那就还是「—」。
+  if (delta.cur === 0) {
+    if (delta.pct === null) return <span className="text-[11px] text-mute">—</span>;
+    return <span className="text-[11px] font-semibold text-iron">未开张</span>;
   }
+  if (delta.pct === null) return <span className="text-[11px] font-semibold text-iron">新增</span>;
   if (delta.pct === 0) return <span className="text-[11px] text-mute">持平</span>;
   const up = delta.pct > 0;
   return (

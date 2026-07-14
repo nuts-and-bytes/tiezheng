@@ -218,6 +218,7 @@ function monthlyOf(weeks: number, rows: number): MonthlyPosterData {
     sets: 188,
     reps: 1504,
     volumeKg: 96000,
+    moves: 12,
     streak: 14,
     split: splitOf(rows),
     weeks: Array.from({ length: weeks }, () => Array.from({ length: 7 }, () => null)),
@@ -232,6 +233,7 @@ function yearlyOf(rows: number, prs: number): YearlyPosterData {
     sets: 1880,
     reps: 15040,
     volumeKg: 960000,
+    moves: 24,
     streak: 42,
     split: splitOf(rows),
     columns: Array.from({ length: 53 }, () => Array.from({ length: 7 }, () => null)),
@@ -768,7 +770,7 @@ describe('自重训练者：海报不许拿一个「—」占着负荷那一格'
   }
 
   test('有容量 → 还是 VOLUME（别把负重的人也改了）', () => {
-    expect(loadMetric({ volumeKg: 12400, reps: 300 })).toEqual({
+    expect(loadMetric({ volumeKg: 12400, reps: 300, moves: 8 })).toEqual({
       value: '12.4',
       unit: 't',
       label: '总容量 VOLUME',
@@ -776,10 +778,23 @@ describe('自重训练者：海报不许拿一个「—」占着负荷那一格'
   });
 
   test('没容量 → 换成他真正挣到的那个维度，而不是一个破折号', () => {
-    expect(loadMetric({ volumeKg: 0, reps: 110 })).toEqual({
+    expect(loadMetric({ volumeKg: 0, reps: 110, moves: 4 })).toEqual({
       value: '110',
       unit: '',
       label: '总次数 REPS',
+    });
+  });
+
+  /**
+   * 梯子的第三级。只记组数、连次数都不记的人（sanitizeSets 明确允许），volumeKg 和 reps
+   * 双 0 —— 他练了一整个月，海报上却印着「总次数 0」，然后把这张图发出去。
+   * 海报是这个 app 唯一会离开手机的东西，这一格不能撒谎。
+   */
+  test('容量和次数双 0（只记组数的人）→ 动作数，不是「总次数 0」', () => {
+    expect(loadMetric({ volumeKg: 0, reps: 0, moves: 6 })).toEqual({
+      value: '6',
+      unit: '',
+      label: '动作数 MOVES',
     });
   });
 

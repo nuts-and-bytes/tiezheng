@@ -639,4 +639,56 @@ describe('大数字三格的口径（K）', () => {
     // 「当前连续」全页只该出现一次（那行小字里）
     expect(pageText().match(/当前连续/g)).toHaveLength(1);
   });
+
+  /**
+   * 梯子的第三级。sanitizeSets 白纸黑字允许「全空时保留组数——徒手训练允许只记组数不记
+   * 次数」。这类人的 volumeKg 和 reps 双 0，于是第二级（总次数）也塌了：他练了 5 组，
+   * 第三格却写着「总次数 0」——旁边「总组数 5」正亮着，两个数字在同一排互相拆台。
+   *
+   * 他的记录里唯一还没被前两格用掉的真实维度是动作数。那个数字是真的，且总是 ≥1。
+   */
+  test('只记组数、连次数都不记的人：第三格给动作数，不是骗人的「总次数 0」', async () => {
+    await addWorkoutItem(TODAY, 'p-pushup', [{}, {}, {}]);
+    await addWorkoutItem(TODAY, 'p-pullup', [{}, {}]);
+    renderStats();
+
+    const moves = await screen.findByTestId('hero-moves');
+    expect(within(moves).getByText('动作数')).toBeInTheDocument();
+    expect(within(moves).getByText('2')).toBeInTheDocument();
+    expect(screen.queryByTestId('hero-reps')).not.toBeInTheDocument();
+    // 总组数照旧算全部 5 组——动作数不是拿它换来的
+    expect(within(await screen.findByTestId('hero-sets')).getByText('5')).toBeInTheDocument();
+  });
+});
+
+describe('环比的零值：「↓100%」在周期开头是常态，不是新闻', () => {
+  /**
+   * prevRangeOf 是**同相位**对照（上周期的同一时点），所以 cur=0 / prev>0 时 -100% 在算术和
+   * 相位上都没错。问题不是错，是它**没有信息量**：周一早上只要你上周一练过，就必然 -100%。
+   * 天天见的最大负值，用户三周就学会无视它——而那正是它本该报警的时候。
+   *
+   * 取舍已明确：换成「未开张」，代价是周期末尾真的一次没练时它也只说「未开张」，
+   * 不会喊「↓100%」。严厉程度被拉平，换来的是那个红灯不再叫狼来了。
+   */
+  test('本周期一次没练、上周期同期练过 → 「未开张」，不是「↓ 100%」', async () => {
+    // 上周同期（周一）练过，本周（截至周二）一次没练
+    await addWorkoutItem('2026-07-06', 'p-bench', [{ weight: 60, reps: 8 }]);
+    renderStats();
+
+    const days = await screen.findByTestId('hero-days');
+    expect(within(days).getByText('未开张')).toBeInTheDocument();
+    // 只问这一格——「部位均衡」那块的百分比是另一回事，别拿整页文本去撞
+    expect(within(days).queryByText(/%/)).toBeNull();
+    expect(pageText()).not.toMatch(/NaN|Infinity/);
+  });
+
+  /** 上期也是 0 → 是真的什么都没有，那就还是「—」，不该说「未开张」（没有可开张的对照） */
+  test('本期和上期都是 0 → 还是「—」', async () => {
+    await addWorkoutItem('2026-05-01', 'p-bench', [{ weight: 60, reps: 8 }]); // 远在两个周期之前
+    renderStats();
+
+    const days = await screen.findByTestId('hero-days');
+    expect(within(days).getByText('—')).toBeInTheDocument();
+    expect(within(days).queryByText('未开张')).not.toBeInTheDocument();
+  });
 });
