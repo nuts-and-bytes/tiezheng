@@ -47,6 +47,8 @@ jobs:
           VITE_UMAMI_SRC: ${{ vars.VITE_UMAMI_SRC }}
       - uses: cloudflare/wrangler-action@v3
         with:
+          # token 是唯一的密钥，走 secret；account id 不是密钥（光有它做不了任何事），
+          # 走仓库变量 —— 不进 git 历史、可随时轮换，也省得为一个公开标识符占一格 secret。
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy dist --project-name=tiezheng --branch=main
