@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { LIMITS, validLoad, validReps } from '../lib/validation';
-import type { SetEntry } from '../lib/types';
+import type { LoadMode, SetEntry } from '../lib/types';
 
 interface Props {
   sets: SetEntry[];
   onChange: (sets: SetEntry[]) => void;
+  loadMode?: LoadMode;
 }
 
 function numOrUndefined(raw: string): number | undefined {
@@ -51,10 +52,11 @@ function NumField({ value, placeholder, label, inputMode, className, invalid, on
   );
 }
 
-export function SetRows({ sets, onChange }: Props) {
+export function SetRows({ sets, onChange, loadMode = 'external' }: Props) {
   const patch = (index: number, entry: SetEntry) =>
     onChange(sets.map((s, i) => (i === index ? entry : s)));
 
+  const assisted = loadMode === 'assistance';
   const badWeight = sets.some((s) => s.weight !== undefined && !validLoad(s.weight));
   const badReps = sets.some((s) => s.reps !== undefined && !validReps(s.reps));
 
@@ -86,13 +88,14 @@ export function SetRows({ sets, onChange }: Props) {
           ＋
         </button>
       </div>
+      {assisted && <p className="pb-1 text-xs text-mute">辅助越少，表现越强</p>}
       {sets.map((s, i) => (
         <div key={i} className="flex items-center gap-2.5 border-t border-line py-2.5 text-sm">
           <span className="display w-6 text-xs text-mute">{i + 1}</span>
           <NumField
             inputMode="decimal"
-            placeholder="重量kg"
-            label={`第 ${i + 1} 组 重量（公斤）`}
+            placeholder={assisted ? '辅助 kg' : '重量kg'}
+            label={`第 ${i + 1} 组 ${assisted ? '辅助重量' : '重量'}（公斤）`}
             value={s.weight}
             invalid={s.weight !== undefined && !validLoad(s.weight)}
             onCommit={(weight) => patch(i, { ...s, weight })}
@@ -114,7 +117,7 @@ export function SetRows({ sets, onChange }: Props) {
           按下保存、以为记上了，回头才发现那一栏是空的。 */}
       {badWeight && (
         <p className="pt-2 text-xs text-[#E8483F]">
-          重量需在 {LIMITS.load.min}–{LIMITS.load.max} kg 之间
+          {assisted ? '辅助重量' : '重量'}需在 {LIMITS.load.min}–{LIMITS.load.max} kg 之间
         </p>
       )}
       {badReps && (
