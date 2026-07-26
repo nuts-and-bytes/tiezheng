@@ -20,7 +20,7 @@ export function ExerciseManager() {
   const [newLoadMode, setNewLoadMode] = useState<LoadMode>('external');
   // 门闩：写库期间重入直接返回（ref 保证同 tick 连点也拦得住，LogFlow 判例）
   const busyRef = useRef(false);
-  const [creating, setCreating] = useState(false);
+  const [busy, setBusy] = useState(false);
   const list = useLiveQuery(() => listByPart(part), [part]);
   // 在库总数：exerciseRepo 没有 count helper，直接读表（软删行不算）
   const total = useLiveQuery(() => db.exercises.filter((e) => e.deletedAt === null).count(), []);
@@ -29,14 +29,14 @@ export function ExerciseManager() {
   async function create() {
     if (busyRef.current) return;
     busyRef.current = true;
-    setCreating(true);
+    setBusy(true);
     try {
       await addCustomExercise(newName, part, newLoadMode);
       setNewName('');
       setNewLoadMode('external');
     } finally {
       busyRef.current = false;
-      setCreating(false);
+      setBusy(false);
     }
   }
 
@@ -45,10 +45,12 @@ export function ExerciseManager() {
     const name = window.prompt('新名称', ex.name);
     if (!name || !name.trim()) return;
     busyRef.current = true;
+    setBusy(true);
     try {
       await renameExercise(ex.id, name);
     } finally {
       busyRef.current = false;
+      setBusy(false);
     }
   }
 
@@ -56,10 +58,12 @@ export function ExerciseManager() {
     if (busyRef.current) return;
     if (!window.confirm(`删除「${ex.name}」？已有记录不受影响。`)) return;
     busyRef.current = true;
+    setBusy(true);
     try {
       await removeExercise(ex.id);
     } finally {
       busyRef.current = false;
+      setBusy(false);
     }
   }
 
@@ -71,15 +75,17 @@ export function ExerciseManager() {
       `将「${ex.name}」改为${nextLabel}？历史趋势与纪录会重新解释，原始组数据不变。`,
     )) return;
     busyRef.current = true;
+    setBusy(true);
     try {
       await setExerciseLoadMode(ex.id, nextMode);
     } finally {
       busyRef.current = false;
+      setBusy(false);
     }
   }
 
   return (
-    <div className="border-t border-line">
+    <div className="border-t border-line" aria-busy={busy}>
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -145,6 +151,10 @@ export function ExerciseManager() {
                 <button
                   type="button"
                   onClick={() => changeLoadMode(ex)}
+                  aria-label={`将${ex.name}改为${
+                    loadModeOf(ex) === 'external' ? '辅助重量' : '普通负重'
+                  }`}
+                  disabled={busy}
                   className="px-1 text-xs text-mute active:scale-95"
                 >
                   改类型
@@ -154,6 +164,7 @@ export function ExerciseManager() {
                     <button
                       type="button"
                       onClick={() => rename(ex)}
+                      disabled={busy}
                       className="px-1 text-xs text-mute active:scale-95"
                     >
                       改名
@@ -161,6 +172,7 @@ export function ExerciseManager() {
                     <button
                       type="button"
                       onClick={() => remove(ex)}
+                      disabled={busy}
                       className="px-1 text-xs text-iron active:scale-95"
                     >
                       删除
@@ -174,6 +186,7 @@ export function ExerciseManager() {
             <input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
+              disabled={busy}
               placeholder={`新建${info.name}动作…`}
               className="flex-1 rounded-xl border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute"
             />
@@ -181,6 +194,7 @@ export function ExerciseManager() {
               aria-label="重量类型"
               value={newLoadMode}
               onChange={(e) => setNewLoadMode(e.target.value as LoadMode)}
+              disabled={busy}
               className="rounded-xl border border-line bg-raised px-3 py-2 text-sm text-ink"
             >
               <option value="external">普通负重</option>
@@ -188,7 +202,7 @@ export function ExerciseManager() {
             </select>
             <button
               type="button"
-              disabled={newName.trim() === '' || creating}
+              disabled={newName.trim() === '' || busy}
               onClick={() => create()}
               className="rounded-xl border border-iron/40 px-3.5 py-2 text-sm font-semibold text-iron disabled:opacity-30 active:scale-95"
             >
