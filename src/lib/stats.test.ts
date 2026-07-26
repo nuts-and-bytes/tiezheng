@@ -28,6 +28,7 @@ import {
   recentE1rmSeries,
   setsByBodyPart,
   topExerciseIds,
+  weeklyRhythm,
   yearsWithData,
 } from './stats';
 import type { Exercise } from './types';
@@ -43,6 +44,30 @@ test('weeklyCounts 按周一开头分桶、从旧到新', () => {
     { weekStart: '2026-06-29', count: 1 },
     { weekStart: '2026-07-06', count: 2 },
   ]);
+});
+
+describe('weeklyRhythm（最近 12 周训练节奏）', () => {
+  it('从周一开始返回当前周和前 11 周，跨年且保留空周', () => {
+    const rhythm = weeklyRhythm([], [], 12, '2026-01-04');
+
+    expect(rhythm).toHaveLength(12);
+    expect(rhythm[0]).toEqual({ weekStart: '2025-10-13', days: 0, sets: 0, current: false });
+    expect(rhythm[11]).toEqual({ weekStart: '2025-12-29', days: 0, sets: 0, current: true });
+  });
+
+  it('同一天只计一个训练日，组数按周累加', () => {
+    const rhythm = weeklyRhythm([
+      { date: '2025-12-29', exerciseId: 'e1', sets: [{}, {}] },
+      { date: '2025-12-29', exerciseId: 'e2', sets: [{}, {}, {}] },
+      { date: '2026-01-03', exerciseId: 'e1', sets: [{}] },
+      { date: '2025-12-28', exerciseId: 'e1', sets: [{}, {}, {}, {}] },
+    ], ['2025-12-29', '2025-12-29', '2026-01-03', '2025-12-28'], 2, '2026-01-04');
+
+    expect(rhythm).toEqual([
+      { weekStart: '2025-12-22', days: 1, sets: 4, current: false },
+      { weekStart: '2025-12-29', days: 2, sets: 6, current: true },
+    ]);
+  });
 });
 
 test('movingAverage 前段不足窗口时按已有值平均', () => {

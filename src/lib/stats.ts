@@ -25,6 +25,47 @@ export function weeklyCounts(workoutDates: string[], weeks: number, today: strin
   return starts.map((weekStart) => ({ weekStart, count: bucket.get(weekStart)! }));
 }
 
+export interface WeeklyRhythmPoint {
+  weekStart: string;
+  days: number;
+  sets: number;
+  current: boolean;
+}
+
+/** 最近 N 周的训练天数与组数；周一开头，空周也保留。 */
+export function weeklyRhythm(
+  items: LoadItem[],
+  workoutDates: string[],
+  weeks: number,
+  today: string,
+): WeeklyRhythmPoint[] {
+  const count = Math.max(1, Math.floor(weeks));
+  const currentWeek = weekStartOf(today);
+  const starts = Array.from(
+    { length: count },
+    (_, index) => addDays(currentWeek, -7 * (count - 1 - index)),
+  );
+  const startSet = new Set(starts);
+  const days = new Map(starts.map((start) => [start, new Set<string>()]));
+  const sets = new Map(starts.map((start) => [start, 0]));
+
+  for (const date of workoutDates) {
+    const start = weekStartOf(date);
+    if (startSet.has(start)) days.get(start)!.add(date);
+  }
+  for (const item of items) {
+    const start = weekStartOf(item.date);
+    if (startSet.has(start)) sets.set(start, sets.get(start)! + item.sets.length);
+  }
+
+  return starts.map((weekStart) => ({
+    weekStart,
+    days: days.get(weekStart)!.size,
+    sets: sets.get(weekStart)!,
+    current: weekStart === currentWeek,
+  }));
+}
+
 /** 移动平均；前段不足窗口时按已有值平均（体重 7 日均线用）；window<=0 时按 1 处理 */
 export function movingAverage(values: number[], window: number): number[] {
   const w = Math.max(1, window);
