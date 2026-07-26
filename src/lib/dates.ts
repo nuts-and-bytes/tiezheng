@@ -52,6 +52,13 @@ export function monthGrid(ym: string): string[] {
   return Array.from({ length: 42 }, (_, i) => addDays(start, i));
 }
 
+/** 指定月份的全部自然日，不补相邻月份。 */
+export function datesOfMonth(ym: string): string[] {
+  const [year, month] = ym.split('-').map(Number);
+  const length = new Date(year, month, 0).getDate();
+  return Array.from({ length }, (_, index) => `${ym}-${String(index + 1).padStart(2, '0')}`);
+}
+
 export function shiftMonth(ym: string, n: number): string {
   const [y, m] = ym.split('-').map(Number);
   const d = new Date(y, m - 1 + n, 1);

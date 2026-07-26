@@ -1,5 +1,5 @@
 import {
-  addDays, formatRelativeWorkoutDate, formatToday, lastNDates, monthGrid, parseDate,
+  addDays, datesOfMonth, formatRelativeWorkoutDate, formatToday, lastNDates, monthGrid, parseDate,
   shiftMonth, toDateStr, weekStartOf,
 } from './dates';
 
@@ -54,4 +54,11 @@ describe('formatRelativeWorkoutDate', () => {
   test('周一边界：前一天周日属于上一自然周', () => {
     expect(formatRelativeWorkoutDate('2026-07-19', '2026-07-20')).toBe('上周日');
   });
+});
+
+test('datesOfMonth 返回真实月长，含闰年二月与 31 天月份', () => {
+  expect(datesOfMonth('2024-02')).toHaveLength(29);
+  expect(datesOfMonth('2024-02').at(-1)).toBe('2024-02-29');
+  expect(datesOfMonth('2026-07')).toHaveLength(31);
+  expect(datesOfMonth('2026-07').at(-1)).toBe('2026-07-31');
 });
