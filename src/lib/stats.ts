@@ -365,6 +365,81 @@ export function recentE1rmSeries(
   return e1rmSeries(items, exerciseId, exMap).slice(-n);
 }
 
+export interface TrendPoint {
+  date: string;
+  value: number;
+}
+
+export type ExerciseTrend =
+  | { kind: 'assistance'; unit: 'kg'; inverse: true; points: TrendPoint[] }
+  | { kind: 'e1rm'; unit: 'kg'; inverse: false; points: TrendPoint[] }
+  | { kind: 'reps'; unit: '次'; inverse: false; points: TrendPoint[] }
+  | { kind: 'sets'; unit: '组'; inverse: false; points: TrendPoint[] };
+
+/**
+ * 根据动作真实记录口径生成最近 N 个训练日的趋势。
+ * 辅助重量越低越强；普通动作依次使用 e1RM、次数、组数，绝不把缺失维度伪装成重量。
+ */
+export function exerciseTrend(items: LoadItem[], exercise: Exercise, limit: number): ExerciseTrend {
+  const matching = items.filter((item) => item.exerciseId === exercise.id);
+  const n = Math.max(1, Math.floor(limit));
+  const finish = (byDate: Map<string, number>): TrendPoint[] => [...byDate.entries()]
+    .map(([date, value]) => ({ date, value }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-n);
+
+  if (loadModeOf(exercise) === 'assistance') {
+    const byDate = new Map<string, number>();
+    for (const item of matching) {
+      for (const set of item.sets) {
+        if (set.weight === undefined || !Number.isFinite(set.weight) || set.weight < 0) continue;
+        const current = byDate.get(item.date);
+        if (current === undefined || set.weight < current) byDate.set(item.date, set.weight);
+      }
+    }
+    return { kind: 'assistance', unit: 'kg', inverse: true, points: finish(byDate) };
+  }
+
+  const hasE1rm = matching.some((item) => item.sets.some(
+    (set) => weighted(set.weight) && set.reps !== undefined && set.reps > 0,
+  ));
+  if (hasE1rm) {
+    const byDate = new Map<string, number>();
+    for (const item of matching) {
+      for (const set of item.sets) {
+        if (!weighted(set.weight) || set.reps === undefined) continue;
+        const value = estimate1RM(set.weight, set.reps);
+        if (!(value > 0)) continue;
+        const current = byDate.get(item.date);
+        if (current === undefined || value > current) byDate.set(item.date, value);
+      }
+    }
+    return { kind: 'e1rm', unit: 'kg', inverse: false, points: finish(byDate) };
+  }
+
+  const hasReps = matching.some((item) => item.sets.some(
+    (set) => set.reps !== undefined && Number.isFinite(set.reps) && set.reps > 0,
+  ));
+  if (hasReps) {
+    const byDate = new Map<string, number>();
+    for (const item of matching) {
+      for (const set of item.sets) {
+        if (set.reps === undefined || !Number.isFinite(set.reps) || !(set.reps > 0)) continue;
+        const current = byDate.get(item.date);
+        if (current === undefined || set.reps > current) byDate.set(item.date, set.reps);
+      }
+    }
+    return { kind: 'reps', unit: '次', inverse: false, points: finish(byDate) };
+  }
+
+  const byDate = new Map<string, number>();
+  for (const item of matching) {
+    if (item.sets.length === 0) continue;
+    byDate.set(item.date, (byDate.get(item.date) ?? 0) + item.sets.length);
+  }
+  return { kind: 'sets', unit: '组', inverse: false, points: finish(byDate) };
+}
+
 /** 年度热力图的列：从当年 1/1 所在周的周一，排到 12/31 所在周的周一 */
 export function heatWeekStarts(year: number): string[] {
   const end = weekStartOf(`${year}-12-31`);

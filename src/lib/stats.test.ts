@@ -12,6 +12,7 @@ import {
   daysInRange,
   daysInYear,
   e1rmSeries,
+  exerciseTrend,
   estimate1RM,
   groupExerciseActivity,
   hasWeightData,
@@ -586,6 +587,78 @@ describe('recentE1rmSeries（进步曲线：脱离范围切换器，永远看最
       { date: '2026-07-02', exerciseId: 'e-assistance', sets: [{ weight: 25, reps: 10 }] },
     ];
     expect(recentE1rmSeries(items, 'e-assistance', 12, LOAD_MODE_EX)).toEqual([]);
+  });
+});
+
+describe('exerciseTrend（按动作真实记录口径自适应）', () => {
+  const external: Exercise = {
+    id: 'external', name: '卧推', bodyPart: 'chest', preset: true, updatedAt: 0, deletedAt: null,
+  };
+  const assistance: Exercise = {
+    id: 'assistance', name: '辅助引体向上', bodyPart: 'back', loadMode: 'assistance',
+    preset: true, updatedAt: 0, deletedAt: null,
+  };
+
+  it('辅助动作按天取最小辅助重量，日期升序且越低越强', () => {
+    const trend = exerciseTrend([
+      { date: '2026-07-03', exerciseId: 'assistance', sets: [{ weight: 25, reps: 8 }] },
+      { date: '2026-07-01', exerciseId: 'assistance', sets: [{ weight: 40, reps: 6 }, { weight: 35, reps: 5 }] },
+      { date: '2026-07-03', exerciseId: 'assistance', sets: [{ weight: 20, reps: 4 }] },
+    ], assistance, 12);
+
+    expect(trend).toEqual({
+      kind: 'assistance', unit: 'kg', inverse: true,
+      points: [{ date: '2026-07-01', value: 35 }, { date: '2026-07-03', value: 20 }],
+    });
+  });
+
+  it('普通重量加次数按天取最大 e1RM', () => {
+    const trend = exerciseTrend([
+      { date: '2026-07-01', exerciseId: 'external', sets: [{ weight: 60, reps: 10 }, { weight: 70, reps: 5 }] },
+      { date: '2026-07-02', exerciseId: 'other', sets: [{ weight: 200, reps: 1 }] },
+    ], external, 12);
+
+    expect(trend.kind).toBe('e1rm');
+    expect(trend.points).toHaveLength(1);
+    expect(trend.points[0].value).toBeCloseTo(81.6667, 4);
+  });
+
+  it('仅记录次数时按天取最高次数', () => {
+    const trend = exerciseTrend([
+      { date: '2026-07-01', exerciseId: 'external', sets: [{ reps: 8 }, { reps: 12 }] },
+      { date: '2026-07-02', exerciseId: 'external', sets: [{ weight: 0, reps: 15 }] },
+    ], external, 12);
+
+    expect(trend).toEqual({
+      kind: 'reps', unit: '次', inverse: false,
+      points: [{ date: '2026-07-01', value: 12 }, { date: '2026-07-02', value: 15 }],
+    });
+  });
+
+  it('只记组数时按天汇总该动作组数', () => {
+    const trend = exerciseTrend([
+      { date: '2026-07-01', exerciseId: 'external', sets: [{}, {}] },
+      { date: '2026-07-01', exerciseId: 'external', sets: [{}] },
+      { date: '2026-07-02', exerciseId: 'external', sets: [{}, {}, {}, {}] },
+    ], external, 12);
+
+    expect(trend).toEqual({
+      kind: 'sets', unit: '组', inverse: false,
+      points: [{ date: '2026-07-01', value: 3 }, { date: '2026-07-02', value: 4 }],
+    });
+  });
+
+  it('只保留最近 N 个训练日并保持日期升序', () => {
+    const items = Array.from({ length: 14 }, (_, index) => ({
+      date: `2026-07-${String(index + 1).padStart(2, '0')}`,
+      exerciseId: 'external',
+      sets: [{ reps: index + 1 }],
+    }));
+    const trend = exerciseTrend(items, external, 12);
+
+    expect(trend.points).toHaveLength(12);
+    expect(trend.points[0].date).toBe('2026-07-03');
+    expect(trend.points[11].date).toBe('2026-07-14');
   });
 });
 
