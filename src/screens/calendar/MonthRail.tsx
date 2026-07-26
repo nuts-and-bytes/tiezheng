@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { bodyPartInfo } from '../../data/bodyParts';
 import type { MonthRailDay } from '../../lib/calendar';
 
@@ -10,6 +11,12 @@ export function MonthRail({
   selectedDate: string | null;
   onSelect: (date: string) => void;
 }) {
+  const selectedRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }, [selectedDate]);
+
   return (
     <div className="-mx-5 overflow-x-auto px-5 pb-2" data-testid="month-rail">
       <div className="flex min-w-max items-end gap-2" role="group" aria-label="月度训练轨道">
@@ -26,6 +33,7 @@ export function MonthRail({
                   type="button"
                   aria-label={label}
                   aria-pressed={selected}
+                  ref={selected ? selectedRef : undefined}
                   onClick={() => onSelect(day.date)}
                   className={`relative flex h-28 w-6 items-end justify-center rounded-md outline-none transition duration-200 active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-iron focus-visible:ring-offset-2 focus-visible:ring-offset-bg ${
                     selected ? 'ring-2 ring-iron ring-offset-2 ring-offset-bg' : ''

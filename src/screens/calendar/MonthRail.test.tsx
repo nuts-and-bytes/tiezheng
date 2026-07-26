@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { MonthRailDay } from '../../lib/calendar';
 import { MonthRail } from './MonthRail';
@@ -44,4 +44,20 @@ test('点击训练柱回传日期，定位标签只显示 1/8/15/22/月末', asy
   expect(onSelect).toHaveBeenCalledWith('2026-07-15');
   const labels = within(screen.getByTestId('month-rail')).getAllByTestId('rail-anchor');
   expect(labels.map((label) => label.textContent)).toEqual(['1', '8', '15', '22', '31']);
+});
+
+test('默认或新选中的训练日自动滚到轨道可视区域', async () => {
+  const original = Element.prototype.scrollIntoView;
+  const scrollIntoView = vi.fn();
+  Element.prototype.scrollIntoView = scrollIntoView;
+  try {
+    render(<MonthRail days={days} selectedDate="2026-07-15" onSelect={() => {}} />);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: 'smooth',
+      block: 'nearest',
+      inline: 'center',
+    }));
+  } finally {
+    Element.prototype.scrollIntoView = original;
+  }
 });
