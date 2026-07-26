@@ -9,7 +9,15 @@ function formatFullDate(date: string): string {
   return `${value.getFullYear()}年${value.getMonth() + 1}月${value.getDate()}日`;
 }
 
-export function SelectedDayCard({ summary, today }: { summary: RailDaySummary; today: string }) {
+export function SelectedDayCard({
+  summary,
+  today,
+  hasPhoto = false,
+}: {
+  summary: RailDaySummary;
+  today: string;
+  hasPhoto?: boolean;
+}) {
   return (
     <section className="rounded-[22px] border border-line bg-raised/70 px-4 py-4 shadow-[0_18px_45px_rgba(0,0,0,.16)]">
       <div className="flex items-start justify-between gap-4">
@@ -17,7 +25,9 @@ export function SelectedDayCard({ summary, today }: { summary: RailDaySummary; t
           <h2 className="text-xl font-extrabold tracking-tight text-ink">
             {formatRelativeWorkoutDate(summary.date, today)}
           </h2>
-          <p className="mt-1 text-[11px] tracking-[0.08em] text-mute">{formatFullDate(summary.date)}</p>
+          <p className="mt-1 text-[11px] tracking-[0.08em] text-mute">
+            {formatFullDate(summary.date)}{hasPhoto ? ' · 留有训练照' : ''}
+          </p>
         </div>
         <div className="flex flex-wrap justify-end gap-1.5" aria-label="训练部位">
           {summary.parts.map((part) => {
