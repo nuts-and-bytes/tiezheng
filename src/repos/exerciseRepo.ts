@@ -1,24 +1,29 @@
 import { db } from '../lib/db';
 import { newId } from '../lib/ids';
-import type { BodyPart, Exercise } from '../lib/types';
+import type { BodyPart, Exercise, LoadMode } from '../lib/types';
 import { PRESET_EXERCISES } from '../data/presetExercises';
 
 const PRESET_ORDER = new Map(PRESET_EXERCISES.map((p, i) => [p.id, i]));
 
-/** 首次启动灌入预置动作库；已有数据则跳过（幂等，bulkPut 保证并发安全） */
+/** 补齐缺失的预置动作；事务保证并发调用幂等，且不覆盖已有动作 */
 export async function seedPresets(): Promise<void> {
-  if ((await db.exercises.count()) > 0) return;
-  const now = Date.now();
-  await db.exercises.bulkPut(
-    PRESET_EXERCISES.map((p) => ({
-      id: p.id,
-      name: p.name,
-      bodyPart: p.bodyPart,
-      preset: true,
-      updatedAt: now,
-      deletedAt: null,
-    })),
-  );
+  await db.transaction('rw', db.exercises, async () => {
+    const presetIds = PRESET_EXERCISES.map((p) => p.id);
+    const existing = await db.exercises.bulkGet(presetIds);
+    const now = Date.now();
+    const missing = PRESET_EXERCISES
+      .filter((_, index) => existing[index] === undefined)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        bodyPart: p.bodyPart,
+        loadMode: p.loadMode,
+        preset: true,
+        updatedAt: now,
+        deletedAt: null,
+      }));
+    if (missing.length > 0) await db.exercises.bulkAdd(missing);
+  });
 }
 
 export async function listByPart(part: BodyPart): Promise<Exercise[]> {
@@ -42,11 +47,16 @@ export async function getExercisesByIds(ids: string[]): Promise<Map<string, Exer
   return map;
 }
 
-export async function addCustomExercise(name: string, part: BodyPart): Promise<Exercise> {
+export async function addCustomExercise(
+  name: string,
+  part: BodyPart,
+  loadMode: LoadMode = 'external',
+): Promise<Exercise> {
   const ex: Exercise = {
     id: newId(),
     name: name.trim(),
     bodyPart: part,
+    loadMode,
     preset: false,
     updatedAt: Date.now(),
     deletedAt: null,

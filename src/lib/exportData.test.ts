@@ -50,7 +50,7 @@ test('buildJsonExport 含全部表（照片除外）', async () => {
   const json = JSON.parse(await buildJsonExport());
   expect(json.workouts).toHaveLength(1);
   expect(json.workoutItems).toHaveLength(1);
-  expect(json.exercises).toHaveLength(40);
+  expect(json.exercises).toHaveLength(42);
   expect(json.exportedAt).toBeTruthy();
   expect(json).not.toHaveProperty('photos');
 });
@@ -77,7 +77,7 @@ test('buildJsonExport：软删且无历史引用的自定义动作不导出', as
   await removeExercise(ex.id);
 
   const json = JSON.parse(await buildJsonExport());
-  expect(json.exercises).toHaveLength(40); // 只剩 40 个预置
+  expect(json.exercises).toHaveLength(42); // 只剩 42 个预置
   expect(await buildJsonExport()).not.toContain('临时试的动作');
 });
 

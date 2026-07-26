@@ -1,4 +1,5 @@
 export type BodyPart = 'chest' | 'shoulder' | 'back' | 'leg' | 'arm' | 'core' | 'cardio';
+export type LoadMode = 'external' | 'assistance';
 
 /** 一组：重量/次数均选填（规格 §5：组数必填、重量次数选填） */
 export interface SetEntry {
@@ -28,10 +29,14 @@ export interface Exercise {
   id: string;
   name: string;
   bodyPart: BodyPart;
+  loadMode?: LoadMode;
   preset: boolean; // true=系统预置，不可改名/删除
   updatedAt: number;
   deletedAt: number | null;
 }
+
+export const loadModeOf = (exercise: Pick<Exercise, 'loadMode'>): LoadMode =>
+  exercise.loadMode ?? 'external';
 
 export interface WeightLog {
   id: string;

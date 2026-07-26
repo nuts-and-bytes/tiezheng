@@ -1,17 +1,19 @@
-import type { BodyPart } from '../lib/types';
+import type { BodyPart, LoadMode } from '../lib/types';
 
 export interface PresetExercise {
   id: string;
   name: string;
   bodyPart: BodyPart;
+  loadMode?: LoadMode;
 }
 
 export const PRESET_EXERCISES: PresetExercise[] = [
-  // 胸 6
+  // 胸 7
   { id: 'p-bench', name: '卧推', bodyPart: 'chest' },
   { id: 'p-incline-bench', name: '上斜卧推', bodyPart: 'chest' },
   { id: 'p-db-fly', name: '哑铃飞鸟', bodyPart: 'chest' },
   { id: 'p-dip', name: '双杠臂屈伸', bodyPart: 'chest' },
+  { id: 'p-assisted-dip', name: '辅助双杠臂屈伸', bodyPart: 'chest', loadMode: 'assistance' },
   { id: 'p-cable-fly', name: '绳索夹胸', bodyPart: 'chest' },
   { id: 'p-pushup', name: '俯卧撑', bodyPart: 'chest' },
   // 肩 6
@@ -21,8 +23,9 @@ export const PRESET_EXERCISES: PresetExercise[] = [
   { id: 'p-front-raise', name: '前平举', bodyPart: 'shoulder' },
   { id: 'p-reverse-fly', name: '反向飞鸟', bodyPart: 'shoulder' },
   { id: 'p-shrug', name: '耸肩', bodyPart: 'shoulder' },
-  // 背 6
+  // 背 7
   { id: 'p-pullup', name: '引体向上', bodyPart: 'back' },
+  { id: 'p-assisted-pullup', name: '辅助引体向上', bodyPart: 'back', loadMode: 'assistance' },
   { id: 'p-lat-pulldown', name: '高位下拉', bodyPart: 'back' },
   { id: 'p-bb-row', name: '杠铃划船', bodyPart: 'back' },
   { id: 'p-seated-row', name: '坐姿划船', bodyPart: 'back' },

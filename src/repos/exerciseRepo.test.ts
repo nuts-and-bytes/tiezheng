@@ -1,21 +1,46 @@
 import { db } from '../lib/db';
+import { loadModeOf } from '../lib/types';
 import { resetDb } from '../test/dbTestUtils';
 import {
   addCustomExercise, getExercisesByIds, listByPart, removeExercise, renameExercise, seedPresets,
 } from './exerciseRepo';
+import { PRESET_EXERCISES } from '../data/presetExercises';
 
 beforeEach(resetDb);
 
-test('seedPresets 幂等：跑两次仍是 40 条', async () => {
+test('seedPresets 幂等：跑两次仍是 42 条', async () => {
   await seedPresets();
   await seedPresets();
-  expect(await db.exercises.count()).toBe(40);
+  expect(await db.exercises.count()).toBe(42);
+});
+
+test('已有 40 个预设的旧库会补齐辅助动作且不覆盖现有动作', async () => {
+  const now = Date.now();
+  const legacyPresets = PRESET_EXERCISES
+    .filter((p) => p.id !== 'p-assisted-dip' && p.id !== 'p-assisted-pullup')
+    .map((p) => ({
+      id: p.id,
+      name: p.id === 'p-bench' ? '用户保留的卧推名称' : p.name,
+      bodyPart: p.bodyPart,
+      preset: true,
+      updatedAt: now,
+      deletedAt: null,
+    }));
+  await db.exercises.bulkAdd(legacyPresets);
+
+  await seedPresets();
+
+  expect(await db.exercises.count()).toBe(42);
+  const exercises = await getExercisesByIds(['p-bench', 'p-assisted-dip', 'p-assisted-pullup']);
+  expect(exercises.get('p-bench')?.name).toBe('用户保留的卧推名称');
+  expect(exercises.get('p-assisted-dip')?.loadMode).toBe('assistance');
+  expect(exercises.get('p-assisted-pullup')?.loadMode).toBe('assistance');
 });
 
 test('listByPart 只返回该部位的有效动作', async () => {
   await seedPresets();
   const chest = await listByPart('chest');
-  expect(chest).toHaveLength(6);
+  expect(chest).toHaveLength(7);
   expect(chest.every((e) => e.bodyPart === 'chest')).toBe(true);
 });
 
@@ -34,9 +59,20 @@ test('新建/改名/软删自定义动作', async () => {
   expect((await getExercisesByIds([ex.id])).has(ex.id)).toBe(true);
 });
 
-test('seedPresets 并发调用不抛错且仍是 40 条', async () => {
+test('自定义动作缺省为普通负重，也可显式创建为辅助重量', async () => {
+  const external = await addCustomExercise('普通动作', 'chest');
+  const assistance = await addCustomExercise('辅助动作', 'back', 'assistance');
+
+  expect(external.loadMode).toBe('external');
+  expect(assistance.loadMode).toBe('assistance');
+  expect((await db.exercises.get(external.id))?.loadMode).toBe('external');
+  expect((await db.exercises.get(assistance.id))?.loadMode).toBe('assistance');
+  expect(loadModeOf({})).toBe('external');
+});
+
+test('seedPresets 并发调用不抛错且仍是 42 条', async () => {
   await Promise.all([seedPresets(), seedPresets()]);
-  expect(await db.exercises.count()).toBe(40);
+  expect(await db.exercises.count()).toBe(42);
 });
 
 test('预置动作不可改名/软删（静默 no-op）', async () => {
@@ -56,8 +92,8 @@ test('listByPart 排序：预置按预置顺序在前，自定义排在预置之
 
   await addCustomExercise('自定义夹胸', 'chest');
   const after = await listByPart('chest');
-  expect(after).toHaveLength(7);
-  expect(after.slice(0, 6).every((e) => e.preset)).toBe(true);
-  expect(after[6]?.name).toBe('自定义夹胸');
-  expect(after[6]?.preset).toBe(false);
+  expect(after).toHaveLength(8);
+  expect(after.slice(0, 7).every((e) => e.preset)).toBe(true);
+  expect(after[7]?.name).toBe('自定义夹胸');
+  expect(after[7]?.preset).toBe(false);
 });
