@@ -5,10 +5,11 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { ExerciseManager } from '../../components/ExerciseManager';
 import { PartIcon } from '../../components/PartIcon';
 import { Stamp } from '../../components/Stamp';
+import { bodyPartInfo } from '../../data/bodyParts';
 import { todayStr } from '../../lib/dates';
 import { buildJsonExport, buildWorkoutCsv, downloadText } from '../../lib/exportData';
 import { log } from '../../lib/logger';
-import { daysBetween, loadKind, longestStreak, prsByExercise, totals } from '../../lib/stats';
+import { daysBetween, loadKind, longestStreak, prGroups, totals } from '../../lib/stats';
 import { getExercisesByIds } from '../../repos/exerciseRepo';
 import { adjustWeeklyGoal, getProfile } from '../../repos/profileRepo';
 import { listAllItems, listAllWorkoutDates } from '../../repos/workoutRepo';
@@ -56,7 +57,8 @@ export function ProfileScreen() {
 
   const t = totals(items, dates, exMap);
   const kind = loadKind(items, exMap);
-  const prs = prsByExercise(items, exMap);
+  const recordGroups = prGroups(items, exMap);
+  const hasStrengthRecords = recordGroups.some((group) => group.strength.length > 0);
   const empty = items.length === 0 && dates.length === 0;
   // 铁龄：从第一条铁证那天算起（含当天）
   const ironAge = dates.length > 0 ? daysBetween(dates[0], today) + 1 : 0;
@@ -122,42 +124,86 @@ export function ProfileScreen() {
       <SectionTitle>个人纪录 · PR</SectionTitle>
       {/* 榜首是 e1RM 外推值——用户从没真正举起来过那个数。
           说明必须在他看到数字之前出现，放列表底部等于没放 */}
-      {prs.length > 0 && (
-        <p className="mb-1 text-[11px] text-mute">按预估 1RM（Epley）排名 · 越往上越硬</p>
+      {hasStrengthRecords && (
+        <p className="mb-3 text-[11px] text-mute">按预估 1RM（Epley）· 每个部位独立比较</p>
       )}
-      {prs.length === 0 ? (
+      {recordGroups.length === 0 ? (
         <p className="rounded-xl border border-dashed border-line px-4 py-6 text-center text-xs leading-relaxed text-mute">
           还没有纪录。
           <br />
-          记下一组带重量的动作，这里就会立起你的第一块碑。
+          记下一组带重量或辅助训练，这里就会立起你的第一块碑。
         </p>
       ) : (
-        <ul aria-label="PR 榜" className="flex flex-col">
-          {prs.map((pr, i) => (
-            <li
-              key={pr.exerciseId}
-              className={`flex items-center gap-3 py-3.5 ${i > 0 ? 'border-t border-line' : ''}`}
-            >
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-line bg-raised">
-                <PartIcon part={pr.bodyPart} size={18} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <b className="block truncate text-[15px] font-semibold">{pr.name}</b>
-                <span className="mt-0.5 block text-[11px] text-mute tabular-nums">
-                  {pr.weight}kg × {pr.reps} · {pr.date.slice(5)}
-                </span>
-              </span>
-              <span className="flex shrink-0 items-baseline gap-0.5">
-                <span
-                  className={`display text-[26px] leading-none ${i === 0 ? 'heat-text' : 'text-ink'}`}
-                >
-                  {Math.round(pr.e1rm)}
-                </span>
-                <span className="text-[11px] text-mute">kg</span>
-              </span>
-            </li>
-          ))}
-        </ul>
+        <div className="space-y-5">
+          {recordGroups.map((group) => {
+            const part = bodyPartInfo(group.bodyPart);
+            const headingId = `profile-pr-${group.bodyPart}`;
+            return (
+              <section key={group.bodyPart} aria-labelledby={headingId}>
+                <h3 id={headingId} className="flex items-center gap-2 border-b border-line pb-2 text-sm font-semibold">
+                  <span
+                    className="flex size-7 items-center justify-center rounded-lg"
+                    style={{ backgroundColor: `${part.color}24` }}
+                    aria-hidden
+                  >
+                    <PartIcon part={group.bodyPart} size={16} color={part.color} />
+                  </span>
+                  {part.name}
+                </h3>
+
+                {group.strength.length > 0 && (
+                  <ul aria-label={`${part.name}力量 PR`} className="flex flex-col">
+                    {group.strength.map((pr, index) => (
+                      <li
+                        key={pr.exerciseId}
+                        data-rank-leader={index === 0 ? 'true' : undefined}
+                        className={`flex items-center gap-3 py-3.5 ${index > 0 ? 'border-t border-line' : ''}`}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <b className="block truncate text-[15px] font-semibold">{pr.name}</b>
+                          <span className="mt-0.5 block text-[11px] text-mute tabular-nums">
+                            {pr.weight}kg × {pr.reps} · {pr.date.slice(5)}
+                          </span>
+                        </span>
+                        <span className="flex shrink-0 items-baseline gap-0.5">
+                          <span className={`display text-[26px] leading-none ${index === 0 ? 'heat-text' : 'text-ink'}`}>
+                            {Math.round(pr.e1rm)}
+                          </span>
+                          <span className="text-[11px] text-mute">kg</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {group.assistance.length > 0 && (
+                  <div className={group.strength.length > 0 ? 'mt-3 border-t border-line pt-3' : 'pt-3'}>
+                    <div className="mb-1 flex items-baseline justify-between gap-3">
+                      <h4 className="text-xs font-semibold text-ink">辅助训练纪录</h4>
+                      <span className="text-[10px] text-amber">辅助越少，表现越强</span>
+                    </div>
+                    <ul aria-label={`${part.name}辅助训练纪录`} className="flex flex-col">
+                      {group.assistance.map((record, index) => (
+                        <li
+                          key={record.exerciseId}
+                          className={`flex items-center justify-between gap-3 py-3 ${index > 0 ? 'border-t border-line' : ''}`}
+                        >
+                          <span className="min-w-0">
+                            <b className="block truncate text-sm font-semibold">{record.name}</b>
+                            <span className="mt-0.5 block text-[11px] text-mute tabular-nums">{record.date.slice(5)}</span>
+                          </span>
+                          <span className="shrink-0 text-sm font-semibold tabular-nums text-ink">
+                            辅助 {record.assistanceKg} kg × {record.reps}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
+            );
+          })}
+        </div>
       )}
 
       <div className="etch" />

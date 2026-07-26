@@ -93,15 +93,17 @@ test('纯自重训练者：第四格立的是「总次数」，而不是一个 4
   expect(within(await statCell('总组数')).getByText('4')).toBeInTheDocument();
 });
 
-test('只练辅助动作：负荷格立总次数，不产生假容量或普通 PR', async () => {
+test('只练辅助动作：负荷格立总次数，并在所属部位显示辅助训练纪录', async () => {
   await addWorkoutItem(todayStr(), 'p-assisted-pullup', [{ weight: 30, reps: 10 }]);
   renderProfile();
 
   const reps = await statCell('总次数');
   expect(within(reps).getByText('10')).toBeInTheDocument();
   expect(screen.queryByText('累计容量')).not.toBeInTheDocument();
-  expect(await screen.findByText(/还没有纪录/)).toBeInTheDocument();
-  expect(screen.queryByRole('list', { name: 'PR 榜' })).not.toBeInTheDocument();
+  const back = await screen.findByRole('region', { name: '背' });
+  expect(within(back).getByText('辅助训练纪录')).toBeInTheDocument();
+  expect(within(back).getByRole('list', { name: '背辅助训练纪录' })).toHaveTextContent('辅助 30 kg × 10');
+  expect(screen.queryByText(/还没有纪录/)).not.toBeInTheDocument();
 });
 
 /**
@@ -157,25 +159,31 @@ test('.display 里不许出现中文（Anton 无中日韩字形）', async () =>
   }
 });
 
-test('PR 榜按预估 1RM 降序，带部位图标', async () => {
+test('PR 按部位形成独立区块，榜首在组内重置高亮且不存在全局序号', async () => {
   await seedTraining();
+  await addWorkoutItem(todayStr(), 'p-incline-bench', [{ weight: 50, reps: 10 }]);
   renderProfile();
 
-  const list = await screen.findByRole('list', { name: 'PR 榜' });
-  const rows = within(list).getAllByRole('listitem');
-  expect(rows).toHaveLength(2);
-  // 卧推 100×5 → e1RM 117；深蹲 60×10 → e1RM 80
-  expect(rows[0]).toHaveTextContent('卧推');
-  expect(rows[0]).toHaveTextContent('117');
-  expect(rows[1]).toHaveTextContent('深蹲');
-  expect(rows[1]).toHaveTextContent('80');
-  expect(list.querySelectorAll('svg').length).toBeGreaterThanOrEqual(2);
+  const chest = await screen.findByRole('region', { name: '胸' });
+  const leg = screen.getByRole('region', { name: '腿' });
+  const chestRows = within(chest).getAllByRole('listitem');
+  const legRows = within(leg).getAllByRole('listitem');
+  expect(chestRows).toHaveLength(2);
+  expect(chestRows[0]).toHaveTextContent('卧推');
+  expect(chestRows[0]).toHaveAttribute('data-rank-leader', 'true');
+  expect(chestRows[1]).toHaveTextContent('上斜卧推');
+  expect(chestRows[1]).not.toHaveAttribute('data-rank-leader');
+  expect(legRows).toHaveLength(1);
+  expect(legRows[0]).toHaveAttribute('data-rank-leader', 'true');
+  expect(chest).not.toHaveTextContent('#1');
+  expect(leg).not.toHaveTextContent('#1');
+  expect(screen.getByText('按预估 1RM（Epley）· 每个部位独立比较')).toBeInTheDocument();
 });
 
 test('没有带重量的组时 PR 榜显示空态', async () => {
   renderProfile();
   expect(await screen.findByText(/还没有纪录/)).toBeInTheDocument();
-  expect(screen.queryByRole('list', { name: 'PR 榜' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('region', { name: /胸|背|腿/ })).not.toBeInTheDocument();
 });
 
 test('点「导出训练海报」跳到 /poster', async () => {
@@ -233,7 +241,7 @@ test('Epley 说明在 PR 列表之前（认知形成前校正）', async () => {
   renderProfile();
 
   const note = await screen.findByText(/Epley/);
-  const list = screen.getByRole('list', { name: 'PR 榜' });
+  const list = screen.getByRole('list', { name: '胸力量 PR' });
   // 说明必须先于列表出现在 DOM 里，否则用户滚过 12 条才看到
   expect(note.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
