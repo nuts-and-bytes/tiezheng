@@ -19,7 +19,7 @@ export function TabBar() {
             to={tab.to}
             end={tab.to === '/'}
             className={({ isActive }) =>
-              `flex flex-1 flex-col items-center gap-[3px] pt-3 pb-2 text-[11px] transition-colors ${
+              `flex min-h-14 flex-1 flex-col items-center justify-center gap-[3px] rounded-lg px-1 py-2 text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-iron ${
                 isActive ? 'font-semibold text-iron' : 'text-mute'
               }`
             }

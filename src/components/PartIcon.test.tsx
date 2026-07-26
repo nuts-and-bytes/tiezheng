@@ -1,7 +1,7 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { BODY_PARTS } from '../data/bodyParts';
-import { PartIcon } from './PartIcon';
+import { NavGlyph, PartIcon } from './PartIcon';
 
 describe('PartIcon', () => {
   it('7 个部位共享 24 格几何，以实心 currentColor 为主并保留稳定形状标记', () => {
@@ -28,5 +28,17 @@ describe('PartIcon', () => {
   it('可覆盖颜色（导航和单色环境用 currentColor）', () => {
     const { container } = render(<PartIcon part="chest" size={24} color="currentColor" />);
     expect(container.querySelector('svg')).toHaveAttribute('color', 'currentColor');
+  });
+});
+
+describe('NavGlyph', () => {
+  it.each(['today', 'calendar', 'stats', 'profile'] as const)('%s 使用统一实心切口语言', (icon) => {
+    const { container } = render(<NavGlyph icon={icon} size={24} />);
+    const svg = container.querySelector('svg')!;
+    expect(svg).toHaveAttribute('viewBox', '0 0 24 24');
+    expect(svg).toHaveAttribute('fill', 'currentColor');
+    expect(svg).toHaveAttribute('stroke', 'none');
+    expect(svg.querySelector(`[data-nav-shape="${icon}"]`)).not.toBeNull();
+    expect(svg).toHaveAttribute('aria-hidden', 'true');
   });
 });

@@ -31,6 +31,8 @@ test('选中态 text-iron + aria-current，未选中 text-mute', () => {
   expect(active.className).toContain('text-iron');
   expect(idle.className).toContain('text-mute');
   expect(idle).not.toHaveAttribute('aria-current');
+  expect(active.className).toContain('focus-visible:');
+  expect(active.className).toContain('min-h-14');
 });
 
 test('「今日」只在根路径高亮（end 匹配，不被 /calendar 命中）', () => {

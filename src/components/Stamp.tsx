@@ -6,37 +6,38 @@ interface Props {
   decorative?: boolean;
 }
 
-/** 品牌钢印。打卡 = 盖钢印，这是整个产品的核心隐喻。
-    尺寸取自 docs/design-cards/brand/tokens.html 的 .stamp（96px 基准），其余按比例缩放 */
+/** 品牌钢印。八角外框 + 向下落锤的 T 形切面，缩小后仍只有一个强轮廓。 */
 export function Stamp({ size, animate = false, decorative = false }: Props) {
-  const k = size / 96; // 96 是 design card 的基准尺寸
   return (
     <div
       className={`relative inline-flex shrink-0 items-center justify-center ${animate ? 'animate-stamp-in' : ''}`}
       style={{
         width: size,
         height: size,
-        border: `${3.5 * k}px solid var(--color-iron)`,
-        borderRadius: 18 * k,
         transform: 'rotate(-6deg)',
-        boxShadow: `0 0 ${34 * k}px rgba(255,92,31,.35), inset 0 0 ${18 * k}px rgba(255,92,31,.18)`,
+        filter: `drop-shadow(0 0 ${Math.max(8, size * 0.28)}px rgba(255,92,31,.32))`,
       }}
       aria-hidden={decorative || undefined}
       aria-label={decorative ? undefined : '铁证'}
       role={decorative ? undefined : 'img'}
     >
-      <span
-        aria-hidden
-        className="pointer-events-none absolute"
-        style={{
-          inset: 5 * k,
-          border: `1px dashed rgba(255,92,31,.45)`,
-          borderRadius: 12 * k,
-        }}
-      />
-      <span className="leading-none font-black text-iron" style={{ fontSize: 52 * k }}>
-        铁
-      </span>
+      <svg
+        data-stamp-mark
+        width={size}
+        height={size}
+        viewBox="0 0 96 96"
+        fill="currentColor"
+        className="text-iron"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path
+          fillRule="evenodd"
+          d="M25 4h46l21 21v46L71 92H25L4 71V25Zm3.7 9L13 28.7v38.6L28.7 83h38.6L83 67.3V28.7L67.3 13Z"
+        />
+        <path d="M23 27h50v13H56v17l10-7v15L48 78 30 65V50l10 7V40H23Z" />
+        <path d="M42 44h12v22l-6 4.5-6-4.5Z" fill="var(--color-bg)" />
+      </svg>
     </div>
   );
 }

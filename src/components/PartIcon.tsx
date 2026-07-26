@@ -78,26 +78,30 @@ export function PartIcon({ part, size = 24, color }: Props) {
 
 export type NavIcon = 'today' | 'calendar' | 'stats' | 'profile';
 
-/** 底部导航 4 枚。「今日」= 倾斜的钢印锤落（与品牌隐喻同源） */
+/** 底部导航 4 枚：统一实心切角与负空间，不借用通用线性图标库。 */
 const NAV_SHAPES: Record<NavIcon, ReactNode> = {
   today: (
     <>
-      <rect x="5" y="4" width="14" height="14" rx="3" transform="rotate(-6 12 11)" />
-      <path d="M9.2 10.5l2 2 3.8-4" transform="rotate(-6 12 11)" />
-      <path d="M7 21h10" />
+      <path d="m12 2 8 4.6v9.2L12 22l-8-6.2V6.6Zm0 4.2-4.4 2.5v5l4.4 3.4 4.4-3.4v-5Z" fillRule="evenodd" />
+      <path d="m9.2 11.7 1.8 1.8 4-4-1.4-1.4-2.6 2.6-.4-.4Z" />
     </>
   ),
   calendar: (
     <>
-      <path d="M7 2v3m10-3v3M3.5 9h17M5 4.5h14A1.5 1.5 0 0 1 20.5 6v13a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V6A1.5 1.5 0 0 1 5 4.5Z" />
-      <path d="M8 13h2.5v2.5H8z" fill="currentColor" stroke="none" />
+      <path d="M4 4h3V2h2v2h6V2h2v2h3v18H4Zm3 6v3h3v-3Zm5 0v3h5v-3Zm-5 5v3h3v-3Zm5 0v3h5v-3Z" fillRule="evenodd" />
     </>
   ),
-  stats: <path d="M4 20V11m5.3 9V4m5.4 16v-6m5.3 6V8" />,
+  stats: (
+    <>
+      <path d="M3 13.5 7.5 9v12H3Zm6.8-5.7L14.2 3v18H9.8Zm6.7 5.1L21 8.5V21h-4.5Z" />
+      <path d="m3.5 10.3 5.2-5 4.2 2.4 6.4-5.2 1.3 1.6-7.5 6.1-4.1-2.4-4.1 4Z" opacity=".7" />
+    </>
+  ),
   profile: (
     <>
-      <rect x="8" y="3" width="8" height="11" rx="4" />
-      <path d="M12 14v3m-3.5 4a3.5 3.5 0 0 1 7 0" />
+      <path d="m8 2 4-1 4 1 1 3-1.2 5-3.8 2-3.8-2L7 5Z" />
+      <path d="m5 15 4-2 3 2 3-2 4 2 2 7H3Z" />
+      <path d="m11 15 1 1.6 1-1.6v5h-2Z" fill="var(--color-raised)" />
     </>
   ),
 };
@@ -108,14 +112,12 @@ export function NavGlyph({ icon, size = 24 }: { icon: NavIcon; size?: number }) 
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
+      fill="currentColor"
+      stroke="none"
+      aria-hidden="true"
+      focusable="false"
     >
-      {NAV_SHAPES[icon]}
+      <g data-nav-shape={icon}>{NAV_SHAPES[icon]}</g>
     </svg>
   );
 }
