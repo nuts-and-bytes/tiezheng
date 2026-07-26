@@ -13,6 +13,7 @@ import {
   daysInYear,
   e1rmSeries,
   estimate1RM,
+  groupExerciseActivity,
   hasWeightData,
   heatMonthLabels,
   heatWeekStarts,
@@ -330,6 +331,100 @@ describe('topExerciseIds', () => {
       { date: '2026-07-03', exerciseId: 'e-external', sets: [{ weight: 60, reps: 8 }] },
     ];
     expect(topExerciseIds(items, 5, LOAD_MODE_EX)).toEqual(['e-external']);
+  });
+});
+
+describe('groupExerciseActivity', () => {
+  const exercise = (id: string, name: string, bodyPart: Exercise['bodyPart']): Exercise => ({
+    id,
+    name,
+    bodyPart,
+    preset: true,
+    updatedAt: 0,
+    deletedAt: null,
+  });
+
+  it('返回全历史动作且不受前五名限制，只输出有记录的部位并按 BODY_PARTS 排序', () => {
+    const exMap = new Map<string, Exercise>([
+      ['leg-1', exercise('leg-1', '深蹲', 'leg')],
+      ['shoulder-unused', exercise('shoulder-unused', '推举', 'shoulder')],
+      ['chest-3', exercise('chest-3', '飞鸟', 'chest')],
+      ['back-1', exercise('back-1', '划船', 'back')],
+      ['chest-1', exercise('chest-1', '卧推', 'chest')],
+      ['chest-2', exercise('chest-2', '上斜卧推', 'chest')],
+      ['arm-1', exercise('arm-1', '弯举', 'arm')],
+    ]);
+    const items = [
+      { date: '2026-07-20', exerciseId: 'leg-1', sets: [{}] },
+      { date: '2026-07-20', exerciseId: 'chest-3', sets: [{}] },
+      { date: '2026-07-20', exerciseId: 'back-1', sets: [{}] },
+      { date: '2026-07-20', exerciseId: 'chest-1', sets: [{}] },
+      { date: '2026-07-20', exerciseId: 'chest-2', sets: [{}] },
+      { date: '2026-07-20', exerciseId: 'arm-1', sets: [{}] },
+    ];
+
+    const groups = groupExerciseActivity(items, exMap, '2026-07-26');
+
+    expect(groups.map((group) => group.bodyPart)).toEqual(['chest', 'back', 'leg', 'arm']);
+    expect(groups.flatMap((group) => group.exercises)).toHaveLength(6);
+    expect(groups.some((group) => group.bodyPart === 'shoulder')).toBe(false);
+  });
+
+  it('今天练过优先，其余按最近日期倒序，同日按中文动作名稳定排序', () => {
+    const exMap = new Map<string, Exercise>([
+      ['today-z', exercise('today-z', '坐姿划船', 'back')],
+      ['today-a', exercise('today-a', '阿诺德划船', 'back')],
+      ['recent', exercise('recent', '高位下拉', 'back')],
+      ['same-b', exercise('same-b', '波比划船', 'back')],
+      ['same-a', exercise('same-a', '阿尔法划船', 'back')],
+      ['old', exercise('old', '单臂划船', 'back')],
+    ]);
+    const items = [
+      { date: '2026-07-21', exerciseId: 'same-b', sets: [{}] },
+      { date: '2026-07-26', exerciseId: 'today-z', sets: [{}] },
+      { date: '2026-07-20', exerciseId: 'old', sets: [{}] },
+      { date: '2026-07-22', exerciseId: 'recent', sets: [{}] },
+      { date: '2026-07-21', exerciseId: 'same-a', sets: [{}] },
+      { date: '2026-07-24', exerciseId: 'today-a', sets: [{}] },
+      { date: '2026-07-26', exerciseId: 'today-a', sets: [{}] },
+    ];
+
+    const [back] = groupExerciseActivity(items, exMap, '2026-07-26');
+
+    expect(back.exercises.map(({ exercise: { id } }) => id)).toEqual([
+      'today-a',
+      'today-z',
+      'recent',
+      'same-a',
+      'same-b',
+      'old',
+    ]);
+    expect(back.exercises.map(({ lastDate, trainedToday }) => ({ lastDate, trainedToday }))).toEqual([
+      { lastDate: '2026-07-26', trainedToday: true },
+      { lastDate: '2026-07-26', trainedToday: true },
+      { lastDate: '2026-07-22', trainedToday: false },
+      { lastDate: '2026-07-21', trainedToday: false },
+      { lastDate: '2026-07-21', trainedToday: false },
+      { lastDate: '2026-07-20', trainedToday: false },
+    ]);
+  });
+
+  it('缺少动作元数据的孤儿记录会被忽略', () => {
+    const exMap = new Map<string, Exercise>([
+      ['known', exercise('known', '卧推', 'chest')],
+    ]);
+    const items = [
+      { date: '2026-07-26', exerciseId: 'orphan', sets: [{}] },
+      { date: '2026-07-25', exerciseId: 'known', sets: [{}] },
+    ];
+
+    expect(groupExerciseActivity(items, exMap, '2026-07-26')).toEqual([
+      {
+        bodyPart: 'chest',
+        exercises: [{ exercise: exMap.get('known'), lastDate: '2026-07-25', trainedToday: false }],
+      },
+    ]);
+    expect(groupExerciseActivity(items.slice(0, 1), exMap, '2026-07-26')).toEqual([]);
   });
 });
 

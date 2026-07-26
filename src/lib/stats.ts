@@ -128,6 +128,17 @@ export interface LoadItem {
 export type ExMap = Map<string, Exercise>;
 export type Segment = 'week' | 'month' | 'year' | 'all';
 
+export interface ExerciseActivity {
+  exercise: Exercise;
+  lastDate: string;
+  trainedToday: boolean;
+}
+
+export interface ExerciseActivityGroup {
+  bodyPart: BodyPart;
+  exercises: ExerciseActivity[];
+}
+
 /** 映射缺失或历史动作缺 loadMode 时仍按外部负重处理。 */
 function isExternalLoad(exerciseId: string, exMap?: ExMap): boolean {
   return loadModeOf(exMap?.get(exerciseId) ?? {}) === 'external';
@@ -391,6 +402,51 @@ export function topExerciseIds(items: LoadItem[], limit: number, exMap?: ExMap):
     .sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0]))
     .slice(0, limit)
     .map(([id]) => id);
+}
+
+/** 全历史练过的动作，按部位与最近训练状态组织；不受趋势榜数量上限影响。 */
+export function groupExerciseActivity(
+  items: LoadItem[],
+  exMap: ExMap,
+  today: string,
+): ExerciseActivityGroup[] {
+  const activityById = new Map<string, ExerciseActivity>();
+  for (const item of items) {
+    const exercise = exMap.get(item.exerciseId);
+    if (!exercise) continue;
+
+    const current = activityById.get(item.exerciseId);
+    if (!current) {
+      activityById.set(item.exerciseId, {
+        exercise,
+        lastDate: item.date,
+        trainedToday: item.date === today,
+      });
+      continue;
+    }
+    if (item.date > current.lastDate) current.lastDate = item.date;
+    if (item.date === today) current.trainedToday = true;
+  }
+
+  const byPart = new Map<BodyPart, ExerciseActivity[]>();
+  for (const activity of activityById.values()) {
+    const exercises = byPart.get(activity.exercise.bodyPart) ?? [];
+    exercises.push(activity);
+    byPart.set(activity.exercise.bodyPart, exercises);
+  }
+
+  return BODY_PARTS.flatMap(({ id: bodyPart }) => {
+    const exercises = byPart.get(bodyPart);
+    if (!exercises?.length) return [];
+    exercises.sort(
+      (a, b) =>
+        Number(b.trainedToday) - Number(a.trainedToday)
+        || b.lastDate.localeCompare(a.lastDate)
+        || a.exercise.name.localeCompare(b.exercise.name, 'zh-CN')
+        || a.exercise.id.localeCompare(b.exercise.id),
+    );
+    return [{ bodyPart, exercises }];
+  });
 }
 
 export function setsByBodyPart(items: LoadItem[], exMap: ExMap): Record<BodyPart, number> {
