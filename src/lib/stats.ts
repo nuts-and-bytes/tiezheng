@@ -336,6 +336,13 @@ export interface PrRow {
   date: string;
 }
 
+function comparePrRows(a: PrRow, b: PrRow): number {
+  return b.e1rm - a.e1rm
+    || b.date.localeCompare(a.date)
+    || a.name.localeCompare(b.name, 'zh-CN')
+    || a.exerciseId.localeCompare(b.exerciseId);
+}
+
 /** 每个动作的历史最佳 e1RM，按 e1RM 降序。抗稀疏：只要有一组带重量就有一行，永远画不出空图 */
 export function prsByExercise(items: LoadItem[], exMap: ExMap): PrRow[] {
   const best = new Map<string, PrRow>();
@@ -345,21 +352,77 @@ export function prsByExercise(items: LoadItem[], exMap: ExMap): PrRow[] {
     for (const s of item.sets) {
       if (!weighted(s.weight) || s.reps === undefined) continue;
       const e1rm = estimate1RM(s.weight, s.reps);
+      const candidate: PrRow = {
+        exerciseId: item.exerciseId,
+        name: ex.name,
+        bodyPart: ex.bodyPart,
+        e1rm,
+        weight: s.weight,
+        reps: s.reps,
+        date: item.date,
+      };
       const cur = best.get(item.exerciseId);
-      if (!cur || e1rm > cur.e1rm) {
-        best.set(item.exerciseId, {
-          exerciseId: item.exerciseId,
-          name: ex.name,
-          bodyPart: ex.bodyPart,
-          e1rm,
-          weight: s.weight,
-          reps: s.reps,
-          date: item.date,
-        });
+      if (!cur || comparePrRows(candidate, cur) < 0) best.set(item.exerciseId, candidate);
+    }
+  }
+  return [...best.values()].sort(comparePrRows);
+}
+
+export interface AssistanceRecord {
+  exerciseId: string;
+  name: string;
+  bodyPart: BodyPart;
+  assistanceKg: number;
+  reps: number;
+  date: string;
+}
+
+export interface PrGroup {
+  bodyPart: BodyPart;
+  strength: PrRow[];
+  assistance: AssistanceRecord[];
+}
+
+function compareAssistanceRecords(a: AssistanceRecord, b: AssistanceRecord): number {
+  return a.assistanceKg - b.assistanceKg
+    || b.reps - a.reps
+    || b.date.localeCompare(a.date)
+    || a.name.localeCompare(b.name, 'zh-CN')
+    || a.exerciseId.localeCompare(b.exerciseId);
+}
+
+/** 普通力量与辅助纪录分开比较，再按固定部位顺序组织。 */
+export function prGroups(items: LoadItem[], exMap: ExMap): PrGroup[] {
+  const strength = prsByExercise(items, exMap);
+  const bestAssistance = new Map<string, AssistanceRecord>();
+
+  for (const item of items) {
+    const exercise = exMap.get(item.exerciseId);
+    if (!exercise || loadModeOf(exercise) !== 'assistance') continue;
+    for (const set of item.sets) {
+      if (set.weight === undefined || !Number.isFinite(set.weight) || set.weight < 0) continue;
+      if (set.reps === undefined || !Number.isFinite(set.reps) || !(set.reps > 0)) continue;
+      const candidate: AssistanceRecord = {
+        exerciseId: exercise.id,
+        name: exercise.name,
+        bodyPart: exercise.bodyPart,
+        assistanceKg: set.weight,
+        reps: set.reps,
+        date: item.date,
+      };
+      const current = bestAssistance.get(exercise.id);
+      if (!current || compareAssistanceRecords(candidate, current) < 0) {
+        bestAssistance.set(exercise.id, candidate);
       }
     }
   }
-  return [...best.values()].sort((a, b) => b.e1rm - a.e1rm);
+
+  const assistance = [...bestAssistance.values()].sort(compareAssistanceRecords);
+  return BODY_PARTS.map(({ id: bodyPart }) => ({
+    bodyPart,
+    strength: strength.filter((row) => row.bodyPart === bodyPart),
+    assistance: assistance.filter((row) => row.bodyPart === bodyPart),
+  })).filter((group) => group.strength.length > 0 || group.assistance.length > 0);
 }
 
 /** 某动作每日最大 e1RM，日期升序 */

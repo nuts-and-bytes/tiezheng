@@ -23,6 +23,7 @@ import {
   longestStreak,
   percentile,
   prevRangeOf,
+  prGroups,
   prsByExercise,
   rangeOf,
   recentE1rmSeries,
@@ -549,6 +550,50 @@ describe('prsByExercise', () => {
       { date: '2026-07-02', exerciseId: 'e-external', sets: [{ weight: 60, reps: 8 }] },
     ], LOAD_MODE_EX);
     expect(prs.map((p) => p.exerciseId)).toEqual(['e-external']);
+  });
+});
+
+describe('prGroups（普通 PR 与辅助纪录按部位分组）', () => {
+  const exercises = new Map<string, Exercise>([
+    ['chest-late-a', { id: 'chest-late-a', name: '甲推举', bodyPart: 'chest', preset: true, updatedAt: 0, deletedAt: null }],
+    ['chest-late-b', { id: 'chest-late-b', name: '阿推举', bodyPart: 'chest', preset: true, updatedAt: 0, deletedAt: null }],
+    ['chest-old', { id: 'chest-old', name: '乙推举', bodyPart: 'chest', preset: true, updatedAt: 0, deletedAt: null }],
+    ['assist-a', { id: 'assist-a', name: '辅助引体 A', bodyPart: 'back', loadMode: 'assistance', preset: true, updatedAt: 0, deletedAt: null }],
+    ['assist-b', { id: 'assist-b', name: '辅助引体 B', bodyPart: 'back', loadMode: 'assistance', preset: true, updatedAt: 0, deletedAt: null }],
+    ['assist-invalid', { id: 'assist-invalid', name: '无次数辅助', bodyPart: 'back', loadMode: 'assistance', preset: true, updatedAt: 0, deletedAt: null }],
+  ]);
+
+  const items = [
+    { date: '2026-07-03', exerciseId: 'chest-late-a', sets: [{ weight: 60, reps: 10 }] },
+    { date: '2026-07-03', exerciseId: 'chest-late-b', sets: [{ weight: 60, reps: 10 }] },
+    { date: '2026-07-01', exerciseId: 'chest-old', sets: [{ weight: 60, reps: 10 }] },
+    { date: '2026-07-01', exerciseId: 'assist-a', sets: [{ weight: 30, reps: 8 }] },
+    { date: '2026-07-02', exerciseId: 'assist-a', sets: [{ weight: 25, reps: 5 }] },
+    { date: '2026-07-03', exerciseId: 'assist-a', sets: [{ weight: 25, reps: 6 }] },
+    { date: '2026-07-04', exerciseId: 'assist-b', sets: [{ weight: 25, reps: 6 }] },
+    { date: '2026-07-05', exerciseId: 'assist-invalid', sets: [{ weight: 10 }] },
+  ];
+
+  it('按固定部位顺序省略空部位，普通 PR 稳定排序且排除辅助动作', () => {
+    const groups = prGroups(items, exercises);
+
+    expect(groups.map((group) => group.bodyPart)).toEqual(['chest', 'back']);
+    expect(groups[0].strength.map((row) => row.exerciseId)).toEqual([
+      'chest-late-b', 'chest-late-a', 'chest-old',
+    ]);
+    expect(groups[0].assistance).toEqual([]);
+    expect(groups[1].strength).toEqual([]);
+  });
+
+  it('辅助动作每个动作取最佳纪录，并按重量升序、次数降序、日期新到旧', () => {
+    const back = prGroups(items, exercises).find((group) => group.bodyPart === 'back');
+
+    expect(back?.assistance.map((row) => ({
+      id: row.exerciseId, kg: row.assistanceKg, reps: row.reps, date: row.date,
+    }))).toEqual([
+      { id: 'assist-b', kg: 25, reps: 6, date: '2026-07-04' },
+      { id: 'assist-a', kg: 25, reps: 6, date: '2026-07-03' },
+    ]);
   });
 });
 
