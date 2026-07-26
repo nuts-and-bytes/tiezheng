@@ -73,6 +73,7 @@ test('第一步展示 7 个部位，选中后可进下一步', async () => {
 
   const next = screen.getByText('下一步 · 选动作');
   expect(next).toBeDisabled();
+  expect(next).toHaveAttribute('data-variant', 'primary');
   await user.click(screen.getByText('胸'));
   await waitFor(() => {
     expect(screen.getByText('下一步 · 选动作')).toBeEnabled();

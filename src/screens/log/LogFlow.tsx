@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { Button } from '../../components/Button';
 import { PartIcon } from '../../components/PartIcon';
 import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
@@ -14,13 +15,6 @@ import { loadModeOf, type BodyPart, type Exercise, type LoadMode } from '../../l
 import { addCustomExercise, getExercisesByIds, listByPart, seedPresets } from '../../repos/exerciseRepo';
 import { commitDraft, listRecentExerciseIds } from '../../repos/workoutRepo';
 import { useLogDraft } from '../../stores/logDraftStore';
-
-/** 主 CTA：热源渐变是 CTA 的唯一上色方式（tokens.html） */
-const CTA =
-  'heat rounded-[20px] py-[19px] text-lg font-extrabold text-white shadow-[0_8px_32px_rgba(255,92,31,.35)] disabled:opacity-30 disabled:shadow-none active:scale-[.98]';
-/** 次级按钮：不是卡片，只有一条发丝线 */
-const GHOST =
-  'rounded-[20px] border border-line py-[19px] font-semibold text-mute active:scale-[.98]';
 
 function StepTitle({ step, children }: { step: number; children: string }) {
   return (
@@ -82,14 +76,14 @@ export function LogFlow() {
       className="mx-auto flex h-dvh max-w-md flex-col overflow-hidden px-4 pt-[max(env(safe-area-inset-top),16px)]"
     >
       <header className="mb-6 flex shrink-0 items-center justify-between">
-        <button
-          type="button"
+        <Button
+          variant="tertiary"
           disabled={submitting}
           onClick={() => nav(-1)}
-          className="py-2 pr-4 text-mute disabled:opacity-30"
+          className="-ml-4 px-4"
         >
           关闭
-        </button>
+        </Button>
         <span className="text-xs text-mute">草稿自动保存</span>
       </header>
       {step === 0 && <PickParts onNext={() => setStep(1)} />}
@@ -142,9 +136,9 @@ function PickParts({ onNext }: { onNext: () => void }) {
           );
         })}
       </div>
-      <button type="button" disabled={parts.length === 0} onClick={onNext} className={`mt-3 ${CTA}`}>
+      <Button disabled={parts.length === 0} onClick={onNext} fullWidth className="mt-3 min-h-14 text-base">
         下一步 · 选动作
-      </button>
+      </Button>
     </div>
   );
 }
@@ -172,12 +166,12 @@ function PickExercises({ onBack, onNext }: { onBack: () => void; onNext: () => v
         ))}
       </div>
       <div className="flex shrink-0 gap-3 pt-8 pb-[max(env(safe-area-inset-bottom),2rem)]">
-        <button type="button" onClick={onBack} className={`flex-1 ${GHOST}`}>
+        <Button variant="secondary" onClick={onBack} className="flex-1 min-h-14">
           上一步
-        </button>
-        <button type="button" disabled={itemCount === 0} onClick={onNext} className={`flex-[2] ${CTA}`}>
+        </Button>
+        <Button disabled={itemCount === 0} onClick={onNext} className="flex-[2] min-h-14">
           下一步 · 记组数（{itemCount}）
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -324,9 +318,9 @@ function EditSets({
                 <div className="etch" />
                 <div className="mb-3 flex items-baseline justify-between">
                   <span className="text-xl font-bold tracking-tight">{exercise?.name ?? '…'}</span>
-                  <button type="button" onClick={() => removeItem(index)} className="text-xs text-mute">
+                  <Button variant="tertiary" onClick={() => removeItem(index)} className="min-h-9 px-2 py-1 text-xs">
                     移除
-                  </button>
+                  </Button>
                 </div>
                 <SetRows
                   sets={item.sets}
@@ -342,17 +336,17 @@ function EditSets({
           aria-label="记组数操作"
           className="-mx-4 flex shrink-0 gap-3 bg-bg px-4 pt-3 pb-[max(env(safe-area-inset-bottom),1rem)]"
         >
-          <button type="button" disabled={submitting} onClick={onBack} className={`flex-1 ${GHOST}`}>
+          <Button variant="secondary" disabled={submitting} onClick={onBack} className="flex-1 min-h-14">
             继续添加动作
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
             disabled={items.length === 0 || submitting || items.some((i) => hasOutOfRange(i.sets))}
+            loading={submitting}
             onClick={onFinish}
-            className={`flex-[2] ${CTA}`}
+            className="flex-[2] min-h-14"
           >
             完成打卡
-          </button>
+          </Button>
         </div>
       </fieldset>
     </div>
@@ -376,9 +370,9 @@ function DoneScreen({ moves, sets }: { moves: number; sets: number }) {
       <div className="mt-8 w-full">
         <PhotoCard date={todayStr()} />
       </div>
-      <button type="button" onClick={() => nav('/')} className={`mt-8 w-full ${CTA}`}>
+      <Button onClick={() => nav('/')} fullWidth className="mt-8 min-h-14">
         回到今日
-      </button>
+      </Button>
     </div>
   );
 }

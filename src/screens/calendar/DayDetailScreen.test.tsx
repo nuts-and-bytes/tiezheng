@@ -97,6 +97,9 @@ test('不再使用废弃别名 card2 / iron2', async () => {
   const user = userEvent.setup();
   const { container } = renderDay('2026-07-10');
   await user.click(await screen.findByText('编辑')); // 编辑态才会露出取消/删除两个按钮
+  expect(screen.getByText('保存')).toHaveAttribute('data-variant', 'primary');
+  expect(screen.getByText('取消')).toHaveAttribute('data-variant', 'secondary');
+  expect(screen.getByText('删除')).toHaveAttribute('data-variant', 'tertiary');
   expect(container.innerHTML).not.toMatch(/card2|iron2/);
 });
 

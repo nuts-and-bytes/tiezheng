@@ -1,6 +1,7 @@
 import { Fragment, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { Button } from '../../components/Button';
 import { ForgeRing } from '../../components/ForgeRing';
 import { NavGlyph, PartIcon } from '../../components/PartIcon';
 import { PhotoCard } from '../../components/PhotoCard';
@@ -228,14 +229,14 @@ function WeightQuickEntry({ today }: { today: string }) {
           }}
           className="min-w-0 flex-1 rounded-xl bg-raised px-4 py-3 text-ink placeholder:text-mute"
         />
-        <button
-          type="button"
+        <Button
+          variant="secondary"
           disabled={raw.trim() === ''}
           onClick={save}
-          className="shrink-0 rounded-xl bg-raised px-5 py-3 font-semibold text-iron disabled:opacity-30 active:scale-95"
+          className="shrink-0 px-5 text-iron"
         >
           记录
-        </button>
+        </Button>
       </div>
       {error && <p className="mt-2 text-sm text-iron">体重需在 20–300kg 之间</p>}
     </section>

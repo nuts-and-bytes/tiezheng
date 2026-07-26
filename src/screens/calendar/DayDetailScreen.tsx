@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { Button } from '../../components/Button';
 import { PartIcon } from '../../components/PartIcon';
 import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
@@ -21,13 +22,13 @@ export function DayDetailScreen() {
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col px-5 pb-10 pt-[max(env(safe-area-inset-top),16px)]">
       <header className="flex items-center gap-3">
-        <button
-          type="button"
+        <Button
+          variant="tertiary"
           onClick={() => nav(-1)}
-          className="-ml-1 py-2 pr-2 text-sm text-mute active:scale-95"
+          className="-ml-4 px-4"
         >
           返回
-        </button>
+        </Button>
       </header>
 
       <div className="mt-2 flex items-baseline justify-between">
@@ -73,6 +74,7 @@ export function DayDetailScreen() {
 function ItemRow({ item }: { item: DayItem }) {
   const [editing, setEditing] = useState(false);
   const [sets, setSets] = useState(item.sets);
+  const [saving, setSaving] = useState(false);
   const info = bodyPartInfo(item.exercise.bodyPart);
 
   const summary = setLabels(item.sets);
@@ -86,16 +88,16 @@ function ItemRow({ item }: { item: DayItem }) {
         <span className="flex-1 font-semibold text-ink">{item.exercise.name}</span>
         <span className="text-[11px] text-mute">{info.name}</span>
         {!editing && (
-          <button
-            type="button"
+          <Button
+            variant="tertiary"
             onClick={() => {
               setSets(item.sets);
               setEditing(true);
             }}
-            className="pl-2 text-sm text-mute active:scale-95"
+            className="min-h-9 px-2 py-1 text-sm"
           >
             编辑
-          </button>
+          </Button>
         )}
       </div>
 
@@ -109,35 +111,42 @@ function ItemRow({ item }: { item: DayItem }) {
         <div className="mt-3 flex flex-col gap-3">
           <SetRows sets={sets} onChange={setSets} />
           <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={hasOutOfRange(sets)}
+            <Button
+              disabled={hasOutOfRange(sets) || saving}
+              loading={saving}
               onClick={async () => {
-                await updateItemSets(item.id, sanitizeSets(sets));
-                setEditing(false);
+                setSaving(true);
+                try {
+                  await updateItemSets(item.id, sanitizeSets(sets));
+                  setEditing(false);
+                } finally {
+                  setSaving(false);
+                }
               }}
-              className="heat flex-[2] rounded-xl py-2.5 text-sm font-extrabold text-white shadow-[0_6px_20px_rgba(255,92,31,.3)] disabled:opacity-30 disabled:shadow-none active:scale-[.98]"
+              className="flex-[2]"
             >
               保存
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={saving}
               onClick={() => setEditing(false)}
-              className="flex-1 rounded-xl border border-line bg-raised py-2.5 text-sm text-ink active:scale-95"
+              className="flex-1"
             >
               取消
-            </button>
+            </Button>
           </div>
           {/* 破坏性操作压到最低视觉重量：不跟「取消」抢手感，误触靠 confirm 兜底 */}
-          <button
-            type="button"
+          <Button
+            variant="tertiary"
+            disabled={saving}
             onClick={async () => {
               if (window.confirm('删除这个动作记录？')) await removeWorkoutItem(item.id);
             }}
-            className="self-end py-1 text-xs text-mute underline underline-offset-4 active:scale-95"
+            className="min-h-9 self-end px-2 py-1 text-xs underline underline-offset-4"
           >
             删除
-          </button>
+          </Button>
         </div>
       )}
     </div>

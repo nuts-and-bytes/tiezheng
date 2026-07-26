@@ -44,8 +44,12 @@ export function Button({
       data-variant={variant}
       className={buttonClassName(variant, fullWidth, className)}
     >
-      <span className={loading ? 'opacity-0' : undefined}>{children}</span>
-      {loading && <span className="absolute inset-0 flex items-center justify-center">处理中…</span>}
+      {loading ? (
+        <>
+          <span className="opacity-0">{children}</span>
+          <span className="absolute inset-0 flex items-center justify-center">处理中…</span>
+        </>
+      ) : children}
     </button>
   );
 }

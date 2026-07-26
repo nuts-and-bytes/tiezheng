@@ -36,9 +36,11 @@ test('四屏能依次前进：品牌 → 怎么记 → 海报 → 周目标', as
   // 屏 1：品牌
   expect(screen.getByRole('heading', { name: '你练过的，都有铁证。' })).toBeInTheDocument();
   expect(activeScreen()).toHaveAccessibleName(expect.stringContaining('品牌'));
+  expect(screen.getByRole('button', { name: '开始' })).toHaveAttribute('data-variant', 'primary');
 
   // 屏 2：怎么记
   await user.click(screen.getByRole('button', { name: '开始' }));
+  expect(screen.getByRole('button', { name: '返回上一步' })).toHaveAttribute('data-variant', 'tertiary');
   expect(screen.getByRole('heading', { name: '30 秒，盖下今天的印' })).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: '你练过的，都有铁证。' })).not.toBeInTheDocument();
 

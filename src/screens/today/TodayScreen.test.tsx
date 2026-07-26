@@ -124,7 +124,9 @@ test('体重超限提示错误', async () => {
   const user = userEvent.setup();
   renderToday();
   await user.type(await screen.findByPlaceholderText('体重 kg'), '500');
-  await user.click(screen.getByText('记录'));
+  const record = screen.getByText('记录');
+  expect(record).toHaveAttribute('data-variant', 'secondary');
+  await user.click(record);
   expect(await screen.findByText('体重需在 20–300kg 之间')).toBeInTheDocument();
 });
 
