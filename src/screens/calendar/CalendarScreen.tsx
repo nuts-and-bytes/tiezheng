@@ -74,18 +74,20 @@ export function CalendarScreen() {
         </div>
         <div className="flex shrink-0 gap-1">
           <button
+            data-ui-control="month-navigation"
             type="button"
             aria-label="上个月"
             onClick={() => setYm(shiftMonth(ym, -1))}
-            className="flex size-10 items-center justify-center rounded-xl border border-line bg-raised text-xl text-mute transition active:scale-95"
+            className="flex size-11 items-center justify-center rounded-xl border border-line bg-raised text-xl text-mute outline-none transition active:scale-95 focus-visible:ring-2 focus-visible:ring-iron"
           >
             ‹
           </button>
           <button
+            data-ui-control="month-navigation"
             type="button"
             aria-label="下个月"
             onClick={() => setYm(shiftMonth(ym, 1))}
-            className="flex size-10 items-center justify-center rounded-xl border border-line bg-raised text-xl text-mute transition active:scale-95"
+            className="flex size-11 items-center justify-center rounded-xl border border-line bg-raised text-xl text-mute outline-none transition active:scale-95 focus-visible:ring-2 focus-visible:ring-iron"
           >
             ›
           </button>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { Button } from './Button';
 import { compressImage } from '../lib/image';
 import { log } from '../lib/logger';
 import { getPhoto, removePhoto, savePhoto } from '../repos/photoRepo';
@@ -43,10 +44,11 @@ export function PhotoCard({ date }: { date: string }) {
           体型对比要拿三个月前的旧照片当基线，而且对镜自拍用的是前置。该由用户选。 */}
       <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={onPick} />
       {!url && (
-        <button
-          type="button"
+        <Button
+          variant="secondary"
           onClick={() => inputRef.current?.click()}
-          className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-line py-8 text-sm text-mute active:scale-[.98]"
+          fullWidth
+          className="border-dashed py-8 text-mute"
         >
           {/* 这里原是相机 emoji：部分设备上直接渲染成豆腐块方块，换回全站的线描图标语言 */}
           <svg
@@ -64,30 +66,30 @@ export function PhotoCard({ date }: { date: string }) {
             <circle cx="12" cy="12.8" r="3.4" />
           </svg>
           拍一张，留下今天的证据
-        </button>
+        </Button>
       )}
       {/* 照片是实体，允许浮起：bg-raised 表面 + 溢出裁切 */}
       {url && (
         <div className="overflow-hidden rounded-2xl bg-raised">
           <img src={url} alt={`${date} 体型照片`} className="max-h-80 w-full object-cover" />
           <div className="flex border-t border-line">
-            <button
-              type="button"
+            <Button
+              variant="tertiary"
               onClick={() => inputRef.current?.click()}
-              className="flex-1 py-3 text-sm text-ink active:scale-95"
+              className="flex-1 rounded-none py-3 text-ink"
             >
               重拍
-            </button>
+            </Button>
             <span className="w-px bg-line" aria-hidden />
-            <button
-              type="button"
+            <Button
+              variant="tertiary"
               onClick={async () => {
                 if (window.confirm('删除这张照片？')) await removePhoto(date);
               }}
-              className="flex-1 py-3 text-sm text-iron active:scale-95"
+              className="flex-1 rounded-none py-3 text-iron"
             >
               删除
-            </button>
+            </Button>
           </div>
         </div>
       )}

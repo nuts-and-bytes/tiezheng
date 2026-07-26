@@ -3,6 +3,7 @@ import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ExerciseManager } from '../../components/ExerciseManager';
+import { Button } from '../../components/Button';
 import { PartIcon } from '../../components/PartIcon';
 import { Stamp } from '../../components/Stamp';
 import { bodyPartInfo } from '../../data/bodyParts';
@@ -209,11 +210,12 @@ export function ProfileScreen() {
       <div className="etch" />
 
       {/* 全页唯一「浮起来」的表面：它是这页的行动号召 */}
-      <button
-        type="button"
+      <Button
+        variant="secondary"
         aria-label="导出训练海报"
         onClick={() => navigate('/poster')}
-        className="flex w-full items-center gap-3.5 rounded-[18px] border border-iron/35 bg-gradient-to-br from-iron/12 to-amber/5 px-4 py-4 text-left active:scale-[0.99]"
+        fullWidth
+        className="justify-start border-iron/35 bg-gradient-to-br from-iron/12 to-amber/5 px-4 py-4 text-left"
       >
         <Stamp size={44} decorative />
         <span className="min-w-0">
@@ -221,7 +223,7 @@ export function ProfileScreen() {
           <span className="mt-0.5 block text-xs text-mute">把汗水盖上钢印 · 保存到相册</span>
         </span>
         <span className="ml-auto text-xl text-iron">›</span>
-      </button>
+      </Button>
 
       <div className="etch" />
 
@@ -236,21 +238,23 @@ export function ProfileScreen() {
         <b className="flex-1 text-[15px] font-semibold">每周目标</b>
         <span className="flex items-center gap-2.5">
           <button
+            data-ui-control="weekly-goal-stepper"
             type="button"
             aria-label="减少目标"
             disabled={profile.weeklyGoal <= 1}
             onClick={() => adjustWeeklyGoal(-1)}
-            className="size-8 rounded-lg border border-line bg-raised text-base leading-none text-mute disabled:opacity-30 active:scale-95"
+            className="size-11 rounded-lg border border-line bg-raised text-base leading-none text-mute outline-none disabled:opacity-30 active:scale-95 focus-visible:ring-2 focus-visible:ring-iron"
           >
             −
           </button>
           <span className="min-w-16 text-center text-sm font-bold">{profile.weeklyGoal} 练/周</span>
           <button
+            data-ui-control="weekly-goal-stepper"
             type="button"
             aria-label="增加目标"
             disabled={profile.weeklyGoal >= 7}
             onClick={() => adjustWeeklyGoal(1)}
-            className="size-8 rounded-lg border border-line bg-raised text-base leading-none text-mute disabled:opacity-30 active:scale-95"
+            className="size-11 rounded-lg border border-line bg-raised text-base leading-none text-mute outline-none disabled:opacity-30 active:scale-95 focus-visible:ring-2 focus-visible:ring-iron"
           >
             ＋
           </button>
@@ -273,22 +277,22 @@ export function ProfileScreen() {
           </span>
         </div>
         <div className="mt-3 flex gap-2">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
             disabled={exporting}
             onClick={() => exportFile('csv')}
-            className="flex-1 rounded-xl border border-line bg-raised py-2.5 text-sm font-semibold text-ink disabled:opacity-30 active:scale-95"
+            className="flex-1"
           >
             导出 CSV
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="secondary"
             disabled={exporting}
             onClick={() => exportFile('json')}
-            className="flex-1 rounded-xl border border-line bg-raised py-2.5 text-sm font-semibold text-ink disabled:opacity-30 active:scale-95"
+            className="flex-1"
           >
             导出 JSON
-          </button>
+          </Button>
         </div>
         {exportError && <p className="mt-2 text-xs text-iron">导出失败，请重试</p>}
       </div>

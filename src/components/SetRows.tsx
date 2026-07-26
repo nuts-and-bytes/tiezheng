@@ -86,21 +86,23 @@ export function SetRows({ sets, onChange, loadMode = 'external' }: Props) {
     <div>
       <div className="flex items-center gap-3 pb-1">
         <button
+          data-ui-control="stepper"
           type="button"
           aria-label="减一组"
           disabled={sets.length <= LIMITS.sets.min}
           onClick={() => onChange(sets.slice(0, -1))}
-          className={step}
+          className={`${step} outline-none focus-visible:ring-2 focus-visible:ring-iron`}
         >
           −
         </button>
         <span className="min-w-12 text-center text-sm text-mute">{sets.length} 组</span>
         <button
+          data-ui-control="stepper"
           type="button"
           aria-label="加一组"
           disabled={sets.length >= LIMITS.sets.max}
           onClick={() => onChange([...sets, {}])}
-          className={step}
+          className={`${step} outline-none focus-visible:ring-2 focus-visible:ring-iron`}
         >
           ＋
         </button>

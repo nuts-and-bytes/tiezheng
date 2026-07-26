@@ -266,6 +266,7 @@ function GoalPanel({ goal, onPick }: { goal: number; onPick: (g: number) => void
           const on = goal === g;
           return (
             <button
+              data-ui-control="goal-selection"
               key={g}
               type="button"
               aria-pressed={on}
@@ -273,7 +274,7 @@ function GoalPanel({ goal, onPick }: { goal: number; onPick: (g: number) => void
                 vibrate(8);
                 onPick(g);
               }}
-              className={`display h-14 w-14 rounded-2xl text-[20px] transition-colors active:scale-95 ${
+              className={`display h-14 w-14 rounded-2xl text-[20px] outline-none transition-colors active:scale-95 focus-visible:ring-2 focus-visible:ring-iron ${
                 on
                   ? 'bg-iron text-white shadow-[0_6px_22px_rgba(255,92,31,.38)]'
                   : 'bg-raised text-ink border border-line'

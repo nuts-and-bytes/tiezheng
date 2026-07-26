@@ -19,7 +19,7 @@ export function SelectedDayCard({
   hasPhoto?: boolean;
 }) {
   return (
-    <section className="rounded-[22px] border border-line bg-raised/70 px-4 py-4 shadow-[0_18px_45px_rgba(0,0,0,.16)]">
+    <section className="forged-surface rounded-[18px] px-4 py-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-xl font-extrabold tracking-tight text-ink">

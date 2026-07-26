@@ -11,6 +11,7 @@ import {
   setExerciseLoadMode,
 } from '../repos/exerciseRepo';
 import { PartIcon } from './PartIcon';
+import { Button } from './Button';
 
 /** 「我的」页里的一行设置项：折叠时只是一条细线上的行，展开才长出管理面板 */
 export function ExerciseManager() {
@@ -87,9 +88,10 @@ export function ExerciseManager() {
   return (
     <div className="border-t border-line" aria-busy={busy}>
       <button
+        data-ui-control="disclosure"
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-3.5 py-4 text-left"
+        className="flex min-h-14 w-full items-center gap-3.5 rounded-xl py-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-iron"
       >
         <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-line bg-raised">
           <svg
@@ -119,10 +121,11 @@ export function ExerciseManager() {
           <div className="mb-1 flex flex-wrap gap-1.5">
             {BODY_PARTS.map((p) => (
               <button
+                data-ui-control="segment"
                 key={p.id}
                 type="button"
                 onClick={() => setPart(p.id)}
-                className={`rounded-lg px-2.5 py-1 text-xs ${
+                className={`min-h-9 rounded-lg px-2.5 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-iron ${
                   part === p.id
                     ? 'bg-iron/15 font-semibold text-iron'
                     : 'border border-line bg-raised text-mute'
@@ -148,35 +151,35 @@ export function ExerciseManager() {
                 <span className="text-xs text-mute">
                   {loadModeOf(ex) === 'external' ? '普通负重' : '辅助重量'}
                 </span>
-                <button
-                  type="button"
+                <Button
+                  variant="tertiary"
                   onClick={() => changeLoadMode(ex)}
                   aria-label={`将${ex.name}改为${
                     loadModeOf(ex) === 'external' ? '辅助重量' : '普通负重'
                   }`}
                   disabled={busy}
-                  className="px-1 text-xs text-mute active:scale-95"
+                  className="min-h-9 px-1 text-xs"
                 >
                   改类型
-                </button>
+                </Button>
                 {!ex.preset && (
                   <>
-                    <button
-                      type="button"
+                    <Button
+                      variant="tertiary"
                       onClick={() => rename(ex)}
                       disabled={busy}
-                      className="px-1 text-xs text-mute active:scale-95"
+                      className="min-h-9 px-1 text-xs"
                     >
                       改名
-                    </button>
-                    <button
-                      type="button"
+                    </Button>
+                    <Button
+                      variant="tertiary"
                       onClick={() => remove(ex)}
                       disabled={busy}
-                      className="px-1 text-xs text-iron active:scale-95"
+                      className="min-h-9 px-1 text-xs text-iron"
                     >
                       删除
-                    </button>
+                    </Button>
                   </>
                 )}
               </li>
@@ -200,14 +203,14 @@ export function ExerciseManager() {
               <option value="external">普通负重</option>
               <option value="assistance">辅助重量</option>
             </select>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
               disabled={newName.trim() === '' || busy}
               onClick={() => create()}
-              className="rounded-xl border border-iron/40 px-3.5 py-2 text-sm font-semibold text-iron disabled:opacity-30 active:scale-95"
+              className="px-3.5 text-iron"
             >
               新建
-            </button>
+            </Button>
           </div>
         </div>
       )}

@@ -114,10 +114,11 @@ export function StatsScreen() {
       <div className="mt-3.5 mb-1 inline-flex rounded-[10px] border border-line bg-raised p-[3px] text-xs">
         {SEGMENTS.map((s) => (
           <button
+            data-ui-control="range-segment"
             key={s.id}
             type="button"
             onClick={() => setSeg(s.id)}
-            className={`rounded-lg px-3.5 py-1.5 transition-colors ${
+            className={`min-h-9 rounded-lg px-3.5 py-1.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-iron ${
               seg === s.id ? 'bg-iron/15 font-semibold text-iron' : 'text-mute'
             }`}
           >

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
+import { Button } from '../../components/Button';
 import { track } from '../../lib/analytics';
 import { todayStr } from '../../lib/dates';
 import { downloadBlob } from '../../lib/download';
@@ -116,9 +117,9 @@ export function PosterScreen() {
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col pt-[calc(env(safe-area-inset-top)+8px)] pb-[calc(env(safe-area-inset-bottom)+20px)]">
       <header className="flex items-center justify-between px-5">
-        <button type="button" onClick={() => nav(-1)} className="py-2 pr-2 text-mute">
+        <Button variant="tertiary" onClick={() => nav(-1)} className="-ml-4 px-4">
           返回
-        </button>
+        </Button>
         <h1 className="text-[15px] font-semibold">海报</h1>
         <span className="w-9" aria-hidden /> {/* 占位，让标题居中 */}
       </header>
@@ -136,6 +137,7 @@ export function PosterScreen() {
               ] as const
             ).map(([m, label]) => (
               <button
+                data-ui-control="poster-mode"
                 key={m}
                 type="button"
                 aria-pressed={mode === m}
@@ -143,7 +145,7 @@ export function PosterScreen() {
                   vibrate(8);
                   setMode(m);
                 }}
-                className={`rounded-lg px-5 py-1.5 text-[13px] transition-colors ${
+                className={`min-h-9 rounded-lg px-5 py-1.5 text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-iron ${
                   mode === m ? 'bg-iron font-semibold text-white' : 'text-mute'
                 }`}
               >
@@ -197,14 +199,14 @@ export function PosterScreen() {
           </div>
 
           <div className="mt-6 px-5">
-            <button
-              type="button"
+            <Button
               onClick={exportPoster}
               disabled={!ready}
-              className="heat w-full rounded-2xl py-4 text-[15px] font-bold text-white shadow-[0_8px_28px_rgba(255,92,31,.32)] active:scale-[.98] disabled:opacity-40"
+              fullWidth
+              className="min-h-14 text-[15px]"
             >
               {shareable ? '分享 / 存图' : '下载海报'}
-            </button>
+            </Button>
             <p className="mt-3 text-center text-[11px] text-mute">
               全本地生成 · 零网络请求 · 照片不上传
             </p>
@@ -230,10 +232,11 @@ function Chip({
 }) {
   return (
     <button
+      data-ui-control="poster-period"
       type="button"
       aria-pressed={on}
       onClick={onClick}
-      className={`shrink-0 rounded-lg px-3 py-1.5 text-[13px] whitespace-nowrap transition-colors ${
+      className={`min-h-9 shrink-0 rounded-lg px-3 py-1.5 text-[13px] whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-iron ${
         on ? 'bg-iron/15 text-iron' : 'text-mute'
       }`}
     >
@@ -250,13 +253,12 @@ function EmptyState({ onStart, loading }: { onStart: () => void; loading: boolea
       <p className="mt-3 text-[13px] leading-[1.8] text-mute">
         先去打一次卡。练过的每一天，都会落在海报上。
       </p>
-      <button
-        type="button"
+      <Button
         onClick={onStart}
-        className="heat mt-8 rounded-2xl px-7 py-3 text-[14px] font-bold text-white"
+        className="mt-8 px-7"
       >
         去打卡
-      </button>
+      </Button>
     </div>
   );
 }

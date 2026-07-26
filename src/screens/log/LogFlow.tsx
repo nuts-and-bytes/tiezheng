@@ -110,11 +110,12 @@ function PickParts({ onNext }: { onNext: () => void }) {
           const wide = i === BODY_PARTS.length - 1;
           return (
             <button
+              data-ui-control="body-part-selection"
               key={p.id}
               type="button"
               aria-pressed={selected}
               onClick={() => togglePart(p.id)}
-              className={`flex items-center justify-center rounded-[14px] text-[15px] font-semibold active:scale-[.97] ${
+              className={`flex items-center justify-center rounded-[14px] text-[15px] font-semibold outline-none active:scale-[.97] focus-visible:ring-2 focus-visible:ring-iron ${
                 wide ? 'col-span-2 flex-row gap-3' : 'flex-col gap-2'
               }`}
               style={
@@ -225,11 +226,12 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
           const chosen = items.some((i) => i.exerciseId === e.id);
           return (
             <button
+              data-ui-control="exercise-selection"
               key={e.id}
               type="button"
               aria-pressed={chosen}
               onClick={() => (chosen ? removeItemByExercise(e.id) : addItem(e.id))}
-              className="rounded-full px-4 py-2 text-sm active:scale-95"
+              className="min-h-11 rounded-full px-4 py-2 text-sm outline-none active:scale-95 focus-visible:ring-2 focus-visible:ring-iron"
               style={
                 chosen
                   ? {
@@ -269,10 +271,11 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
           <option value="assistance">辅助重量</option>
         </select>
         <button
+          data-ui-control="create-exercise"
           type="button"
           disabled={newName.trim() === '' || creating}
           onClick={() => create()}
-          className="rounded-lg border border-line bg-raised px-3 py-2 text-sm font-semibold text-iron disabled:opacity-30"
+          className="min-h-11 rounded-lg border border-line bg-raised px-3 py-2 text-sm font-semibold text-iron outline-none disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-iron"
         >
           新建
         </button>

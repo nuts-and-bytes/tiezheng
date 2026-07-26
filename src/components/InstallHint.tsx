@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Button } from './Button';
 
 function isStandalone(): boolean {
   return (
@@ -31,8 +32,8 @@ export function InstallHint() {
           ? '用 Safari 打开后：分享 → 添加到主屏幕，即可像 App 一样使用'
           : '点底部「分享」→「添加到主屏幕」，即可像 App 一样使用'}
       </span>
-      <button
-        type="button"
+      <Button
+        variant="tertiary"
         onClick={() => {
           try {
             localStorage.setItem(DISMISS_KEY, '1');
@@ -41,10 +42,10 @@ export function InstallHint() {
           }
           setDismissed(true);
         }}
-        className="shrink-0 text-mute"
+        className="shrink-0 px-2"
       >
         知道了
-      </button>
+      </Button>
     </div>
   );
 }

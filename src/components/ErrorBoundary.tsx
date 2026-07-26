@@ -1,5 +1,6 @@
 import { Component, type ReactNode } from 'react';
 import { log } from '../lib/logger';
+import { Button } from './Button';
 
 interface Props {
   children: ReactNode;
@@ -32,9 +33,8 @@ export class ErrorBoundary extends Component<Props, State> {
             {this.state.message}
           </p>
         )}
-        <button
-          type="button"
-          className="rounded-xl bg-iron px-6 py-3 font-semibold text-white active:scale-95"
+        <Button
+          className="px-6"
           onClick={() => {
             // 先回到首页再重载，避免确定性渲染错误在原路由上无限崩溃
             window.location.hash = '#/';
@@ -42,7 +42,7 @@ export class ErrorBoundary extends Component<Props, State> {
           }}
         >
           重新载入
-        </button>
+        </Button>
       </div>
     );
   }

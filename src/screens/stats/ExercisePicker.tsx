@@ -35,11 +35,12 @@ export function ExercisePicker({
                 const active = exercise.id === activeId;
                 return (
                   <button
+                    data-ui-control="exercise-selection"
                     key={exercise.id}
                     type="button"
                     aria-pressed={active}
                     onClick={() => onPick(exercise.id)}
-                    className={`min-h-9 rounded-lg px-3 py-1.5 text-xs transition duration-200 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-iron ${
+                    className={`min-h-11 rounded-lg px-3 py-1.5 text-xs outline-none transition duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-iron ${
                       active
                         ? 'font-semibold text-bg'
                         : 'border border-line bg-raised text-ink hover:border-white/20'

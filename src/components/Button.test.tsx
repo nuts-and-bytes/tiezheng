@@ -1,4 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Button, buttonClassName } from './Button';
 
 test.each(['primary', 'secondary', 'tertiary'] as const)('%s 按钮有统一状态和可识别变体', (variant) => {
@@ -40,4 +42,26 @@ test('链接可复用按钮视觉类而不嵌套 button', () => {
   expect(buttonClassName('primary', true)).toContain('w-full');
   expect(buttonClassName('secondary')).toContain('border-line');
   expect(buttonClassName('tertiary')).toContain('bg-transparent');
+});
+
+test('业务源码不再出现未声明身份的原生按钮', () => {
+  const files: string[] = [];
+  const visit = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (/\.(tsx|jsx)$/.test(entry.name) && !entry.name.endsWith('.test.tsx')) files.push(path);
+    }
+  };
+  visit(join(process.cwd(), 'src'));
+
+  const violations = files.flatMap((file) => {
+    if (file.endsWith('/components/Button.tsx')) return [];
+    const source = readFileSync(file, 'utf8');
+    return [...source.matchAll(/<button\b[\s\S]*?>/g)]
+      .filter(([tag]) => !tag.includes('data-ui-control='))
+      .map((_match, index) => `${file.replace(process.cwd(), '')}#${index + 1}`);
+  });
+
+  expect(violations).toEqual([]);
 });

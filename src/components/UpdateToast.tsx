@@ -1,4 +1,5 @@
 import { useRegisterSW } from 'virtual:pwa-register/react';
+import { Button } from './Button';
 
 /** 规格 §11：新版本提示「点击更新」 */
 export function UpdateToast() {
@@ -20,19 +21,19 @@ export function UpdateToast() {
       // 两条提示同时出现（iOS Safari 里遇上新版本）时不会叠在一起。
       className="fixed inset-x-4 bottom-[calc(env(safe-area-inset-bottom)+144px)] z-50 mx-auto flex max-w-md items-center gap-2 rounded-full border border-line bg-raised px-4 py-2 shadow-[0_12px_40px_rgba(0,0,0,.55)]"
     >
-      <button
-        type="button"
+      <Button
+        variant="tertiary"
         onClick={() => updateServiceWorker(true)}
-        className="flex-1 text-left text-sm font-semibold text-ink active:scale-95"
+        className="flex-1 justify-start px-1 text-left text-sm text-ink"
       >
         新版本已就绪 · 点击更新
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        variant="tertiary"
         aria-label="关闭"
         // 更新会重载页面，当前填了一半的组就没了。必须能拒绝。
         onClick={() => setNeedRefresh(false)}
-        className="-mr-1 shrink-0 rounded-full p-1 text-mute active:scale-90"
+        className="-mr-2 size-11 shrink-0 rounded-full p-0"
       >
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
           <path
@@ -42,7 +43,7 @@ export function UpdateToast() {
             strokeLinecap="round"
           />
         </svg>
-      </button>
+      </Button>
     </div>
   );
 }

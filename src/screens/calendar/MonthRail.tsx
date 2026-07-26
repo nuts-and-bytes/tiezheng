@@ -22,6 +22,7 @@ export function MonthRail({
             <span key={day.date} className="flex w-6 shrink-0 flex-col items-center" data-testid={`rail-day-${day.date}`}>
               {day.trained ? (
                 <button
+                  data-ui-control="rail-date-selection"
                   type="button"
                   aria-label={label}
                   aria-pressed={selected}
