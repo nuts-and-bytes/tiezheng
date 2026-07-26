@@ -176,6 +176,10 @@ const EX_MAP: ExMap = new Map([
   ['e-squat', ex('e-squat', '深蹲', 'leg')],
 ]);
 
+const ASSISTANCE_MAP: ExMap = new Map([
+  ['e-assisted', { ...ex('e-assisted', '辅助引体向上', 'back'), loadMode: 'assistance' }],
+]);
+
 function item(date: string, exerciseId: string, sets: number, weight = 60, reps = 8): LoadItem {
   return {
     date,
@@ -452,6 +456,17 @@ describe('buildMonthly', () => {
     expect(d.sets).toBe(9); // 4 + 2 + 3
     expect(d.volumeKg).toBe(1920 + 1000 + 1500);
     expect(d.streak).toBe(3); // 7/1-7/3
+  });
+
+  test('辅助动作的 kg 不进海报容量，组数、次数和动作数照常计', () => {
+    const items = [item('2026-07-01', 'e-assisted', 2, 30, 10)];
+    const d = buildMonthly('2026-07', {
+      items,
+      dates: ['2026-07-01'],
+      exMap: ASSISTANCE_MAP,
+    });
+
+    expect(d).toMatchObject({ days: 1, sets: 2, reps: 20, moves: 1, volumeKg: 0 });
   });
 
   test('部位分布按组数降序，没练过的部位不出现', () => {

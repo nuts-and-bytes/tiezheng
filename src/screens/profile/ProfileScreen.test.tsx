@@ -93,6 +93,17 @@ test('纯自重训练者：第四格立的是「总次数」，而不是一个 4
   expect(within(await statCell('总组数')).getByText('4')).toBeInTheDocument();
 });
 
+test('只练辅助动作：负荷格立总次数，不产生假容量或普通 PR', async () => {
+  await addWorkoutItem(todayStr(), 'p-assisted-pullup', [{ weight: 30, reps: 10 }]);
+  renderProfile();
+
+  const reps = await statCell('总次数');
+  expect(within(reps).getByText('10')).toBeInTheDocument();
+  expect(screen.queryByText('累计容量')).not.toBeInTheDocument();
+  expect(await screen.findByText(/还没有纪录/)).toBeInTheDocument();
+  expect(screen.queryByRole('list', { name: 'PR 榜' })).not.toBeInTheDocument();
+});
+
 /**
  * 梯子的第三级。sanitizeSets 允许「全空时保留组数——徒手训练允许只记组数不记次数」，
  * 于是这类人的 volumeKg 和 reps 双 0：上面那条测试守的「总次数」自己也塌成了 0。

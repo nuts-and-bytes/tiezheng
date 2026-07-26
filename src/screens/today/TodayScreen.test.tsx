@@ -83,6 +83,18 @@ test('有重量数据时 meta 行只补充容量，不重复右栏已经说过�
   expect(screen.getByTestId('today-sets')).toHaveTextContent('2组');
 });
 
+test('辅助动作当天仍显示动作名和组数，但不把辅助 kg 显示成容量', async () => {
+  await addWorkoutItem(todayStr(), 'p-assisted-pullup', [
+    { weight: 30, reps: 10 },
+    { weight: 25, reps: 8 },
+  ]);
+  renderToday();
+
+  expect(await screen.findByText('辅助引体向上')).toBeInTheDocument();
+  expect(screen.getByTestId('today-sets')).toHaveTextContent('2组');
+  expect(screen.queryByTestId('today-meta')).not.toBeInTheDocument();
+});
+
 test('只记组数没记重量时 meta 行整行不渲染', async () => {
   await addWorkoutItem(todayStr(), 'p-bench', [{}, {}, {}]);
   renderToday();

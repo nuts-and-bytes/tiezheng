@@ -54,8 +54,8 @@ export function ProfileScreen() {
   if (!data) return null;
   const { profile, items, dates, exMap } = data;
 
-  const t = totals(items, dates);
-  const kind = loadKind(items);
+  const t = totals(items, dates, exMap);
+  const kind = loadKind(items, exMap);
   const prs = prsByExercise(items, exMap);
   const empty = items.length === 0 && dates.length === 0;
   // 铁龄：从第一条铁证那天算起（含当天）

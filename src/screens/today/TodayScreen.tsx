@@ -8,7 +8,7 @@ import { Stamp } from '../../components/Stamp';
 import { bodyPartInfo } from '../../data/bodyParts';
 import { formatToday, parseDate, todayStr } from '../../lib/dates';
 import { currentStreak, longestStreak, weekProgress } from '../../lib/stats';
-import type { BodyPart } from '../../lib/types';
+import { loadModeOf, type BodyPart } from '../../lib/types';
 import { validBodyWeight } from '../../lib/validation';
 import { getProfile } from '../../repos/profileRepo';
 import { getWeight, setWeight } from '../../repos/weightRepo';
@@ -33,7 +33,9 @@ function groupByPart(items: DayItem[]): PartGroup[] {
       groups.push(group);
     }
     group.sets += item.sets.length;
-    group.volume += item.sets.reduce((sum, s) => sum + (s.weight ?? 0) * (s.reps ?? 0), 0);
+    if (loadModeOf(item.exercise) === 'external') {
+      group.volume += item.sets.reduce((sum, s) => sum + (s.weight ?? 0) * (s.reps ?? 0), 0);
+    }
     if (!group.names.includes(item.exercise.name)) group.names.push(item.exercise.name);
   }
   return groups;

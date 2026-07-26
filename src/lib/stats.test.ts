@@ -119,6 +119,20 @@ const EX: Map<string, Exercise> = new Map([
   ['e2', { id: 'e2', name: '深蹲', bodyPart: 'leg', preset: true, updatedAt: 0, deletedAt: null }],
 ]);
 
+const LOAD_MODE_EX: Map<string, Exercise> = new Map([
+  // 历史动作没有 loadMode，loadModeOf() 必须仍按 external 处理。
+  ['e-external', { id: 'e-external', name: '卧推', bodyPart: 'chest', preset: true, updatedAt: 0, deletedAt: null }],
+  ['e-assistance', {
+    id: 'e-assistance',
+    name: '辅助引体向上',
+    bodyPart: 'back',
+    loadMode: 'assistance',
+    preset: true,
+    updatedAt: 0,
+    deletedAt: null,
+  }],
+]);
+
 const ITEMS = [
   { date: '2026-07-01', exerciseId: 'e1', sets: [{ weight: 60, reps: 10 }, { weight: 60, reps: 8 }] },
   { date: '2026-07-03', exerciseId: 'e1', sets: [{ weight: 65, reps: 8 }] },
@@ -202,6 +216,15 @@ describe('hasWeightData', () => {
       ]),
     ).toBe(true);
   });
+
+  it('辅助重量不是外部负重，不算普通重量数据', () => {
+    expect(
+      hasWeightData(
+        [{ date: '2026-07-01', exerciseId: 'e-assistance', sets: [{ weight: 30, reps: 10 }] }],
+        LOAD_MODE_EX,
+      ),
+    ).toBe(false);
+  });
 });
 
 /**
@@ -239,6 +262,28 @@ describe('loadKind（负荷那一格摆哪个数）', () => {
       loadKind([{ date: '2026-07-01', exerciseId: 'p-pullup', sets: [{ reps: 0 }] }]),
     ).toBe('moves');
   });
+
+  it('只有辅助动作且记了次数 → 总次数，不把辅助 kg 当容量', () => {
+    expect(
+      loadKind(
+        [{ date: '2026-07-01', exerciseId: 'e-assistance', sets: [{ weight: 30, reps: 10 }] }],
+        LOAD_MODE_EX,
+      ),
+    ).toBe('reps');
+  });
+});
+
+test('辅助动作照常计动作数、组数和次数，但不计入容量', () => {
+  const t = totals(
+    [
+      { exerciseId: 'e-external', sets: [{ weight: 100, reps: 5 }] },
+      { exerciseId: 'e-assistance', sets: [{ weight: 30, reps: 10 }, { weight: 25, reps: 10 }] },
+    ],
+    ['2026-07-01'],
+    LOAD_MODE_EX,
+  );
+
+  expect(t).toEqual({ days: 1, sets: 3, reps: 25, volumeKg: 500, moves: 2 });
 });
 
 describe('totals().moves（动作数：去重后的动作条目数）', () => {
@@ -276,6 +321,15 @@ describe('topExerciseIds', () => {
       { date: '2026-07-01', exerciseId: 'p-squat', sets: [{ weight: 100, reps: 5 }] },
     ];
     expect(topExerciseIds(items, 5)).toEqual(['p-bench', 'p-squat']);
+  });
+
+  it('提供动作映射后排除辅助动作，普通动作仍可入选', () => {
+    const items = [
+      { date: '2026-07-01', exerciseId: 'e-assistance', sets: [{ weight: 30, reps: 8 }] },
+      { date: '2026-07-02', exerciseId: 'e-assistance', sets: [{ weight: 25, reps: 8 }] },
+      { date: '2026-07-03', exerciseId: 'e-external', sets: [{ weight: 60, reps: 8 }] },
+    ];
+    expect(topExerciseIds(items, 5, LOAD_MODE_EX)).toEqual(['e-external']);
   });
 });
 
@@ -323,6 +377,24 @@ describe('compare', () => {
     expect(r.moves.cur).toBeGreaterThan(0);
     expect(typeof r.moves.prev).toBe('number');
   });
+
+  it('本期与上期容量都排除辅助重量', () => {
+    const items = [
+      { date: '2026-07-02', exerciseId: 'e-external', sets: [{ weight: 50, reps: 10 }] },
+      { date: '2026-07-03', exerciseId: 'e-assistance', sets: [{ weight: 30, reps: 10 }] },
+      { date: '2026-06-02', exerciseId: 'e-external', sets: [{ weight: 40, reps: 5 }] },
+      { date: '2026-06-03', exerciseId: 'e-assistance', sets: [{ weight: 20, reps: 10 }] },
+    ];
+    const r = compare(
+      items,
+      items.map((i) => i.date),
+      { from: '2026-07-01', to: '2026-07-31' },
+      { from: '2026-06-01', to: '2026-06-30' },
+      LOAD_MODE_EX,
+    );
+    expect(r.volumeKg.cur).toBe(500);
+    expect(r.volumeKg.prev).toBe(200);
+  });
 });
 
 describe('estimate1RM', () => {
@@ -349,6 +421,14 @@ describe('prsByExercise', () => {
   it('没有重量数据时返回空数组，不返回 NaN 行', () => {
     expect(prsByExercise([{ date: '2026-07-01', exerciseId: 'e1', sets: [{}] }], EX)).toEqual([]);
   });
+
+  it('普通 PR 榜跳过辅助动作', () => {
+    const prs = prsByExercise([
+      { date: '2026-07-01', exerciseId: 'e-assistance', sets: [{ weight: 40, reps: 5 }] },
+      { date: '2026-07-02', exerciseId: 'e-external', sets: [{ weight: 60, reps: 8 }] },
+    ], LOAD_MODE_EX);
+    expect(prs.map((p) => p.exerciseId)).toEqual(['e-external']);
+  });
 });
 
 describe('e1rmSeries / topExerciseIds', () => {
@@ -360,6 +440,15 @@ describe('e1rmSeries / topExerciseIds', () => {
 
   it('默认动作 = 有效数据点最多的那个（不再是 Map 迭代顺序里随机的第一个）', () => {
     expect(topExerciseIds(ITEMS, 5)[0]).toBe('e1'); // e1 有 3 天，e2 只有 1 天
+  });
+
+  it('辅助动作不产生普通 e1RM，普通动作仍产生', () => {
+    const items = [
+      { date: '2026-07-01', exerciseId: 'e-assistance', sets: [{ weight: 30, reps: 8 }] },
+      { date: '2026-07-02', exerciseId: 'e-external', sets: [{ weight: 60, reps: 8 }] },
+    ];
+    expect(e1rmSeries(items, 'e-assistance', LOAD_MODE_EX)).toEqual([]);
+    expect(e1rmSeries(items, 'e-external', LOAD_MODE_EX)).toHaveLength(1);
   });
 });
 
@@ -394,6 +483,14 @@ describe('recentE1rmSeries（进步曲线：脱离范围切换器，永远看最
 
   it('默认进步曲线取 12 次', () => {
     expect(PROGRESSION_POINTS).toBe(12);
+  });
+
+  it('提供动作映射后，辅助动作的最近 e1RM 也为空', () => {
+    const items = [
+      { date: '2026-07-01', exerciseId: 'e-assistance', sets: [{ weight: 30, reps: 8 }] },
+      { date: '2026-07-02', exerciseId: 'e-assistance', sets: [{ weight: 25, reps: 10 }] },
+    ];
+    expect(recentE1rmSeries(items, 'e-assistance', 12, LOAD_MODE_EX)).toEqual([]);
   });
 });
 

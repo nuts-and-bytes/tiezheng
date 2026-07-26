@@ -165,7 +165,7 @@ function baseOf(
   dates: string[],
   exMap: ExMap,
 ): PosterBase & { load: Map<string, DayLoad> } {
-  const t = totals(items, dates);
+  const t = totals(items, dates, exMap);
   const bySet = setsByBodyPart(items, exMap);
   const split = BODY_PARTS.map((p) => ({ part: p.id, name: p.name, sets: bySet[p.id] }))
     .filter((r) => r.sets > 0)

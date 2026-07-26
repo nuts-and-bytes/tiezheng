@@ -646,6 +646,19 @@ describe('大数字三格的口径（K）', () => {
     expect(pageText().match(/当前连续/g)).toHaveLength(1);
   });
 
+  test('只练辅助动作：负荷格显示次数，不显示假容量或 e1RM', async () => {
+    await addWorkoutItem(TODAY, 'p-assisted-pullup', [{ weight: 30, reps: 10 }]);
+    renderStats();
+
+    const reps = await screen.findByTestId('hero-reps');
+    expect(within(reps).getByText('总次数')).toBeInTheDocument();
+    expect(within(reps).getByText('10')).toBeInTheDocument();
+    expect(screen.queryByTestId('hero-volume')).not.toBeInTheDocument();
+    expect(await screen.findByText(/记下重量和次数，这里就会画出你的力量曲线/)).toBeInTheDocument();
+    expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('strength-single')).not.toBeInTheDocument();
+  });
+
   /**
    * 梯子的第三级。sanitizeSets 白纸黑字允许「全空时保留组数——徒手训练允许只记组数不记
    * 次数」。这类人的 volumeKg 和 reps 双 0，于是第二级（总次数）也塌了：他练了 5 组，

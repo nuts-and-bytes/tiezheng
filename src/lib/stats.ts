@@ -1,6 +1,6 @@
 import { BODY_PARTS } from '../data/bodyParts';
 import { addDays, parseDate, weekStartOf } from './dates';
-import type { BodyPart, Exercise, SetEntry } from './types';
+import { loadModeOf, type BodyPart, type Exercise, type SetEntry } from './types';
 
 export function countByBodyPart(parts: BodyPart[]): Record<BodyPart, number> {
   const result = Object.fromEntries(BODY_PARTS.map((p) => [p.id, 0])) as Record<BodyPart, number>;
@@ -59,6 +59,7 @@ export function maxWeightSeries(
 export function totals(
   items: { exerciseId: string; sets: SetEntry[] }[],
   workoutDates: string[],
+  exMap?: ExMap,
 ): { days: number; sets: number; reps: number; volumeKg: number; moves: number } {
   let sets = 0;
   let reps = 0;
@@ -67,9 +68,10 @@ export function totals(
   for (const item of items) {
     sets += item.sets.length;
     moves.add(item.exerciseId);
+    const external = isExternalLoad(item.exerciseId, exMap);
     for (const s of item.sets) {
       if (s.reps !== undefined) reps += s.reps;
-      if (s.weight !== undefined && s.reps !== undefined) volumeKg += s.weight * s.reps;
+      if (external && s.weight !== undefined && s.reps !== undefined) volumeKg += s.weight * s.reps;
     }
   }
   return { days: new Set(workoutDates).size, sets, reps, volumeKg, moves: moves.size };
@@ -90,8 +92,8 @@ export type LoadKind = 'volume' | 'reps' | 'moves';
  *
  * reps 判 > 0 而不是 !== undefined：0 次和「没记」是同一件事，不该把梯子卡在第二级。
  */
-export function loadKind(items: LoadItem[]): LoadKind {
-  if (hasWeightData(items)) return 'volume';
+export function loadKind(items: LoadItem[], exMap?: ExMap): LoadKind {
+  if (hasWeightData(items, exMap)) return 'volume';
   if (items.some((i) => i.sets.some((s) => s.reps !== undefined && s.reps > 0))) return 'reps';
   return 'moves';
 }
@@ -125,6 +127,11 @@ export interface LoadItem {
 
 export type ExMap = Map<string, Exercise>;
 export type Segment = 'week' | 'month' | 'year' | 'all';
+
+/** 映射缺失或历史动作缺 loadMode 时仍按外部负重处理。 */
+function isExternalLoad(exerciseId: string, exMap?: ExMap): boolean {
+  return loadModeOf(exMap?.get(exerciseId) ?? {}) === 'external';
+}
 
 export interface Range {
   from: string;
@@ -200,8 +207,10 @@ function inRange<T extends { date: string }>(items: T[], from: string, to: strin
  * （Epley 乘的就是 weight）。把自重当成"有重量数据"，只会让页面显示无意义的「0 kg 容量」
  * 和一条永远画不出来的力量曲线。
  */
-export function hasWeightData(items: LoadItem[]): boolean {
-  return items.some((i) => i.sets.some((s) => weighted(s.weight) && s.reps !== undefined));
+export function hasWeightData(items: LoadItem[], exMap?: ExMap): boolean {
+  return items.some((i) =>
+    isExternalLoad(i.exerciseId, exMap)
+    && i.sets.some((s) => weighted(s.weight) && s.reps !== undefined));
 }
 
 /** 这组能不能产生非零的容量与 e1RM。全库判「有重量」只认这一个口径。 */
@@ -228,9 +237,10 @@ export function compare(
   dates: string[],
   cur: Range,
   prev: Range,
+  exMap?: ExMap,
 ): { days: Delta; sets: Delta; reps: Delta; volumeKg: Delta; moves: Delta } {
-  const a = totals(inRange(items, cur.from, cur.to), dates.filter((d) => d >= cur.from && d <= cur.to));
-  const b = totals(inRange(items, prev.from, prev.to), dates.filter((d) => d >= prev.from && d <= prev.to));
+  const a = totals(inRange(items, cur.from, cur.to), dates.filter((d) => d >= cur.from && d <= cur.to), exMap);
+  const b = totals(inRange(items, prev.from, prev.to), dates.filter((d) => d >= prev.from && d <= prev.to), exMap);
   return {
     days: { cur: a.days, prev: b.days, pct: pct(a.days, b.days) },
     sets: { cur: a.sets, prev: b.sets, pct: pct(a.sets, b.sets) },
@@ -279,7 +289,7 @@ export function prsByExercise(items: LoadItem[], exMap: ExMap): PrRow[] {
   const best = new Map<string, PrRow>();
   for (const item of items) {
     const ex = exMap.get(item.exerciseId);
-    if (!ex) continue;
+    if (!ex || loadModeOf(ex) === 'assistance') continue;
     for (const s of item.sets) {
       if (!weighted(s.weight) || s.reps === undefined) continue;
       const e1rm = estimate1RM(s.weight, s.reps);
@@ -301,7 +311,12 @@ export function prsByExercise(items: LoadItem[], exMap: ExMap): PrRow[] {
 }
 
 /** 某动作每日最大 e1RM，日期升序 */
-export function e1rmSeries(items: LoadItem[], exerciseId: string): { date: string; e1rm: number }[] {
+export function e1rmSeries(
+  items: LoadItem[],
+  exerciseId: string,
+  exMap?: ExMap,
+): { date: string; e1rm: number }[] {
+  if (!isExternalLoad(exerciseId, exMap)) return [];
   const byDate = new Map<string, number>();
   for (const item of items) {
     if (item.exerciseId !== exerciseId) continue;
@@ -333,9 +348,10 @@ export function recentE1rmSeries(
   items: LoadItem[],
   exerciseId: string,
   limit: number,
+  exMap?: ExMap,
 ): { date: string; e1rm: number }[] {
   const n = Math.max(1, Math.floor(limit));
-  return e1rmSeries(items, exerciseId).slice(-n);
+  return e1rmSeries(items, exerciseId, exMap).slice(-n);
 }
 
 /** 年度热力图的列：从当年 1/1 所在周的周一，排到 12/31 所在周的周一 */
@@ -362,9 +378,10 @@ export function heatMonthLabels(weekStarts: string[], year: number): (number | n
 }
 
 /** 按「有 e1RM 数据的训练日数」降序的动作 id。默认动作靠它选，不再靠 Map 迭代顺序随机取 */
-export function topExerciseIds(items: LoadItem[], limit: number): string[] {
+export function topExerciseIds(items: LoadItem[], limit: number, exMap?: ExMap): string[] {
   const days = new Map<string, Set<string>>();
   for (const item of items) {
+    if (!isExternalLoad(item.exerciseId, exMap)) continue;
     const usable = item.sets.some((s) => weighted(s.weight) && s.reps !== undefined);
     if (!usable) continue;
     if (!days.has(item.exerciseId)) days.set(item.exerciseId, new Set());

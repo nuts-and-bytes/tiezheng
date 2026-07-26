@@ -87,7 +87,7 @@ export function StatsScreen() {
   }
 
   const range = rangeOf(seg, today);
-  const cmp = compare(items, dates, range, prevRangeOf(seg, today));
+  const cmp = compare(items, dates, range, prevRangeOf(seg, today), exMap);
   const scoped = items.filter((i) => i.date >= range.from && i.date <= range.to);
   // 全时段判断，不是 scoped：「你是不是一个搬铁的人」是这个人的属性，不是这三天的属性。
   // 用 scoped 会让一个举铁的人在「本周只练了自重」时整块容量口径消失、下周一又回来——
@@ -97,7 +97,7 @@ export function StatsScreen() {
   // 同一条理由往下再走一级：「你记不记次数」也是这个人的属性。只记组数、连次数都不记的人
   // （sanitizeSets 明确允许）volumeKg 和 reps 双 0——降级到「总次数」还是个 0，
   // 旁边「总组数 5」正亮着，两个数字在同一排互相拆台。第三级给动作数（见 loadKind）。
-  const kind = loadKind(items);
+  const kind = loadKind(items, exMap);
 
   return (
     <div className="px-5 pt-6 pb-4">
@@ -285,10 +285,10 @@ function Strength({
   exId: string;
   onPick: (id: string) => void;
 }) {
-  const top = topExerciseIds(items, 5);
+  const top = topExerciseIds(items, 5, exMap);
   const active = top.includes(exId) ? exId : top[0];
 
-  if (!hasWeightData(items) || !active) {
+  if (!hasWeightData(items, exMap) || !active) {
     return (
       <>
         <Section title="力量趋势" />
@@ -301,7 +301,7 @@ function Strength({
     );
   }
 
-  const series = recentE1rmSeries(items, active, PROGRESSION_POINTS);
+  const series = recentE1rmSeries(items, active, PROGRESSION_POINTS, exMap);
   const picker = (
     <div className="mb-3 flex flex-wrap gap-1.5">
       {top.map((id) => (
