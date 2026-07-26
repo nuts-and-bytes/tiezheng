@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { buttonClassName } from '../../components/Button';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { CHART_GRID, Line } from '../../components/charts';
 import { PartIcon } from '../../components/PartIcon';
@@ -75,7 +76,7 @@ export function StatsScreen() {
           </p>
           <Link
             to="/log"
-            className="mt-2 rounded-xl bg-iron px-5 py-2.5 text-sm font-semibold text-bg"
+            className={buttonClassName('primary', false, 'mt-2 px-5')}
           >
             去打卡
           </Link>
@@ -118,7 +119,7 @@ export function StatsScreen() {
             key={s.id}
             type="button"
             onClick={() => setSeg(s.id)}
-            className={`min-h-9 rounded-lg px-3.5 py-1.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-iron ${
+            className={`min-h-11 rounded-lg px-3.5 py-1.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-iron ${
               seg === s.id ? 'bg-iron/15 font-semibold text-iron' : 'text-mute'
             }`}
           >
@@ -168,7 +169,7 @@ export function StatsScreen() {
 
       <Link
         to="/poster"
-        className="mt-6 flex items-center gap-3.5 rounded-[18px] border border-iron/35 bg-gradient-to-br from-iron/12 to-amber/5 px-4 py-4"
+        className={buttonClassName('secondary', true, 'mt-6 justify-start gap-3.5 border-iron/35 bg-gradient-to-br from-iron/12 to-amber/5 px-4 py-4')}
       >
         {/* 链接的无障碍名由子内容拼出来。钢印带着 aria-label="铁证" 站在第一位，
             读屏用户听到的第一个词就是品牌名——而他要判断的是「这链接干什么」。

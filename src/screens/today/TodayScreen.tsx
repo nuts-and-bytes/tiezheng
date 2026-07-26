@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Button } from '../../components/Button';
+import { Button, buttonClassName } from '../../components/Button';
 import { ForgeRing } from '../../components/ForgeRing';
 import { NavGlyph, PartIcon } from '../../components/PartIcon';
 import { PhotoCard } from '../../components/PhotoCard';
@@ -167,7 +167,7 @@ export function TodayScreen() {
       {/* 唯一的热区：铁橙渐变 CTA */}
       <Link
         to="/log"
-        className="heat mt-6 flex items-center justify-center gap-2.5 rounded-[20px] py-[19px] text-lg font-extrabold text-white shadow-[0_8px_32px_rgba(255,92,31,.35)] transition-transform active:scale-[.98]"
+        className={buttonClassName('primary', true, 'mt-6 min-h-14 gap-2.5 text-lg')}
       >
         <NavGlyph icon="today" size={22} />
         {hasDraft ? '继续未完成的记录' : trained ? '继续打卡' : '开始今日训练'}

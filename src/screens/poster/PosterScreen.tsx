@@ -145,7 +145,7 @@ export function PosterScreen() {
                   vibrate(8);
                   setMode(m);
                 }}
-                className={`min-h-9 rounded-lg px-5 py-1.5 text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-iron ${
+                className={`min-h-11 rounded-lg px-5 py-1.5 text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-iron ${
                   mode === m ? 'bg-iron font-semibold text-white' : 'text-mute'
                 }`}
               >
@@ -236,7 +236,7 @@ function Chip({
       type="button"
       aria-pressed={on}
       onClick={onClick}
-      className={`min-h-9 shrink-0 rounded-lg px-3 py-1.5 text-[13px] whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-iron ${
+      className={`min-h-11 shrink-0 rounded-lg px-3 py-1.5 text-[13px] whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-iron ${
         on ? 'bg-iron/15 text-iron' : 'text-mute'
       }`}
     >

@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { buttonClassName } from '../../components/Button';
 import { PartIcon } from '../../components/PartIcon';
 import { bodyPartInfo } from '../../data/bodyParts';
 import type { RailDaySummary } from '../../lib/calendar';
@@ -63,7 +64,7 @@ export function SelectedDayCard({
 
       <Link
         to={`/day/${summary.date}`}
-        className="mt-4 inline-flex min-h-10 items-center text-sm font-semibold text-iron transition active:scale-[.98]"
+        className={buttonClassName('tertiary', false, '-ml-4 mt-4 text-iron')}
       >
         查看完整记录
         <span aria-hidden className="ml-1">›</span>

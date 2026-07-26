@@ -125,7 +125,7 @@ export function ExerciseManager() {
                 key={p.id}
                 type="button"
                 onClick={() => setPart(p.id)}
-                className={`min-h-9 rounded-lg px-2.5 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-iron ${
+                className={`min-h-11 rounded-lg px-2.5 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-iron ${
                   part === p.id
                     ? 'bg-iron/15 font-semibold text-iron'
                     : 'border border-line bg-raised text-mute'

@@ -40,7 +40,10 @@ function Thumb({ photo }: { photo: Photo }) {
   return (
     // 时间轴的全部意义是**对比**——看到三个月前那张，第一反应是点开看大图。
     // 大图和重拍/删除本来就都在日详情页（PhotoCard），直接把它当归宿，别再造一个查看器。
-    <Link to={`/day/${photo.date}`} className="shrink-0 active:scale-[.97]">
+    <Link
+      to={`/day/${photo.date}`}
+      className="shrink-0 rounded-xl outline-none active:scale-[.97] focus-visible:ring-2 focus-visible:ring-iron"
+    >
       <figure>
         <div className="overflow-hidden rounded-lg bg-raised">
           <img src={url} alt={photo.date} className="h-24 w-24 object-cover" />
