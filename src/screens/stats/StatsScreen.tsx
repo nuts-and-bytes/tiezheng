@@ -5,21 +5,21 @@ import { CHART_GRID, Line } from '../../components/charts';
 import { PartIcon } from '../../components/PartIcon';
 import { PhotoTimeline } from '../../components/PhotoTimeline';
 import { Stamp } from '../../components/Stamp';
-import { BODY_PARTS, bodyPartInfo } from '../../data/bodyParts';
+import { BODY_PARTS } from '../../data/bodyParts';
 import { addDays, todayStr } from '../../lib/dates';
-import { EMPTY_HEAT, cellParts, heatBackground, heatColor } from '../../lib/heat';
-import { vibrate } from '../../lib/platform';
 import { THEME } from '../../lib/theme';
 import {
-  PROGRESSION_POINTS, compare, currentStreak, dailyMovingAverage, dailyPartBreakdown, hasWeightData, loadKind,
-  heatMonthLabels, heatWeekStarts, lastTrainedByBodyPart, longestStreak, prevRangeOf,
-  rangeOf, recentE1rmSeries, setsByBodyPart, topExerciseIds, yearsWithData,
+  compare, currentStreak, dailyMovingAverage, exerciseTrend, groupExerciseActivity,
+  lastTrainedByBodyPart, loadKind, longestStreak, prevRangeOf, rangeOf,
+  setsByBodyPart, weeklyRhythm,
 } from '../../lib/stats';
-import type { DayPartLoad, Delta, ExMap, LoadItem, Segment } from '../../lib/stats';
-import type { BodyPart } from '../../lib/types';
+import type { Delta, ExMap, LoadItem, Segment } from '../../lib/stats';
 import { getExercisesByIds } from '../../repos/exerciseRepo';
 import { listWeights } from '../../repos/weightRepo';
 import { listAllItems, listAllWorkoutDates } from '../../repos/workoutRepo';
+import { ExercisePicker } from './ExercisePicker';
+import { ExerciseTrend } from './ExerciseTrend';
+import { TrainingRhythm } from './TrainingRhythm';
 
 const SEGMENTS: { id: Segment; label: string }[] = [
   { id: 'week', label: '周' },
@@ -40,7 +40,6 @@ export function StatsScreen() {
   const today = todayStr();
   const [seg, setSeg] = useState<Segment>('week');
   const [exId, setExId] = useState('');
-  const [year, setYear] = useState<number | null>(null);
 
   const data = useLiveQuery(async () => {
     const [items, dates, weights] = await Promise.all([
@@ -98,6 +97,15 @@ export function StatsScreen() {
   // （sanitizeSets 明确允许）volumeKg 和 reps 双 0——降级到「总次数」还是个 0，
   // 旁边「总组数 5」正亮着，两个数字在同一排互相拆台。第三级给动作数（见 loadKind）。
   const kind = loadKind(items, exMap);
+  const activityGroups = groupExerciseActivity(items, exMap, today);
+  const activities = activityGroups.flatMap((group) => group.exercises);
+  const defaultActivity = activities.find((activity) => activity.trainedToday)
+    ?? [...activities].sort((a, b) => b.lastDate.localeCompare(a.lastDate))[0];
+  const activeId = activities.some((activity) => activity.exercise.id === exId)
+    ? exId
+    : (defaultActivity?.exercise.id ?? '');
+  const activeExercise = exMap.get(activeId);
+  const rhythm = weeklyRhythm(items, dates, 12, today);
 
   return (
     <div className="px-5 pt-6 pb-4">
@@ -141,12 +149,19 @@ export function StatsScreen() {
         当前连续 {currentStreak(new Set(dates), today)} 天 · 最长 {longestStreak(dates)} 天
       </p>
 
-      {/* 进步曲线不吃 scoped：它回答「我变强了吗」，这跟用户当前选的是周还是月无关 */}
-      <Strength items={items} exMap={exMap} exId={exId} onPick={setExId} />
+      <Section title="动作进步" sub="全历史动作 · 今日练过的动作优先" />
+      <ExercisePicker groups={activityGroups} activeId={activeId} onPick={setExId} />
+
+      <Section title="最近 12 周" sub="柱高 = 每周组数 · 每周训练天数可读" />
+      <TrainingRhythm points={rhythm} />
+
+      <div className="mt-7">
+        {activeExercise && (
+          <ExerciseTrend exercise={activeExercise} trend={exerciseTrend(items, activeExercise, 12)} />
+        )}
+      </div>
 
       <Balance items={scoped} allItems={items} exMap={exMap} today={today} seg={seg} />
-
-      <Heat items={items} exMap={exMap} dates={dates} year={year} onYear={setYear} today={today} />
 
       <Weight weights={weights} />
 
@@ -270,141 +285,6 @@ function Volume({ kg }: { kg: number }) {
   );
 }
 
-/**
- * 我是不是在变强？e1RM 是「练了到底有没有用」的唯一客观答案。
- *
- * items 传的是全时段记录，不是 scoped——这个区块故意不接范围切换器。
- * 顶部三个大数字是「周期汇总」（本周练了 4 天，有意义）；进步曲线是「我的卧推从 60 涨到 90」，
- * 天然属于全时段。把两者绑在同一个切换器上，默认停在「周」的用户必然只剩 1 个点 → 一张空图。
- */
-function Strength({
-  items, exMap, exId, onPick,
-}: {
-  items: LoadItem[];
-  exMap: ExMap;
-  exId: string;
-  onPick: (id: string) => void;
-}) {
-  const top = topExerciseIds(items, 5, exMap);
-  const active = top.includes(exId) ? exId : top[0];
-
-  if (!hasWeightData(items, exMap) || !active) {
-    return (
-      <>
-        <Section title="力量趋势" />
-        <p className="rounded-xl border border-dashed border-line px-4 py-6 text-center text-xs leading-relaxed text-mute">
-          记下重量和次数，这里就会画出你的力量曲线。
-          <br />
-          只记组数也没问题——上面的组数一样算数。
-        </p>
-      </>
-    );
-  }
-
-  const series = recentE1rmSeries(items, active, PROGRESSION_POINTS, exMap);
-  const picker = (
-    <div className="mb-3 flex flex-wrap gap-1.5">
-      {top.map((id) => (
-        <button
-          key={id}
-          type="button"
-          onClick={() => onPick(id)}
-          className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-            id === active
-              ? 'bg-iron/15 font-semibold text-iron'
-              : 'border border-line bg-raised text-mute'
-          }`}
-        >
-          {exMap.get(id)?.name ?? id}
-        </button>
-      ))}
-    </div>
-  );
-  const head = (
-    <Section
-      title="力量趋势 · 估算 1RM"
-      sub={`最近 ${PROGRESSION_POINTS} 次记录 · 不随上方范围变化`}
-    />
-  );
-
-  // series 至少有 1 个点：active 只可能来自 topExerciseIds，而它与 e1rmSeries 同口径
-  // （weighted：weight > 0 且有次数）。自重动作在那一层就被排除了，到不了这里。
-  //
-  // 只有一个点：画不出线，也就没有「趋势」可言。此时画个空壳图表是在骗人说「这里本该有东西」——
-  // 不如把这一个数字亮出来，再告诉用户下一步做什么。
-  if (series.length < 2) {
-    const only = series[0];
-    return (
-      <>
-        {head}
-        {picker}
-        <div
-          data-testid="strength-single"
-          className="rounded-xl border border-dashed border-line px-4 py-5 text-center"
-        >
-          <p className="flex items-baseline justify-center gap-1">
-            <span className="display text-[32px] leading-none text-ink">{only.e1rm.toFixed(1)}</span>
-            <span className="text-xs text-mute">kg</span>
-          </p>
-          <p className="mt-1.5 text-[11px] text-mute">{only.date.slice(5)} · 目前唯一一次记录</p>
-          <p className="mt-2.5 text-xs text-mute">再练一次，这里就会长出曲线。</p>
-        </div>
-      </>
-    );
-  }
-
-  // canvas 里的像素对读屏软件不存在——react-chartjs-2 给它挂了 role="img"，于是它是「一个
-  // 图形」，却没有名字，念出来只有一声「图」。名字不能是「力量趋势图」这种同义反复：
-  // 那只是把「图」换了个说法。装进去的必须是这张图真正在说的那句话。
-  const label = `力量趋势：${exMap.get(active)?.name ?? active}，最近 ${series.length} 次记录，估算 1RM 从 ${series[0].e1rm.toFixed(1)} 公斤到 ${series[series.length - 1].e1rm.toFixed(1)} 公斤`;
-
-  return (
-    <>
-      {head}
-      {picker}
-      <Line
-        aria-label={label}
-        data={{
-          labels: series.map((s) => s.date.slice(5)),
-          datasets: [
-            {
-              data: series.map((s) => s.e1rm),
-              borderColor: THEME.iron,
-              backgroundColor: 'rgba(255,92,31,0.12)',
-              borderWidth: 2.5,
-              fill: true,
-              tension: 0.35,
-              // 恒显示圆点：series 由 recentE1rmSeries 截到最多 PROGRESSION_POINTS(12) 个，
-              // 12 个点不会把线糊成毛毛虫，而每一个点都是用户真练过的一次，值得看得见。
-              pointRadius: 3,
-              pointHoverRadius: 4,
-              pointBackgroundColor: THEME.amber,
-            },
-          ],
-        }}
-        options={{
-          // 没有 chartjs-adapter-date-fns：x 轴走 category（日期索引），绝不能用 time scale
-          scales: {
-            x: { grid: { display: false }, ticks: { maxTicksLimit: 5, font: { size: 9 } } },
-            y: {
-              grid: { color: CHART_GRID },
-              border: { display: false },
-              ticks: { maxTicksLimit: 4, font: { size: 9 } },
-            },
-          },
-          plugins: {
-            tooltip: {
-              callbacks: {
-                label: (c) => (c.parsed.y == null ? '' : `${c.parsed.y.toFixed(1)} kg`),
-              },
-            },
-          },
-        }}
-      />
-    </>
-  );
-}
-
 /** 我是不是练得均衡？「背：已 12 天没练」比一个雷达图有用得多 */
 function Balance({
   items, allItems, exMap, today, seg,
@@ -463,172 +343,6 @@ function Balance({
           </div>
         );
       })}
-    </>
-  );
-}
-
-/** 年度热力图：与日历页 / 海报共用 heatColor + cellParts —— 同一个训练日在三处必须长同一个样 */
-const partName = (p: BodyPart) => bodyPartInfo(p).name;
-
-/** 一个格子要画的东西：涂哪几块（主练在前）、多浓（当天总组数） */
-interface HeatCell {
-  parts: BodyPart[];
-  sets: number;
-}
-
-function Heat({
-  items, exMap, dates, year, onYear, today,
-}: {
-  items: LoadItem[];
-  exMap: ExMap;
-  dates: string[];
-  year: number | null;
-  onYear: (y: number) => void;
-  today: string;
-}) {
-  const years = yearsWithData(dates);
-  const y = year !== null && years.includes(year) ? year : (years[0] ?? Number(today.slice(0, 4)));
-
-  /**
-   * 部位曾经**只**编码在色相里。9px 的格子、七个色相——红绿色盲（男性约 8%）看
-   * chest #E8483F / cardio #8FAE9B / arm #2FD6C3 三者高度趋同，读到的信息量是零；
-   * 而说实话，七个色相在 9px 上谁都分不清。所以颜色降级为冗余通道，真相走另外两条：
-   *
-   * 1. **每个格子说得出话**（title + 无障碍名）：「2026-07-03 · 腿 3 组 · 胸 1 组」。
-   * 2. **图例能筛**：点「腿」，整张图退成单色的腿部贡献图——此时唯一的变量是浓淡，
-   *    色觉障碍者也读得全。而「我腿练得少吗」本来就是个查询，不是个看：
-   *    七色同屏时，谁都数不出这一年有几个紫格子。
-   */
-  const [pick, setPick] = useState<BodyPart | null>(null);
-
-  const breakdown = dailyPartBreakdown(items, exMap);
-  /**
-   * 筛选态下，格子代表的是「这一天的这个部位」——单色，唯一的变量是浓淡。
-   * 无筛选时代表「这一天练到的部位（主练在前）+ 总组数」：主练腿、顺带练胸的那天，
-   * 只涂腿色就是在跟同一页的「部位分布」互相拆台。视觉上截到几块由 cellParts 一处裁决。
-   */
-  const shownOf = (rows: DayPartLoad[] | undefined): HeatCell | undefined => {
-    if (!rows) return undefined;
-    if (pick === null) {
-      return { parts: rows.map((r) => r.part), sets: rows.reduce((s, r) => s + r.sets, 0) };
-    }
-    const hit = rows.find((r) => r.part === pick);
-    return hit && { parts: [pick], sets: hit.sets };
-  };
-
-  // 一列 = 一周（7 行）。月份标签与格子共用同一份列定义，才能真正对齐到列
-  const weekStarts = heatWeekStarts(y);
-  const months = heatMonthLabels(weekStarts, y);
-  const cells = weekStarts.flatMap((d) => Array.from({ length: 7 }, (_, i) => addDays(d, i)));
-
-  return (
-    <>
-      <Section
-        title="年度热力"
-        right={
-          years.length > 1 ? (
-            <span className="flex gap-1">
-              {years.map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => onYear(n)}
-                  className={`display rounded-md px-2 py-0.5 text-[11px] ${
-                    n === y ? 'bg-iron/15 text-iron' : 'text-mute'
-                  }`}
-                >
-                  {n}
-                </button>
-              ))}
-            </span>
-          ) : (
-            <span className="display text-[11px] text-mute">{y}</span>
-          )
-        }
-      />
-      <div className="-mx-1 overflow-x-auto px-1 pb-1">
-        <div className="min-w-max">
-          {/* 月份轴：标签绝对定位，才不会把 9px 的列撑宽 —— 列宽必须和下面的格子严格相等 */}
-          <div className="mb-1 grid grid-flow-col gap-[3px]" data-testid="heat-months">
-            {months.map((m, i) => (
-              <span key={weekStarts[i]} className="relative block h-3 w-[9px]">
-                {m !== null && (
-                  <span className="absolute top-0 left-0 text-[9px] leading-3 whitespace-nowrap text-mute">
-                    {m}月
-                  </span>
-                )}
-              </span>
-            ))}
-          </div>
-          <div className="grid grid-flow-col grid-rows-7 gap-[3px]">
-            {cells.map((d) => {
-              const rows = d.startsWith(String(y)) ? breakdown.get(d) : undefined;
-              const hit = shownOf(rows);
-              // 标签报的是那天的全部真相（筛选只决定谁上色，不改写那天练了什么）
-              const label = rows && `${d} · ${rows.map((r) => `${partName(r.part)} ${r.sets} 组`).join(' · ')}`;
-              return (
-                <span
-                  key={d}
-                  data-testid={`heat-${d}`}
-                  // 没练的日子不进无障碍树：一年 365 声「未训练」是纯噪声。
-                  // 有练的必须有 role——光挂 aria-label 在 <span> 上，屏幕阅读器不念。
-                  {...(hit && label
-                    ? { role: 'img', 'aria-label': label, title: label }
-                    : { 'aria-hidden': true })}
-                  className="size-[9px] rounded-[2px]"
-                  style={{
-                    // 混合日对角劈成两块（heatBackground），两块共用当天总组数算出的同一个 alpha：
-                    // 格子的深浅答的是「这天练得狠不狠」，不是「这一块练了几组」
-                    background: !d.startsWith(String(y))
-                      ? 'transparent'
-                      : hit
-                        ? heatBackground(
-                            cellParts(hit.parts).map((p) => heatColor(p)),
-                          )
-                        : EMPTY_HEAT,
-                  }}
-                />
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* 图例即筛选器：色块本身不自解释，而七个色相在 9px 上谁都读不出来——
-          它得能被点，把「这一年我练了几次腿」从一道找色题变成一次筛选 */}
-      <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1.5" data-testid="heat-legend">
-        {BODY_PARTS.map((p) => {
-          const on = pick === p.id;
-          return (
-            <button
-              key={p.id}
-              type="button"
-              aria-pressed={on}
-              onClick={() => {
-                vibrate(8);
-                setPick(on ? null : p.id); // 再点一次取消，不然用户被自己锁死在一个部位里
-              }}
-              className={`flex items-center gap-1 rounded-md px-1 py-0.5 -mx-1 transition-opacity ${
-                pick !== null && !on ? 'opacity-40' : ''
-              }`}
-            >
-              <span
-                className="size-[7px] shrink-0 rounded-[2px]"
-                style={{ background: p.color }}
-                aria-hidden
-              />
-              <span className={`text-[10px] ${on ? 'font-semibold text-iron' : 'text-mute'}`}>
-                {p.name}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-      {pick !== null && (
-        <p className="mt-1.5 text-[10px] text-mute">
-          只看{partName(pick)}——再点一次看全部
-        </p>
-      )}
     </>
   );
 }
