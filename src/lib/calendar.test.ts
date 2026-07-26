@@ -1,10 +1,11 @@
 import type { Exercise } from './types';
-import { defaultRailDate, monthRailDays } from './calendar';
+import { defaultRailDate, monthRailDays, summarizeRailDay } from './calendar';
 
 const EXERCISES = new Map<string, Exercise>([
   ['chest', { id: 'chest', name: '卧推', bodyPart: 'chest', preset: true, updatedAt: 0, deletedAt: null }],
   ['back', { id: 'back', name: '划船', bodyPart: 'back', preset: true, updatedAt: 0, deletedAt: null }],
   ['leg', { id: 'leg', name: '深蹲', bodyPart: 'leg', preset: true, updatedAt: 0, deletedAt: null }],
+  ['assist', { id: 'assist', name: '辅助引体', bodyPart: 'back', loadMode: 'assistance', preset: true, updatedAt: 0, deletedAt: null }],
 ]);
 
 describe('defaultRailDate', () => {
@@ -17,6 +18,38 @@ describe('defaultRailDate', () => {
     expect(defaultRailDate('2026-06', ['2026-06-03', '2026-06-28'], '2026-07-26')).toBe('2026-06-28');
     expect(defaultRailDate('2026-08', ['2026-08-03'], '2026-07-26')).toBeNull();
     expect(defaultRailDate('2026-05', [], '2026-07-26')).toBeNull();
+  });
+});
+
+describe('summarizeRailDay', () => {
+  const items = [
+    { date: '2026-07-03', exerciseId: 'back', sets: [{ reps: 10 }, {}] },
+    { date: '2026-07-03', exerciseId: 'chest', sets: [{ weight: 60, reps: 10 }] },
+    { date: '2026-07-03', exerciseId: 'chest', sets: [{ weight: 70 }, {}] },
+    { date: '2026-07-03', exerciseId: 'assist', sets: [{ weight: 30, reps: 8 }] },
+    { date: '2026-07-04', exerciseId: 'leg', sets: [{ weight: 100, reps: 5 }] },
+  ];
+
+  test('保留全部部位并按固定部位顺序，合并同动作且保留首次出现顺序', () => {
+    expect(summarizeRailDay('2026-07-03', items, EXERCISES)).toEqual({
+      date: '2026-07-03',
+      parts: ['chest', 'back'],
+      moves: 3,
+      sets: 6,
+      volumeKg: 600,
+      exercises: [
+        { exerciseId: 'back', name: '划船', sets: 2 },
+        { exerciseId: 'chest', name: '卧推', sets: 3 },
+        { exerciseId: 'assist', name: '辅助引体', sets: 1 },
+      ],
+    });
+  });
+
+  test('只有辅助重量或字段不足时容量为 null，不伪造 0kg', () => {
+    expect(summarizeRailDay('2026-07-03', [
+      { date: '2026-07-03', exerciseId: 'back', sets: [{ reps: 10 }] },
+      { date: '2026-07-03', exerciseId: 'assist', sets: [{ weight: 20, reps: 8 }] },
+    ], EXERCISES).volumeKg).toBeNull();
   });
 });
 

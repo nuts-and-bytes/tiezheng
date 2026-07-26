@@ -1,7 +1,8 @@
 import { cellParts } from './heat';
+import { BODY_PARTS } from '../data/bodyParts';
 import { datesOfMonth } from './dates';
 import { dailyPartBreakdown, percentile, type ExMap, type LoadItem } from './stats';
-import type { BodyPart } from './types';
+import { loadModeOf, type BodyPart } from './types';
 
 const EMPTY_TICK_HEIGHT = 8;
 const MIN_TRAINED_HEIGHT = 18;
@@ -14,6 +15,15 @@ export interface MonthRailDay {
   parts: BodyPart[];
   heightPct: number;
   anchorLabel?: string;
+}
+
+export interface RailDaySummary {
+  date: string;
+  parts: BodyPart[];
+  moves: number;
+  sets: number;
+  volumeKg: number | null;
+  exercises: { exerciseId: string; name: string; sets: number }[];
 }
 
 /** 当前月选今天以前的最近训练日；历史月选月末最近一天；未来月不预选。 */
@@ -57,4 +67,41 @@ export function monthRailDays(ym: string, items: LoadItem[], exMap: ExMap): Mont
       ...(anchor ? { anchorLabel: String(day) } : {}),
     };
   });
+}
+
+/** 选中日明细：完整部位、合并后的动作与真实可计算容量。 */
+export function summarizeRailDay(date: string, items: LoadItem[], exMap: ExMap): RailDaySummary {
+  const partSet = new Set<BodyPart>();
+  const exerciseRows = new Map<string, { exerciseId: string; name: string; sets: number }>();
+  let sets = 0;
+  let volumeKg = 0;
+  let hasVolume = false;
+
+  for (const item of items) {
+    if (item.date !== date) continue;
+    const exercise = exMap.get(item.exerciseId);
+    if (!exercise) continue;
+    partSet.add(exercise.bodyPart);
+    sets += item.sets.length;
+
+    const current = exerciseRows.get(exercise.id);
+    if (current) current.sets += item.sets.length;
+    else exerciseRows.set(exercise.id, { exerciseId: exercise.id, name: exercise.name, sets: item.sets.length });
+
+    if (loadModeOf(exercise) !== 'external') continue;
+    for (const set of item.sets) {
+      if (!(set.weight !== undefined && set.weight > 0 && set.reps !== undefined && set.reps > 0)) continue;
+      volumeKg += set.weight * set.reps;
+      hasVolume = true;
+    }
+  }
+
+  return {
+    date,
+    parts: BODY_PARTS.map((part) => part.id).filter((part) => partSet.has(part)),
+    moves: exerciseRows.size,
+    sets,
+    volumeKg: hasVolume ? volumeKg : null,
+    exercises: [...exerciseRows.values()],
+  };
 }
