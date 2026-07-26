@@ -8,12 +8,23 @@ import { SetRows } from './SetRows';
 function Harness({
   initial = [{}] as SetEntry[],
   loadMode,
+  onChange,
 }: {
   initial?: SetEntry[];
   loadMode?: LoadMode;
+  onChange?: (sets: SetEntry[]) => void;
 }) {
   const [sets, setSets] = useState<SetEntry[]>(initial);
-  return <SetRows sets={sets} onChange={setSets} loadMode={loadMode} />;
+  return (
+    <SetRows
+      sets={sets}
+      loadMode={loadMode}
+      onChange={(next) => {
+        setSets(next);
+        onChange?.(next);
+      }}
+    />
+  );
 }
 
 /**
@@ -31,7 +42,10 @@ test('超出范围的重量：当场标红并说出范围，不再等到保存�
   await user.type(weight, '20260710'); // 日期串进重量栏
 
   expect(weight).toHaveAttribute('aria-invalid', 'true');
-  expect(await screen.findByText(/0–1000/)).toBeInTheDocument();
+  const error = await screen.findByText(/0–1000/);
+  expect(error).toHaveAttribute('id');
+  expect(weight).toHaveAttribute('aria-describedby', error.id);
+  expect(weight).toHaveAttribute('aria-errormessage', error.id);
 });
 
 test('超出范围的次数同样看得见', async () => {
@@ -54,6 +68,8 @@ test('范围内的值不标红、不出提示', async () => {
   await user.type(screen.getByPlaceholderText('次数'), '12');
 
   expect(screen.getByPlaceholderText('重量kg')).toHaveAttribute('aria-invalid', 'false');
+  expect(screen.getByPlaceholderText('重量kg')).not.toHaveAttribute('aria-describedby');
+  expect(screen.getByPlaceholderText('重量kg')).not.toHaveAttribute('aria-errormessage');
   expect(screen.queryByText(/0–1000/)).not.toBeInTheDocument();
 });
 
@@ -88,8 +104,12 @@ test('辅助模式的四组输入明确标注辅助重量，并只解释一次�
   render(<Harness loadMode="assistance" initial={[{}, {}, {}, {}]} />);
 
   expect(screen.getAllByPlaceholderText('辅助 kg')).toHaveLength(4);
+  const guidance = screen.getByText('辅助越少，表现越强');
+  expect(guidance).toHaveAttribute('id');
   for (let i = 1; i <= 4; i += 1) {
-    expect(screen.getByLabelText(`第 ${i} 组 辅助重量（公斤）`)).toBeInTheDocument();
+    const input = screen.getByLabelText(`第 ${i} 组 辅助重量（公斤）`);
+    expect(input).toHaveAttribute('aria-describedby', guidance.id);
+    expect(input).not.toHaveAttribute('aria-errormessage');
   }
   expect(screen.getAllByText('辅助越少，表现越强')).toHaveLength(1);
 });
@@ -97,12 +117,14 @@ test('辅助模式的四组输入明确标注辅助重量，并只解释一次�
 test('辅助值 0 合法，并继续写入 SetEntry.weight', async () => {
   const user = userEvent.setup();
   const onChange = vi.fn();
-  render(<SetRows sets={[{}]} onChange={onChange} loadMode="assistance" />);
+  render(<Harness loadMode="assistance" onChange={onChange} />);
 
   const assistance = screen.getByLabelText('第 1 组 辅助重量（公斤）');
   await user.type(assistance, '0');
 
+  expect(assistance).toHaveValue('0');
   expect(assistance).toHaveAttribute('aria-invalid', 'false');
+  expect(assistance).not.toHaveAttribute('aria-errormessage');
   expect(onChange).toHaveBeenLastCalledWith([{ weight: 0 }]);
 });
 
@@ -114,13 +136,32 @@ test('辅助重量超范围时立即报辅助重量错误，不称为普通训�
   await user.type(assistance, '1001');
 
   expect(assistance).toHaveAttribute('aria-invalid', 'true');
-  expect(await screen.findByText('辅助重量需在 0–1000 kg 之间')).toBeInTheDocument();
+  const error = await screen.findByText('辅助重量需在 0–1000 kg 之间');
+  const guidance = screen.getByText('辅助越少，表现越强');
+  expect(error).toHaveAttribute('id');
+  expect(assistance.getAttribute('aria-describedby')?.split(' ')).toEqual([
+    guidance.id,
+    error.id,
+  ]);
+  expect(assistance).toHaveAttribute('aria-errormessage', error.id);
   expect(screen.queryByText(/容量/)).not.toBeInTheDocument();
+});
+
+test('共享范围错误与每个非法重量输入关联', () => {
+  render(<Harness initial={[{ weight: -1 }, { weight: 1001 }]} />);
+
+  const error = screen.getByText('重量需在 0–1000 kg 之间');
+  for (const weight of screen.getAllByPlaceholderText('重量kg')) {
+    expect(weight).toHaveAttribute('aria-invalid', 'true');
+    expect(weight).toHaveAttribute('aria-describedby', error.id);
+    expect(weight).toHaveAttribute('aria-errormessage', error.id);
+  }
 });
 
 test('辅助模式不改变次数输入与 SetEntry.reps', async () => {
   const user = userEvent.setup();
-  render(<Harness loadMode="assistance" />);
+  const onChange = vi.fn();
+  render(<Harness loadMode="assistance" onChange={onChange} />);
 
   const reps = screen.getByLabelText('第 1 组 次数');
   await user.type(reps, '12');
@@ -128,4 +169,5 @@ test('辅助模式不改变次数输入与 SetEntry.reps', async () => {
   expect(reps).toHaveAttribute('placeholder', '次数');
   expect(reps).toHaveAttribute('aria-invalid', 'false');
   expect(reps).toHaveValue('12');
+  expect(onChange).toHaveBeenLastCalledWith([{ reps: 12 }]);
 });
