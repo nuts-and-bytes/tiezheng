@@ -1,5 +1,5 @@
 import {
-  addDays, formatToday, lastNDates, monthGrid, parseDate,
+  addDays, formatRelativeWorkoutDate, formatToday, lastNDates, monthGrid, parseDate,
   shiftMonth, toDateStr, weekStartOf,
 } from './dates';
 
@@ -38,4 +38,20 @@ test('shiftMonth 跨年', () => {
 
 test('formatToday 中文格式', () => {
   expect(formatToday(new Date(2026, 6, 8))).toBe('7月8日 周三');
+});
+
+describe('formatRelativeWorkoutDate', () => {
+  test('同一自然周显示本周几，上一自然周显示上周几', () => {
+    expect(formatRelativeWorkoutDate('2026-07-25', '2026-07-26')).toBe('本周六');
+    expect(formatRelativeWorkoutDate('2026-07-15', '2026-07-26')).toBe('上周三');
+  });
+
+  test('超过上一自然周，同年直接显示月日，跨年补年份', () => {
+    expect(formatRelativeWorkoutDate('2026-07-03', '2026-07-26')).toBe('7月3日');
+    expect(formatRelativeWorkoutDate('2025-12-28', '2026-07-26')).toBe('2025年12月28日');
+  });
+
+  test('周一边界：前一天周日属于上一自然周', () => {
+    expect(formatRelativeWorkoutDate('2026-07-19', '2026-07-20')).toBe('上周日');
+  });
 });
