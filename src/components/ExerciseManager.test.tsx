@@ -208,3 +208,10 @@ test('不再使用废弃别名 card2 / iron2', async () => {
   await screen.findByPlaceholderText('新建胸动作…');
   expect(container.innerHTML).not.toMatch(/card2|iron2/);
 });
+
+test('新建动作表单在窄屏使用两行网格并允许字段收缩', async () => {
+  await openManager();
+  const form = screen.getByTestId('new-exercise-form');
+  expect(form.className).toContain('grid');
+  expect(screen.getByPlaceholderText('新建胸动作…').className).toContain('min-w-0');
+});

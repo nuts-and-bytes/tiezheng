@@ -1,4 +1,3 @@
-import { cellParts } from './heat';
 import { BODY_PARTS } from '../data/bodyParts';
 import { datesOfMonth } from './dates';
 import { dailyPartBreakdown, percentile, type ExMap, type LoadItem } from './stats';
@@ -60,7 +59,7 @@ export function monthRailDays(ym: string, items: LoadItem[], exMap: ExMap): Mont
       day,
       trained,
       sets,
-      parts: trained ? cellParts(rows.map((row) => row.part)) : [],
+      parts: trained ? rows.map((row) => row.part) : [],
       heightPct: trained
         ? Math.max(MIN_TRAINED_HEIGHT, (Math.min(sets, ceiling) / ceiling) * 100)
         : EMPTY_TICK_HEIGHT,

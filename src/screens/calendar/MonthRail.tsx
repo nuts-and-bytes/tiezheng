@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { bodyPartInfo } from '../../data/bodyParts';
 import type { MonthRailDay } from '../../lib/calendar';
+import { cellParts } from '../../lib/heat';
 
 export function MonthRail({
   days,
@@ -22,8 +23,9 @@ export function MonthRail({
       <div className="flex min-w-max items-end gap-2" role="group" aria-label="月度训练轨道">
         {days.map((day) => {
           const selected = day.date === selectedDate;
-          const parts = day.parts.map((part) => bodyPartInfo(part));
-          const label = `${Number(day.date.slice(0, 4))}年${Number(day.date.slice(5, 7))}月${day.day}日 · ${parts.map((part) => part.name).join('、')} · ${day.sets} 组`;
+          const allParts = day.parts.map((part) => bodyPartInfo(part));
+          const visibleParts = cellParts(day.parts).map((part) => bodyPartInfo(part));
+          const label = `${Number(day.date.slice(0, 4))}年${Number(day.date.slice(5, 7))}月${day.day}日 · ${allParts.map((part) => part.name).join('、')} · ${day.sets} 组`;
 
           return (
             <span key={day.date} className="flex w-6 shrink-0 flex-col items-center" data-testid={`rail-day-${day.date}`}>
@@ -44,7 +46,7 @@ export function MonthRail({
                     style={{ height: `${day.heightPct}%` }}
                     aria-hidden
                   >
-                    {parts.map((part) => (
+                    {visibleParts.map((part) => (
                       <span
                         key={part.id}
                         data-part-segment={part.id}

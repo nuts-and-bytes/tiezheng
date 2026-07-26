@@ -368,6 +368,17 @@ test('新建辅助动作会传递重量类型并真实写入数据库，成功�
   expect(screen.getByPlaceholderText('新建胸动作…')).toHaveValue('');
 });
 
+test('选动作页的新建表单在窄屏使用两行网格并允许字段收缩', async () => {
+  const user = userEvent.setup();
+  renderFlow();
+  await user.click(await screen.findByText('胸'));
+  await user.click(screen.getByText('下一步 · 选动作'));
+
+  const form = await screen.findByTestId('new-exercise-form');
+  expect(form.className).toContain('grid');
+  expect(screen.getByPlaceholderText('新建胸动作…').className).toContain('min-w-0');
+});
+
 test('新建动作期间名称、类型和按钮全部禁用', async () => {
   const user = userEvent.setup();
   let resolveCreate!: (exercise: Awaited<ReturnType<typeof addCustomExercise>>) => void;

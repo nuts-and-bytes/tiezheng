@@ -7,6 +7,7 @@ import { PhotoCard } from '../../components/PhotoCard';
 import { SetRows } from '../../components/SetRows';
 import { bodyPartInfo } from '../../data/bodyParts';
 import { setLabels } from '../../lib/setLabel';
+import { loadModeOf } from '../../lib/types';
 import { hasOutOfRange, sanitizeSets } from '../../lib/validation';
 import { getWeight } from '../../repos/weightRepo';
 import { getDayItems, removeWorkoutItem, updateItemSets, type DayItem } from '../../repos/workoutRepo';
@@ -76,8 +77,10 @@ function ItemRow({ item }: { item: DayItem }) {
   const [sets, setSets] = useState(item.sets);
   const [saving, setSaving] = useState(false);
   const info = bodyPartInfo(item.exercise.bodyPart);
-
-  const summary = setLabels(item.sets);
+  const loadMode = loadModeOf(item.exercise);
+  const summary = setLabels(item.sets).map((label) => (
+    loadMode === 'assistance' ? `辅助 ${label}` : label
+  ));
 
   return (
     <div className="py-1">
@@ -109,7 +112,7 @@ function ItemRow({ item }: { item: DayItem }) {
 
       {editing && (
         <div className="mt-3 flex flex-col gap-3">
-          <SetRows sets={sets} onChange={setSets} />
+          <SetRows sets={sets} onChange={setSets} loadMode={loadMode} />
           <div className="flex gap-2">
             <Button
               disabled={hasOutOfRange(sets) || saving}

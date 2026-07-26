@@ -80,10 +80,10 @@ describe('monthRailDays', () => {
     expect(extreme.heightPct).toBe(100);
   });
 
-  test('混合训练日按稳定部位规则只保留前两个颜色段', () => {
+  test('混合训练日在数据层保留全部部位，视觉层再自行限制颜色段', () => {
     const mixed = monthRailDays('2026-07', items, EXERCISES)
       .find((day) => day.date === '2026-07-03');
 
-    expect(mixed).toMatchObject({ trained: true, sets: 6, parts: ['back', 'chest'] });
+    expect(mixed).toMatchObject({ trained: true, sets: 6, parts: ['back', 'chest', 'leg'] });
   });
 });

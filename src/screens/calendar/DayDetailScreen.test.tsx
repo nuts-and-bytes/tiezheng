@@ -149,3 +149,15 @@ test('编辑时输入超范围的重量：保存按钮禁用', async () => {
   expect(screen.getByText('保存')).toBeDisabled();
   expect(await screen.findByText(/0–1000/)).toBeInTheDocument();
 });
+
+test('辅助动作在回看与编辑时都明确表达辅助重量语义', async () => {
+  const user = userEvent.setup();
+  await addWorkoutItem('2026-07-10', 'p-assisted-pullup', [{ weight: 20, reps: 8 }]);
+  renderDay('2026-07-10');
+
+  expect(await screen.findByText('辅助 20×8')).toBeInTheDocument();
+  await user.click(screen.getByText('编辑'));
+
+  expect(screen.getByText('辅助越少，表现越强')).toBeInTheDocument();
+  expect(screen.getByRole('textbox', { name: '第 1 组 辅助重量（公斤）' })).toHaveValue('20');
+});

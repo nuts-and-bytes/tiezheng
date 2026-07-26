@@ -12,7 +12,7 @@ const days: MonthRailDay[] = Array.from({ length: 31 }, (_, index) => {
     day,
     trained,
     sets: day === 3 ? 6 : day === 15 ? 4 : 0,
-    parts: day === 3 ? ['back', 'chest'] : day === 15 ? ['leg'] : [],
+    parts: day === 3 ? ['back', 'chest', 'leg'] : day === 15 ? ['leg'] : [],
     heightPct: trained ? (day === 3 ? 100 : 60) : 8,
     ...([1, 8, 15, 22, 31].includes(day) ? { anchorLabel: String(day) } : {}),
   } as MonthRailDay;
@@ -23,7 +23,7 @@ test('整月有 31 个刻度，但只有训练日是可聚焦按钮', () => {
 
   expect(screen.getAllByTestId(/rail-day-/)).toHaveLength(31);
   expect(screen.getAllByRole('button')).toHaveLength(2);
-  expect(screen.getByRole('button', { name: /2026年7月3日.*背.*胸.*6 组/ })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /2026年7月3日.*背.*胸.*腿.*6 组/ })).toBeInTheDocument();
 });
 
 test('混合训练柱最多两段颜色，选中态有日号、按压状态与非颜色轮廓', () => {

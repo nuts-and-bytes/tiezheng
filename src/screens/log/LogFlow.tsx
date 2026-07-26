@@ -252,20 +252,23 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
           );
         })}
       </div>
-      <div className="mt-3 flex gap-2">
+      <div
+        data-testid="new-exercise-form"
+        className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2"
+      >
         <input
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           disabled={creating}
           placeholder={`新建${info.name}动作…`}
-          className="flex-1 rounded-lg border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute"
+          className="col-span-2 min-w-0 rounded-lg border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute"
         />
         <select
           aria-label="新动作重量类型"
           value={newLoadMode}
           onChange={(e) => setNewLoadMode(e.target.value as LoadMode)}
           disabled={creating}
-          className="rounded-lg border border-line bg-raised px-2 py-2 text-sm text-ink disabled:opacity-30"
+          className="min-w-0 rounded-lg border border-line bg-raised px-2 py-2 text-sm text-ink disabled:opacity-30"
         >
           <option value="external">普通负重</option>
           <option value="assistance">辅助重量</option>
