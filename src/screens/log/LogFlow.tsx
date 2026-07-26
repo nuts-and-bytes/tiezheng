@@ -10,7 +10,7 @@ import { track } from '../../lib/analytics';
 import { todayStr } from '../../lib/dates';
 import { vibrate } from '../../lib/platform';
 import { hasOutOfRange, sanitizeSets } from '../../lib/validation';
-import type { BodyPart, Exercise } from '../../lib/types';
+import { loadModeOf, type BodyPart, type Exercise, type LoadMode } from '../../lib/types';
 import { addCustomExercise, getExercisesByIds, listByPart, seedPresets } from '../../repos/exerciseRepo';
 import { commitDraft, listRecentExerciseIds } from '../../repos/workoutRepo';
 import { useLogDraft } from '../../stores/logDraftStore';
@@ -172,6 +172,7 @@ function PickExercises({ onBack, onNext }: { onBack: () => void; onNext: () => v
 
 function PartSection({ part, query }: { part: BodyPart; query: string }) {
   const [newName, setNewName] = useState('');
+  const [newLoadMode, setNewLoadMode] = useState<LoadMode>('external');
   // 门闩：写库期间重入直接返回（ref 保证同 tick 连点也拦得住，ExerciseManager 判例）
   const busyRef = useRef(false);
   const [creating, setCreating] = useState(false);
@@ -194,9 +195,10 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
     busyRef.current = true;
     setCreating(true);
     try {
-      const ex = await addCustomExercise(newName, part);
+      const ex = await addCustomExercise(newName, part, newLoadMode);
       addItem(ex.id);
       setNewName('');
+      setNewLoadMode('external');
     } finally {
       busyRef.current = false;
       setCreating(false);
@@ -245,9 +247,20 @@ function PartSection({ part, query }: { part: BodyPart; query: string }) {
         <input
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
+          disabled={creating}
           placeholder={`新建${info.name}动作…`}
           className="flex-1 rounded-lg border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute"
         />
+        <select
+          aria-label="新动作重量类型"
+          value={newLoadMode}
+          onChange={(e) => setNewLoadMode(e.target.value as LoadMode)}
+          disabled={creating}
+          className="rounded-lg border border-line bg-raised px-2 py-2 text-sm text-ink disabled:opacity-30"
+        >
+          <option value="external">普通负重</option>
+          <option value="assistance">辅助重量</option>
+        </select>
         <button
           type="button"
           disabled={newName.trim() === '' || creating}
@@ -273,33 +286,46 @@ function EditSets({
   const items = useLogDraft((s) => s.items);
   const updateSets = useLogDraft((s) => s.updateSets);
   const removeItem = useLogDraft((s) => s.removeItem);
-  const names = useLiveQuery(
+  const exercises = useLiveQuery(
     () => getExercisesByIds(items.map((i) => i.exerciseId)),
-    [items.length],
+    [items.map((i) => i.exerciseId).join('|')],
   );
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <StepTitle step={3}>记组数</StepTitle>
-      <div className="flex flex-col overflow-y-auto">
-        {items.map((item, index) => (
-          // 一动作一张卡 → 一动作一段：发丝线分隔，重量靠字号/字重立起来
-          <div key={item.exerciseId}>
-            <div className="etch" />
-            <div className="mb-3 flex items-baseline justify-between">
-              <span className="text-xl font-bold tracking-tight">
-                {names?.get(item.exerciseId)?.name ?? '…'}
-              </span>
-              <button type="button" onClick={() => removeItem(index)} className="text-xs text-mute">
-                移除
-              </button>
+      <div
+        role="region"
+        aria-label="动作组数"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-8"
+      >
+        {items.map((item, index) => {
+          const exercise = exercises?.get(item.exerciseId);
+          return (
+            // 一动作一张卡 → 一动作一段：发丝线分隔，重量靠字号/字重立起来
+            <div key={item.exerciseId}>
+              <div className="etch" />
+              <div className="mb-3 flex items-baseline justify-between">
+                <span className="text-xl font-bold tracking-tight">{exercise?.name ?? '…'}</span>
+                <button type="button" onClick={() => removeItem(index)} className="text-xs text-mute">
+                  移除
+                </button>
+              </div>
+              <SetRows
+                sets={item.sets}
+                onChange={(sets) => updateSets(index, sets)}
+                loadMode={exercise ? loadModeOf(exercise) : 'external'}
+              />
             </div>
-            <SetRows sets={item.sets} onChange={(sets) => updateSets(index, sets)} />
-          </div>
-        ))}
+          );
+        })}
       </div>
-      <div className="mt-auto flex gap-3 pt-8">
+      <div
+        role="toolbar"
+        aria-label="记组数操作"
+        className="sticky bottom-0 z-10 -mx-4 flex shrink-0 gap-3 bg-bg px-4 pt-3 pb-[max(env(safe-area-inset-bottom),1rem)]"
+      >
         <button type="button" onClick={onBack} className={`flex-1 ${GHOST}`}>
-          上一步
+          继续添加动作
         </button>
         <button
           type="button"

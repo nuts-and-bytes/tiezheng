@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { db } from '../../lib/db';
@@ -111,7 +111,7 @@ test('记录流端到端主链路：选部位→选动作→记组数→完成�
   expect(workouts[0].date).toBe(todayStr());
   expect(items).toHaveLength(1);
   expect(items[0].exerciseId).toBe('p-bench');
-  // 默认三行中未填的空行不入库（sanitizeSets 丢弃空组）
+  // 默认四行中未填的空行不入库（sanitizeSets 丢弃空组）
   expect(items[0].sets).toEqual([{ weight: 60, reps: 10 }]);
 });
 
@@ -122,6 +122,72 @@ test('草稿有动作时挂载直接恢复到记组数步骤', async () => {
   expect(await screen.findByText('记组数')).toBeInTheDocument();
   expect(screen.queryByText('今天练哪儿？')).toBeNull();
   expect(screen.getByText('完成打卡')).toBeInTheDocument();
+});
+
+test('旧三组草稿恢复后仍只渲染三组，不被四组默认值补齐', async () => {
+  presetDraftAtStep2([{}, {}, {}]);
+  renderFlow();
+
+  expect(await screen.findByText('3 组')).toBeInTheDocument();
+  expect(screen.getAllByPlaceholderText('重量kg')).toHaveLength(3);
+});
+
+test('辅助预设在记组数页使用辅助重量输入与强弱提示', async () => {
+  useLogDraft.setState({
+    active: true,
+    parts: ['chest'],
+    items: [{ exerciseId: 'p-assisted-dip', sets: [{}, {}, {}, {}] }],
+  });
+  renderFlow();
+
+  expect(await screen.findByText('辅助双杠臂屈伸')).toBeInTheDocument();
+  expect(screen.getAllByPlaceholderText('辅助 kg')).toHaveLength(4);
+  expect(screen.getByText('辅助越少，表现越强')).toBeInTheDocument();
+  expect(screen.getByLabelText('第 1 组 辅助重量（公斤）')).toBeInTheDocument();
+});
+
+test('继续添加同部位动作会保留部位、已选动作和输入值，且第二个动作默认四组', async () => {
+  const user = userEvent.setup();
+  renderFlow();
+
+  await user.click(await screen.findByText('胸'));
+  await user.click(screen.getByText('下一步 · 选动作'));
+  await user.click(await screen.findByText('卧推'));
+  await user.click(screen.getByText('下一步 · 记组数（1）'));
+
+  expect(await screen.findAllByPlaceholderText('重量kg')).toHaveLength(4);
+  await user.type(screen.getByLabelText('第 1 组 重量（公斤）'), '60');
+  await user.type(screen.getByLabelText('第 1 组 次数'), '10');
+  await user.click(screen.getByText('继续添加动作'));
+
+  expect(await screen.findByText('选动作')).toBeInTheDocument();
+  expect(screen.getByText('卧推')).toHaveAttribute('aria-pressed', 'true');
+  await user.click(screen.getByText('上斜卧推'));
+  await user.click(screen.getByText('下一步 · 记组数（2）'));
+
+  const weights = await screen.findAllByLabelText('第 1 组 重量（公斤）');
+  const reps = screen.getAllByLabelText('第 1 组 次数');
+  expect(weights).toHaveLength(2);
+  expect(weights[0]).toHaveValue('60');
+  expect(reps[0]).toHaveValue('10');
+  expect(weights[1]).toHaveValue('');
+  expect(screen.getAllByPlaceholderText('重量kg')).toHaveLength(8);
+  expect(useLogDraft.getState()).toMatchObject({ parts: ['chest'] });
+  expect(useLogDraft.getState().items.map((item) => item.sets.length)).toEqual([4, 4]);
+});
+
+test('记组数页用不遮挡内容的安全区 sticky 操作栏承载继续添加和完成打卡', async () => {
+  presetDraftAtStep2();
+  renderFlow();
+
+  const scroller = await screen.findByRole('region', { name: '动作组数' });
+  expect(scroller).toHaveClass('flex-1', 'min-h-0', 'overflow-y-auto', 'pb-8');
+
+  const toolbar = screen.getByRole('toolbar', { name: '记组数操作' });
+  expect(toolbar).toHaveClass('sticky', 'bottom-0', 'shrink-0');
+  expect(toolbar.className).toContain('safe-area-inset-bottom');
+  expect(within(toolbar).getByText('继续添加动作')).toBeInTheDocument();
+  expect(within(toolbar).getByText('完成打卡')).toBeInTheDocument();
 });
 
 test('连点完成打卡只落库一次', async () => {
@@ -181,6 +247,59 @@ test('选动作步骤内新建动作按钮同 tick 双击只产生 1 条记录',
     const customs = (await db.exercises.toArray()).filter((e) => !e.preset);
     expect(customs).toHaveLength(1);
   });
+});
+
+test('新建辅助动作会传递重量类型并真实写入数据库，成功后重置类型', async () => {
+  const user = userEvent.setup();
+  renderFlow();
+
+  await user.click(await screen.findByText('胸'));
+  await user.click(screen.getByText('下一步 · 选动作'));
+  const loadMode = await screen.findByLabelText('新动作重量类型');
+  await user.selectOptions(loadMode, 'assistance');
+  await user.type(screen.getByPlaceholderText('新建胸动作…'), '辅助俯卧撑');
+  await user.click(screen.getByText('新建'));
+
+  await waitFor(async () => {
+    const created = await db.exercises.filter((exercise) => exercise.name === '辅助俯卧撑').first();
+    expect(created?.loadMode).toBe('assistance');
+  });
+  expect(addCustomExercise).toHaveBeenCalledWith('辅助俯卧撑', 'chest', 'assistance');
+  expect(loadMode).toHaveValue('external');
+  expect(screen.getByPlaceholderText('新建胸动作…')).toHaveValue('');
+});
+
+test('新建动作期间名称、类型和按钮全部禁用', async () => {
+  const user = userEvent.setup();
+  let resolveCreate!: (exercise: Awaited<ReturnType<typeof addCustomExercise>>) => void;
+  const pending = new Promise<Awaited<ReturnType<typeof addCustomExercise>>>((resolve) => {
+    resolveCreate = resolve;
+  });
+  vi.mocked(addCustomExercise).mockReturnValueOnce(pending);
+  renderFlow();
+
+  await user.click(await screen.findByText('胸'));
+  await user.click(screen.getByText('下一步 · 选动作'));
+  const name = await screen.findByPlaceholderText('新建胸动作…');
+  const loadMode = screen.getByLabelText('新动作重量类型');
+  const create = screen.getByText('新建');
+  await user.type(name, '等待落库');
+  await user.click(create);
+
+  expect(name).toBeDisabled();
+  expect(loadMode).toBeDisabled();
+  expect(create).toBeDisabled();
+
+  resolveCreate({
+    id: 'custom-pending',
+    name: '等待落库',
+    bodyPart: 'chest',
+    loadMode: 'external',
+    preset: false,
+    updatedAt: Date.now(),
+    deletedAt: null,
+  });
+  await waitFor(() => expect(name).toBeEnabled());
 });
 
 /**

@@ -20,12 +20,12 @@ test('togglePart 选中/取消', () => {
   expect(useLogDraft.getState().parts).toEqual(['leg']);
 });
 
-test('addItem 去重、默认 3 空组；removeItemByExercise 移除', () => {
+test('addItem 去重、新动作默认 4 空组；removeItemByExercise 移除', () => {
   const s = useLogDraft.getState();
   s.addItem('p-bench');
   s.addItem('p-bench');
   expect(useLogDraft.getState().items).toHaveLength(1);
-  expect(useLogDraft.getState().items[0].sets).toEqual([{}, {}, {}]);
+  expect(useLogDraft.getState().items[0].sets).toEqual([{}, {}, {}, {}]);
   s.removeItemByExercise('p-bench');
   expect(useLogDraft.getState().items).toHaveLength(0);
 });

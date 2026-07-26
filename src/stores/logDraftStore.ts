@@ -33,7 +33,7 @@ export const useLogDraft = create<DraftState>()(
         set((s) =>
           s.items.some((i) => i.exerciseId === exerciseId)
             ? s
-            : { items: [...s.items, { exerciseId, sets: [{}, {}, {}] }] },
+            : { items: [...s.items, { exerciseId, sets: [{}, {}, {}, {}] }] },
         ),
       updateSets: (index, sets) =>
         set((s) => ({
