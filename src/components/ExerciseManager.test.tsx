@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PRESET_EXERCISES } from '../data/presetExercises';
 import { db } from '../lib/db';
-import { addCustomExercise, seedPresets } from '../repos/exerciseRepo';
+import { addCustomExercise, seedPresets, setExerciseLoadMode } from '../repos/exerciseRepo';
 import { resetDb } from '../test/dbTestUtils';
 import { ExerciseManager } from './ExerciseManager';
 
@@ -12,6 +12,74 @@ beforeEach(async () => {
   await resetDb();
   vi.clearAllMocks();
   await seedPresets();
+});
+
+async function openManager() {
+  const user = userEvent.setup();
+  render(<ExerciseManager />);
+  await user.click(await screen.findByText('展开'));
+  return user;
+}
+
+test('选择辅助重量后创建并落库，随后重置名称和重量类型', async () => {
+  const user = await openManager();
+  const nameInput = screen.getByPlaceholderText('新建胸动作…');
+  const loadModeSelect = screen.getByLabelText('重量类型');
+
+  await user.type(nameInput, '辅助俯卧撑');
+  await user.selectOptions(loadModeSelect, 'assistance');
+  await user.click(screen.getByText('新建'));
+
+  await waitFor(async () => {
+    const created = await db.exercises.filter((exercise) => exercise.name === '辅助俯卧撑').first();
+    expect(created?.loadMode).toBe('assistance');
+  });
+  expect(addCustomExercise).toHaveBeenCalledWith('辅助俯卧撑', 'chest', 'assistance');
+  expect(nameInput).toHaveValue('');
+  expect(loadModeSelect).toHaveValue('external');
+});
+
+test('历史缺少重量类型的动作显示为普通负重', async () => {
+  const bench = await db.exercises.get('p-bench');
+  if (!bench) throw new Error('测试预置动作不存在');
+  delete bench.loadMode;
+  await db.exercises.put(bench);
+
+  await openManager();
+
+  const row = (await screen.findByText('卧推')).closest('li');
+  expect(row).not.toBeNull();
+  expect(within(row!).getByText('普通负重')).toBeInTheDocument();
+});
+
+test('取消改类型确认时不写库', async () => {
+  const user = await openManager();
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const row = (await screen.findByText('辅助双杠臂屈伸')).closest('li');
+  expect(row).not.toBeNull();
+
+  await user.click(within(row!).getByText('改类型'));
+
+  expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('历史趋势与纪录会重新解释'));
+  expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('原始组数据不变'));
+  expect(setExerciseLoadMode).not.toHaveBeenCalled();
+  expect((await db.exercises.get('p-assisted-dip'))?.loadMode).toBe('assistance');
+});
+
+test('预置动作确认改类型后更新标签和数据库', async () => {
+  const user = await openManager();
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const row = (await screen.findByText('卧推')).closest('li');
+  expect(row).not.toBeNull();
+  expect(within(row!).getByText('预置')).toBeInTheDocument();
+
+  await user.click(within(row!).getByText('改类型'));
+
+  await waitFor(async () => {
+    expect((await db.exercises.get('p-bench'))?.loadMode).toBe('assistance');
+  });
+  expect(setExerciseLoadMode).toHaveBeenCalledWith('p-bench', 'assistance');
+  expect(await within(row!).findByText('辅助重量')).toBeInTheDocument();
 });
 
 test('新建按钮同 tick 双击只产生 1 条记录', async () => {

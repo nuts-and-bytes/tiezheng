@@ -2,8 +2,14 @@ import { useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { BODY_PARTS, bodyPartInfo } from '../data/bodyParts';
 import { db } from '../lib/db';
-import type { BodyPart, Exercise } from '../lib/types';
-import { addCustomExercise, listByPart, removeExercise, renameExercise } from '../repos/exerciseRepo';
+import { loadModeOf, type BodyPart, type Exercise, type LoadMode } from '../lib/types';
+import {
+  addCustomExercise,
+  listByPart,
+  removeExercise,
+  renameExercise,
+  setExerciseLoadMode,
+} from '../repos/exerciseRepo';
 import { PartIcon } from './PartIcon';
 
 /** 「我的」页里的一行设置项：折叠时只是一条细线上的行，展开才长出管理面板 */
@@ -11,6 +17,7 @@ export function ExerciseManager() {
   const [open, setOpen] = useState(false);
   const [part, setPart] = useState<BodyPart>('chest');
   const [newName, setNewName] = useState('');
+  const [newLoadMode, setNewLoadMode] = useState<LoadMode>('external');
   // 门闩：写库期间重入直接返回（ref 保证同 tick 连点也拦得住，LogFlow 判例）
   const busyRef = useRef(false);
   const [creating, setCreating] = useState(false);
@@ -24,8 +31,9 @@ export function ExerciseManager() {
     busyRef.current = true;
     setCreating(true);
     try {
-      await addCustomExercise(newName, part);
+      await addCustomExercise(newName, part, newLoadMode);
       setNewName('');
+      setNewLoadMode('external');
     } finally {
       busyRef.current = false;
       setCreating(false);
@@ -50,6 +58,21 @@ export function ExerciseManager() {
     busyRef.current = true;
     try {
       await removeExercise(ex.id);
+    } finally {
+      busyRef.current = false;
+    }
+  }
+
+  async function changeLoadMode(ex: Exercise) {
+    if (busyRef.current) return;
+    const nextMode: LoadMode = loadModeOf(ex) === 'external' ? 'assistance' : 'external';
+    const nextLabel = nextMode === 'external' ? '普通负重' : '辅助重量';
+    if (!window.confirm(
+      `将「${ex.name}」改为${nextLabel}？历史趋势与纪录会重新解释，原始组数据不变。`,
+    )) return;
+    busyRef.current = true;
+    try {
+      await setExerciseLoadMode(ex.id, nextMode);
     } finally {
       busyRef.current = false;
     }
@@ -116,6 +139,16 @@ export function ExerciseManager() {
                     预置
                   </span>
                 )}
+                <span className="text-xs text-mute">
+                  {loadModeOf(ex) === 'external' ? '普通负重' : '辅助重量'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => changeLoadMode(ex)}
+                  className="px-1 text-xs text-mute active:scale-95"
+                >
+                  改类型
+                </button>
                 {!ex.preset && (
                   <>
                     <button
@@ -144,6 +177,15 @@ export function ExerciseManager() {
               placeholder={`新建${info.name}动作…`}
               className="flex-1 rounded-xl border border-line bg-raised px-3 py-2 text-sm text-ink placeholder:text-mute"
             />
+            <select
+              aria-label="重量类型"
+              value={newLoadMode}
+              onChange={(e) => setNewLoadMode(e.target.value as LoadMode)}
+              className="rounded-xl border border-line bg-raised px-3 py-2 text-sm text-ink"
+            >
+              <option value="external">普通负重</option>
+              <option value="assistance">辅助重量</option>
+            </select>
             <button
               type="button"
               disabled={newName.trim() === '' || creating}
