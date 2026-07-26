@@ -2,6 +2,7 @@ node_modules/
 dist/
 dev-dist/
 .superpowers/
+.worktrees/
 .DS_Store
 
 # 本地环境变量（.env.example 是模板，会进仓库；.env.local 不进）
