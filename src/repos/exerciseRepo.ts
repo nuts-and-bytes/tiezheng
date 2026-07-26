@@ -65,6 +65,10 @@ export async function addCustomExercise(
   return ex;
 }
 
+export async function setExerciseLoadMode(id: string, loadMode: LoadMode): Promise<void> {
+  await db.exercises.update(id, { loadMode, updatedAt: Date.now() });
+}
+
 /** 预置动作不可改名（静默 no-op，UI 对预置隐藏该入口） */
 export async function renameExercise(id: string, name: string): Promise<void> {
   const ex = await db.exercises.get(id);

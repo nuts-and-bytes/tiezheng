@@ -1,5 +1,6 @@
 import { db } from './db';
 import { downloadBlob } from './download';
+import { loadModeOf } from './types';
 
 export function csvEscape(value: string): string {
   // OWASP CSV Injection：前导 = + - @ 会被 Excel/WPS 当公式执行，加单引号中和（先前缀再走引号转义）
@@ -86,7 +87,13 @@ export async function buildJsonExport(): Promise<string> {
       })),
       exercises: allExercises
         .filter((e) => e.deletedAt === null || referenced.has(e.id))
-        .map((e) => ({ id: e.id, name: e.name, bodyPart: e.bodyPart, preset: e.preset })),
+        .map((e) => ({
+          id: e.id,
+          name: e.name,
+          bodyPart: e.bodyPart,
+          loadMode: loadModeOf(e),
+          preset: e.preset,
+        })),
       weightLogs: allWeightLogs
         .filter((l) => l.deletedAt === null)
         .map((l) => ({ id: l.id, date: l.date, weightKg: l.weightKg })),

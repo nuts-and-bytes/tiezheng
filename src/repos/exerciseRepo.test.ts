@@ -2,9 +2,11 @@ import { db } from '../lib/db';
 import { loadModeOf } from '../lib/types';
 import { resetDb } from '../test/dbTestUtils';
 import {
-  addCustomExercise, getExercisesByIds, listByPart, removeExercise, renameExercise, seedPresets,
+  addCustomExercise, getExercisesByIds, listByPart, removeExercise, renameExercise,
+  seedPresets, setExerciseLoadMode,
 } from './exerciseRepo';
 import { PRESET_EXERCISES } from '../data/presetExercises';
+import { addWorkoutItem } from './workoutRepo';
 
 beforeEach(resetDb);
 
@@ -68,6 +70,42 @@ test('自定义动作缺省为普通负重，也可显式创建为辅助重量',
   expect((await db.exercises.get(external.id))?.loadMode).toBe('external');
   expect((await db.exercises.get(assistance.id))?.loadMode).toBe('assistance');
   expect(loadModeOf({})).toBe('external');
+});
+
+test('预置和自定义动作都可修改重量类型，并更新 updatedAt', async () => {
+  await seedPresets();
+  const custom = await addCustomExercise('自定义辅助动作', 'back');
+  await db.exercises.update('p-bench', { updatedAt: 1 });
+  await db.exercises.update(custom.id, { updatedAt: 1 });
+
+  await setExerciseLoadMode('p-bench', 'assistance');
+  await setExerciseLoadMode(custom.id, 'assistance');
+
+  const presetRow = await db.exercises.get('p-bench');
+  const customRow = await db.exercises.get(custom.id);
+  expect(presetRow?.loadMode).toBe('assistance');
+  expect(customRow?.loadMode).toBe('assistance');
+  expect(presetRow?.updatedAt).toBeGreaterThan(1);
+  expect(customRow?.updatedAt).toBeGreaterThan(1);
+});
+
+test('修改动作重量类型不改动真实数据库中的历史 sets', async () => {
+  await seedPresets();
+  const expectedSets = [
+    { weight: 60, reps: 10 },
+    { weight: 65, reps: 8 },
+  ];
+  const item = await addWorkoutItem('2026-07-08', 'p-bench', expectedSets);
+  expect((await db.workoutItems.get(item.id))?.sets).toEqual(expectedSets);
+
+  await setExerciseLoadMode('p-bench', 'assistance');
+
+  expect((await db.workoutItems.get(item.id))?.sets).toEqual(expectedSets);
+});
+
+test('修改不存在动作的重量类型安全 no-op', async () => {
+  await expect(setExerciseLoadMode('missing-exercise', 'assistance')).resolves.toBeUndefined();
+  expect(await db.exercises.get('missing-exercise')).toBeUndefined();
 });
 
 test('seedPresets 并发调用不抛错且仍是 42 条', async () => {

@@ -1,6 +1,7 @@
 import { resetDb } from '../test/dbTestUtils';
 import { addCustomExercise, removeExercise, seedPresets } from '../repos/exerciseRepo';
 import { addWorkoutItem, getDayItems, removeWorkoutItem } from '../repos/workoutRepo';
+import { db } from './db';
 import { buildJsonExport, buildWorkoutCsv, csvEscape } from './exportData';
 
 beforeEach(async () => {
@@ -96,6 +97,23 @@ test('buildJsonExport：软删但历史仍在引用的动作必须导出（引�
   expect(json.exercises.map((e: { name: string }) => e.name)).toContain('自创划船');
 });
 
+test('buildJsonExport：历史动作缺少重量类型时导出 external，辅助动作导出 assistance', async () => {
+  const legacyBench = await db.exercises.get('p-bench');
+  if (!legacyBench) throw new Error('测试预置动作缺失');
+  delete legacyBench.loadMode;
+  await db.exercises.put(legacyBench);
+
+  const json = JSON.parse(await buildJsonExport());
+  const loadModeById = new Map(
+    json.exercises.map((exercise: { id: string; loadMode: string }) => [
+      exercise.id,
+      exercise.loadMode,
+    ]),
+  );
+  expect(loadModeById.get('p-bench')).toBe('external');
+  expect(loadModeById.get('p-assisted-dip')).toBe('assistance');
+});
+
 /**
  * note 是用户的私人文字。它留在**自己的**备份里是对的（数据主权），
  * 但这必须是一个被写下来、被测试钉住的决定，而不是 `...spread` 的副作用 ——
@@ -109,5 +127,7 @@ test('buildJsonExport：导出字段是显式白名单，不是整行 dump', asy
   expect(Object.keys(json.workoutItems[0]).sort()).toEqual([
     'exerciseId', 'id', 'order', 'sets', 'workoutId',
   ]);
-  expect(Object.keys(json.exercises[0]).sort()).toEqual(['bodyPart', 'id', 'name', 'preset']);
+  expect(Object.keys(json.exercises[0]).sort()).toEqual([
+    'bodyPart', 'id', 'loadMode', 'name', 'preset',
+  ]);
 });
