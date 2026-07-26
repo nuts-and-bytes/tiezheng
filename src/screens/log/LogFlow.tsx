@@ -76,9 +76,18 @@ export function LogFlow() {
   if (done) return <DoneScreen moves={done.moves} sets={done.sets} />;
 
   return (
-    <div className="mx-auto flex min-h-dvh max-w-md flex-col px-4 pb-8 pt-[max(env(safe-area-inset-top),16px)]">
-      <header className="mb-6 flex items-center justify-between">
-        <button type="button" onClick={() => nav(-1)} className="py-2 pr-4 text-mute">
+    <main
+      aria-label="记录训练"
+      aria-busy={submitting}
+      className="mx-auto flex h-dvh max-w-md flex-col overflow-hidden px-4 pt-[max(env(safe-area-inset-top),16px)]"
+    >
+      <header className="mb-6 flex shrink-0 items-center justify-between">
+        <button
+          type="button"
+          disabled={submitting}
+          onClick={() => nav(-1)}
+          className="py-2 pr-4 text-mute disabled:opacity-30"
+        >
           关闭
         </button>
         <span className="text-xs text-mute">草稿自动保存</span>
@@ -86,7 +95,7 @@ export function LogFlow() {
       {step === 0 && <PickParts onNext={() => setStep(1)} />}
       {step === 1 && <PickExercises onBack={() => setStep(0)} onNext={() => setStep(2)} />}
       {step === 2 && <EditSets onBack={() => setStep(1)} onFinish={finish} submitting={submitting} />}
-    </div>
+    </main>
   );
 }
 
@@ -94,7 +103,7 @@ function PickParts({ onNext }: { onNext: () => void }) {
   const parts = useLogDraft((s) => s.parts);
   const togglePart = useLogDraft((s) => s.togglePart);
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col pb-[max(env(safe-area-inset-bottom),2rem)]">
       <StepTitle step={1}>今天练哪儿？</StepTitle>
       <div className="etch" />
       {/* 七个部位、两列，除不尽 —— 末位孤零零占半行，剩下的高度全塌成空白，
@@ -145,7 +154,7 @@ function PickExercises({ onBack, onNext }: { onBack: () => void; onNext: () => v
   const parts = useLogDraft((s) => s.parts);
   const itemCount = useLogDraft((s) => s.items.length);
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <StepTitle step={2}>选动作</StepTitle>
       <input
         value={query}
@@ -153,12 +162,16 @@ function PickExercises({ onBack, onNext }: { onBack: () => void; onNext: () => v
         placeholder="搜索动作…"
         className="mt-5 rounded-xl border border-line bg-raised px-4 py-3 text-ink placeholder:text-mute"
       />
-      <div className="flex flex-col overflow-y-auto">
+      <div
+        role="region"
+        aria-label="动作选择列表"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+      >
         {parts.map((part) => (
           <PartSection key={part} part={part} query={query} />
         ))}
       </div>
-      <div className="mt-auto flex gap-3 pt-8">
+      <div className="flex shrink-0 gap-3 pt-8 pb-[max(env(safe-area-inset-bottom),2rem)]">
         <button type="button" onClick={onBack} className={`flex-1 ${GHOST}`}>
           上一步
         </button>
@@ -293,49 +306,55 @@ function EditSets({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <StepTitle step={3}>记组数</StepTitle>
-      <div
-        role="region"
-        aria-label="动作组数"
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-8"
+      <fieldset
+        disabled={submitting}
+        aria-label="编辑训练组"
+        className="m-0 flex min-h-0 min-w-0 flex-1 flex-col border-0 p-0"
       >
-        {items.map((item, index) => {
-          const exercise = exercises?.get(item.exerciseId);
-          return (
-            // 一动作一张卡 → 一动作一段：发丝线分隔，重量靠字号/字重立起来
-            <div key={item.exerciseId}>
-              <div className="etch" />
-              <div className="mb-3 flex items-baseline justify-between">
-                <span className="text-xl font-bold tracking-tight">{exercise?.name ?? '…'}</span>
-                <button type="button" onClick={() => removeItem(index)} className="text-xs text-mute">
-                  移除
-                </button>
-              </div>
-              <SetRows
-                sets={item.sets}
-                onChange={(sets) => updateSets(index, sets)}
-                loadMode={exercise ? loadModeOf(exercise) : 'external'}
-              />
-            </div>
-          );
-        })}
-      </div>
-      <div
-        role="toolbar"
-        aria-label="记组数操作"
-        className="sticky bottom-0 z-10 -mx-4 flex shrink-0 gap-3 bg-bg px-4 pt-3 pb-[max(env(safe-area-inset-bottom),1rem)]"
-      >
-        <button type="button" onClick={onBack} className={`flex-1 ${GHOST}`}>
-          继续添加动作
-        </button>
-        <button
-          type="button"
-          disabled={items.length === 0 || submitting || items.some((i) => hasOutOfRange(i.sets))}
-          onClick={onFinish}
-          className={`flex-[2] ${CTA}`}
+        <div
+          role="region"
+          aria-label="动作组数"
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-8"
         >
-          完成打卡
-        </button>
-      </div>
+          {items.map((item, index) => {
+            const exercise = exercises?.get(item.exerciseId);
+            return (
+              // 一动作一张卡 → 一动作一段：发丝线分隔，重量靠字号/字重立起来
+              <div key={item.exerciseId}>
+                <div className="etch" />
+                <div className="mb-3 flex items-baseline justify-between">
+                  <span className="text-xl font-bold tracking-tight">{exercise?.name ?? '…'}</span>
+                  <button type="button" onClick={() => removeItem(index)} className="text-xs text-mute">
+                    移除
+                  </button>
+                </div>
+                <SetRows
+                  sets={item.sets}
+                  onChange={(sets) => updateSets(index, sets)}
+                  loadMode={exercise ? loadModeOf(exercise) : 'external'}
+                />
+              </div>
+            );
+          })}
+        </div>
+        <div
+          role="toolbar"
+          aria-label="记组数操作"
+          className="-mx-4 flex shrink-0 gap-3 bg-bg px-4 pt-3 pb-[max(env(safe-area-inset-bottom),1rem)]"
+        >
+          <button type="button" disabled={submitting} onClick={onBack} className={`flex-1 ${GHOST}`}>
+            继续添加动作
+          </button>
+          <button
+            type="button"
+            disabled={items.length === 0 || submitting || items.some((i) => hasOutOfRange(i.sets))}
+            onClick={onFinish}
+            className={`flex-[2] ${CTA}`}
+          >
+            完成打卡
+          </button>
+        </div>
+      </fieldset>
     </div>
   );
 }

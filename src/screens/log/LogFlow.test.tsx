@@ -1,15 +1,17 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { db } from '../../lib/db';
 import { todayStr } from '../../lib/dates';
 import { vibrate } from '../../lib/platform';
 import { addCustomExercise, seedPresets } from '../../repos/exerciseRepo';
+import { commitDraft } from '../../repos/workoutRepo';
 import { resetDb } from '../../test/dbTestUtils';
 import { useLogDraft } from '../../stores/logDraftStore';
 import { LogFlow } from './LogFlow';
 
 vi.mock('../../repos/exerciseRepo', { spy: true });
+vi.mock('../../repos/workoutRepo', { spy: true });
 vi.mock('../../lib/platform', { spy: true });
 
 beforeEach(async () => {
@@ -26,6 +28,25 @@ function renderFlow() {
       <LogFlow />
     </MemoryRouter>,
   );
+}
+
+function renderFlowWithHistory() {
+  return render(
+    <MemoryRouter initialEntries={['/before', '/log']} initialIndex={1}>
+      <Routes>
+        <Route path="/before" element={<p>上一页</p>} />
+        <Route path="/log" element={<LogFlow />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }
 
 /** 预置草稿到 step2（记组数）：active 必须为 true，否则挂载时 start() 会清空 */
@@ -69,6 +90,26 @@ test('每个部位按钮都带一枚 PartIcon 图形', async () => {
   for (const btn of partButtons) {
     expect(btn.querySelector('svg')).not.toBeNull();
   }
+});
+
+test('部位和动作选择链路在单视口内可收缩，动作列表独立滚动且底部操作保留安全区', async () => {
+  const user = userEvent.setup();
+  renderFlow();
+
+  const partsStep = (await screen.findByRole('heading', { name: '今天练哪儿？' })).parentElement;
+  expect(partsStep).toHaveClass('min-h-0', 'flex-1');
+  expect(partsStep?.className).toContain('safe-area-inset-bottom');
+
+  await user.click(screen.getByText('胸'));
+  await user.click(screen.getByText('下一步 · 选动作'));
+
+  const exercisesStep = (await screen.findByRole('heading', { name: '选动作' })).parentElement;
+  expect(exercisesStep).toHaveClass('min-h-0', 'flex-1');
+  const exerciseList = screen.getByRole('region', { name: '动作选择列表' });
+  expect(exerciseList).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
+  const footer = screen.getByText('下一步 · 记组数（0）').parentElement;
+  expect(footer).toHaveClass('shrink-0');
+  expect(footer?.className).toContain('safe-area-inset-bottom');
 });
 
 test('记组数步骤用 etch 线分隔，不再一动作一张卡片', async () => {
@@ -176,15 +217,24 @@ test('继续添加同部位动作会保留部位、已选动作和输入值，�
   expect(useLogDraft.getState().items.map((item) => item.sets.length)).toEqual([4, 4]);
 });
 
-test('记组数页用不遮挡内容的安全区 sticky 操作栏承载继续添加和完成打卡', async () => {
+test('记组数页锁定单视口，组列表独立滚动，安全区操作栏是不滚动的底部 footer', async () => {
   presetDraftAtStep2();
   renderFlow();
+
+  const root = await screen.findByRole('main', { name: '记录训练' });
+  expect(root).toHaveClass('h-dvh', 'overflow-hidden', 'flex', 'flex-col');
+  expect(root).not.toHaveClass('min-h-dvh');
+  expect(screen.getByRole('banner')).toHaveClass('shrink-0');
+
+  const editor = screen.getByRole('group', { name: '编辑训练组' });
+  expect(editor).toHaveClass('flex-1', 'min-h-0', 'flex', 'flex-col');
 
   const scroller = await screen.findByRole('region', { name: '动作组数' });
   expect(scroller).toHaveClass('flex-1', 'min-h-0', 'overflow-y-auto', 'pb-8');
 
   const toolbar = screen.getByRole('toolbar', { name: '记组数操作' });
-  expect(toolbar).toHaveClass('sticky', 'bottom-0', 'shrink-0');
+  expect(toolbar).toHaveClass('shrink-0');
+  expect(toolbar).not.toHaveClass('sticky');
   expect(toolbar.className).toContain('safe-area-inset-bottom');
   expect(within(toolbar).getByText('继续添加动作')).toBeInTheDocument();
   expect(within(toolbar).getByText('完成打卡')).toBeInTheDocument();
@@ -203,6 +253,54 @@ test('连点完成打卡只落库一次', async () => {
   const { workouts, items } = await activeWorkoutRows();
   expect(workouts).toHaveLength(1);
   expect(items).toHaveLength(1);
+});
+
+test('提交挂起时冻结关闭、继续添加、移除、组输入和加减组，完成后只提交一次并重置', async () => {
+  const user = userEvent.setup();
+  const pending = deferred<void>();
+  vi.mocked(commitDraft).mockReturnValueOnce(pending.promise);
+  presetDraftAtStep2([{ weight: 60, reps: 10 }, {}, {}, {}]);
+  renderFlowWithHistory();
+
+  const finish = await screen.findByText('完成打卡');
+  fireEvent.click(finish);
+
+  await waitFor(() => expect(commitDraft).toHaveBeenCalledTimes(1));
+  expect(screen.getByRole('main', { name: '记录训练' })).toHaveAttribute('aria-busy', 'true');
+  expect(commitDraft).toHaveBeenCalledWith(
+    [{ exerciseId: 'p-bench', sets: [{ weight: 60, reps: 10 }] }],
+    todayStr(),
+  );
+
+  const close = screen.getByText('关闭');
+  const continueAdding = screen.getByText('继续添加动作');
+  const remove = screen.getByText('移除');
+  const weight = screen.getByLabelText('第 1 组 重量（公斤）');
+  const subtractSet = screen.getByLabelText('减一组');
+  const addSet = screen.getByLabelText('加一组');
+  for (const control of [close, continueAdding, remove, weight, subtractSet, addSet, finish]) {
+    expect(control).toBeDisabled();
+  }
+
+  const before = useLogDraft.getState().items;
+  await user.click(close);
+  await user.click(continueAdding);
+  await user.click(remove);
+  await user.click(subtractSet);
+  await user.click(addSet);
+  await user.type(weight, '9');
+  fireEvent.click(finish);
+
+  expect(screen.queryByText('上一页')).toBeNull();
+  expect(screen.getByText('记组数')).toBeInTheDocument();
+  expect(weight).toHaveValue('60');
+  expect(useLogDraft.getState().items).toEqual(before);
+  expect(commitDraft).toHaveBeenCalledTimes(1);
+
+  pending.resolve();
+  expect(await screen.findByText('已留下铁证')).toBeInTheDocument();
+  expect(useLogDraft.getState()).toMatchObject({ active: false, parts: [], items: [] });
+  expect(commitDraft).toHaveBeenCalledTimes(1);
 });
 
 test('重量支持小数输入（62.5 不被吃成 625）', async () => {
