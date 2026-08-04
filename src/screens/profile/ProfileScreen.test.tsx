@@ -209,6 +209,13 @@ test('导出 CSV 失败时显示错误文案（无 unhandled rejection）', asyn
   expect(await screen.findByText('导出失败，请重试')).toBeInTheDocument();
 });
 
+test('数据导出区域提供 JSON 恢复入口', async () => {
+  renderProfile();
+
+  expect(await screen.findByRole('button', { name: '从 JSON 恢复' })).toBeInTheDocument();
+  expect(screen.getByText('数据主权归你 · 照片仅存本机，不含在导出文件中')).toBeInTheDocument();
+});
+
 test('不再使用废弃别名 card2 / iron2', async () => {
   await seedTraining();
   const { container } = renderProfile();

@@ -14,6 +14,7 @@ import { daysBetween, loadKind, longestStreak, prGroups, totals } from '../../li
 import { getExercisesByIds } from '../../repos/exerciseRepo';
 import { adjustWeeklyGoal, getProfile } from '../../repos/profileRepo';
 import { listAllItems, listAllWorkoutDates } from '../../repos/workoutRepo';
+import { DataRestorePanel } from './DataRestorePanel';
 
 export function ProfileScreen() {
   const navigate = useNavigate();
@@ -294,6 +295,7 @@ export function ProfileScreen() {
             导出 JSON
           </Button>
         </div>
+        <DataRestorePanel />
         {exportError && <p className="mt-2 text-xs text-iron">导出失败，请重试</p>}
       </div>
 
