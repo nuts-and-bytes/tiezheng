@@ -51,7 +51,7 @@ type BackupWeightLog = Pick<WeightLog, 'id' | 'date' | 'weightKg'>;
 type BackupProfile = Pick<Profile, 'id' | 'weeklyGoal' | 'nickname' | 'onboarded'>;
 
 export interface RestoreCandidate {
-  schemaVersion: 0 | 1;
+  schemaVersion: 0 | 1 | 2;
   preview: BackupPreview;
   data: {
     workouts: BackupWorkout[];
@@ -148,7 +148,7 @@ function parseSets(value: unknown, label: string): SetEntry[] {
   });
 }
 
-function schemaVersionOf(source: Record<string, unknown>): 0 | 1 {
+function schemaVersionOf(source: Record<string, unknown>): 0 | 1 | 2 {
   if (source.schemaVersion === undefined) return 0;
   if (!Number.isInteger(source.schemaVersion) || typeof source.schemaVersion !== 'number') {
     invalid('备份版本格式不正确');
@@ -156,7 +156,13 @@ function schemaVersionOf(source: Record<string, unknown>): 0 | 1 {
   if (source.schemaVersion > BACKUP_SCHEMA_VERSION) {
     throw new BackupImportError('future-version', '备份来自更新版本，请先更新铁证');
   }
-  if (source.schemaVersion !== 0 && source.schemaVersion !== 1) invalid('备份版本不受支持');
+  if (
+    source.schemaVersion !== 0 &&
+    source.schemaVersion !== 1 &&
+    source.schemaVersion !== 2
+  ) {
+    invalid('备份版本不受支持');
+  }
   return source.schemaVersion;
 }
 
@@ -207,7 +213,7 @@ function parseBackupValue(value: unknown): RestoreCandidate {
     if (typeof row.bodyPart !== 'string' || !BODY_PARTS.has(row.bodyPart as BodyPart)) {
       invalid('动作部位不正确');
     }
-    if (schemaVersion === 1 && row.loadMode === undefined) {
+    if (schemaVersion >= 1 && row.loadMode === undefined) {
       invalid('新版备份的动作缺少重量类型');
     }
     const loadMode = row.loadMode === undefined ? 'external' : row.loadMode;
@@ -216,8 +222,13 @@ function parseBackupValue(value: unknown): RestoreCandidate {
     }
     if (typeof row.preset !== 'boolean') invalid('动作预设标记不正确');
     if (row.preset && !PRESET_IDS.has(id)) invalid('备份包含未知的系统预设动作');
-    const archived = schemaVersion === 0 ? row.deletedAt !== undefined && row.deletedAt !== null : row.archived;
-    if (typeof archived !== 'boolean') invalid('新版备份的动作缺少归档状态');
+    const archived =
+      schemaVersion === 0
+        ? row.deletedAt !== undefined && row.deletedAt !== null
+        : schemaVersion === 1 && row.archived === undefined
+          ? false
+          : row.archived;
+    if (typeof archived !== 'boolean') invalid('v2 备份的动作缺少归档状态');
     return {
       id,
       name: stringValue(row.name, '动作名称', { max: 100 }),

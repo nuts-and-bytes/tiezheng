@@ -34,7 +34,7 @@
 ```ts
 test('buildJsonExport：顶层声明当前备份格式版本', async () => {
   const json = JSON.parse(await buildJsonExport());
-  expect(json.schemaVersion).toBe(1);
+  expect(json.schemaVersion).toBe(2);
   expect(json.exportedAt).toEqual(expect.any(String));
 });
 ```
@@ -54,7 +54,7 @@ Expected: 新测试因 `schemaVersion` 为 `undefined` 失败；既有导出测�
 在 `src/lib/exportData.ts` 顶部导出版本常量，并放入 JSON 顶层：
 
 ```ts
-export const BACKUP_SCHEMA_VERSION = 1;
+export const BACKUP_SCHEMA_VERSION = 2;
 
 return JSON.stringify(
   {
@@ -194,7 +194,7 @@ export interface BackupPreview {
 }
 
 export interface RestoreCandidate {
-  schemaVersion: 0 | 1;
+  schemaVersion: 0 | 1 | 2;
   preview: BackupPreview;
   data: {
     workouts: Array<Pick<Workout, 'id' | 'date' | 'note'>>;

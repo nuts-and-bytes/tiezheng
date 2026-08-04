@@ -72,14 +72,31 @@ describe('parseBackupFile', () => {
     const backup = legacyBackup();
     const current = {
       ...backup,
-      schemaVersion: 1,
+      schemaVersion: 2,
       exercises: [{ ...backup.exercises[0], loadMode: 'assistance', archived: false }],
     };
 
     const candidate = await parseBackupFile(fileOf(current));
 
-    expect(candidate.schemaVersion).toBe(1);
+    expect(candidate.schemaVersion).toBe(2);
     expect(candidate.data.exercises[0].loadMode).toBe('assistance');
+  });
+
+  test('兼容已发布但缺少 archived 的 v1 备份', async () => {
+    const backup = legacyBackup();
+    const v1 = {
+      ...backup,
+      schemaVersion: 1,
+      exercises: [{ ...backup.exercises[0], loadMode: 'assistance' }],
+    };
+
+    const candidate = await parseBackupFile(fileOf(v1));
+
+    expect(candidate.schemaVersion).toBe(1);
+    expect(candidate.data.exercises[0]).toMatchObject({
+      loadMode: 'assistance',
+      archived: false,
+    });
   });
 
   test('新版备份缺少 loadMode 时拒绝而不是静默降级', async () => {

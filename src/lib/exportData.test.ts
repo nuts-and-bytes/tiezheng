@@ -58,7 +58,7 @@ test('buildJsonExport 含全部表（照片除外）', async () => {
 
 test('buildJsonExport：顶层声明当前备份格式版本', async () => {
   const json = JSON.parse(await buildJsonExport());
-  expect(json.schemaVersion).toBe(1);
+  expect(json.schemaVersion).toBe(2);
   expect(json.exportedAt).toEqual(expect.any(String));
 });
 
