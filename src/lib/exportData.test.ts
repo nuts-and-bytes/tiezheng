@@ -56,6 +56,12 @@ test('buildJsonExport 含全部表（照片除外）', async () => {
   expect(json).not.toHaveProperty('photos');
 });
 
+test('buildJsonExport：顶层声明当前备份格式版本', async () => {
+  const json = JSON.parse(await buildJsonExport());
+  expect(json.schemaVersion).toBe(1);
+  expect(json.exportedAt).toEqual(expect.any(String));
+});
+
 /**
  * 「删除即删除」。软删是实现细节，不是给用户的承诺 —— 他删掉的训练日不该在
  * 他发给教练、传网盘的备份文件里原样复活（还附带 deletedAt 时间戳）。

@@ -2,6 +2,8 @@ import { db } from './db';
 import { downloadBlob } from './download';
 import { loadModeOf } from './types';
 
+export const BACKUP_SCHEMA_VERSION = 1;
+
 export function csvEscape(value: string): string {
   // OWASP CSV Injection：前导 = + - @ 会被 Excel/WPS 当公式执行，加单引号中和（先前缀再走引号转义）
   if (/^[=+\-@]/.test(value)) value = `'${value}`;
@@ -74,6 +76,7 @@ export async function buildJsonExport(): Promise<string> {
 
   return JSON.stringify(
     {
+      schemaVersion: BACKUP_SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
       workouts: allWorkouts
         .filter((w) => w.deletedAt === null)
