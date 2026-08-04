@@ -1,8 +1,16 @@
-import { describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { db } from './db';
 import {
   MAX_BACKUP_BYTES,
   parseBackupFile,
+  restoreBackup,
 } from './importData';
+import { seedPresets } from '../repos/exerciseRepo';
+import { savePhoto } from '../repos/photoRepo';
+import { getProfile, saveProfile } from '../repos/profileRepo';
+import { addWorkoutItem, getDayItems, listAllWorkoutDates } from '../repos/workoutRepo';
+import { setWeight } from '../repos/weightRepo';
+import { resetDb } from '../test/dbTestUtils';
 
 function legacyBackup() {
   return {
@@ -72,6 +80,55 @@ describe('parseBackupFile', () => {
     expect(candidate.data.exercises[0].loadMode).toBe('assistance');
   });
 
+  test('兼容最早期原始行备份，忽略实现字段且不复活软删记录', async () => {
+    const legacy = legacyBackup();
+    const earliest = {
+      ...legacy,
+      workouts: [
+        { ...legacy.workouts[0], updatedAt: 1, deletedAt: null },
+        { id: 'w-deleted', date: '2026-07-17', updatedAt: 1, deletedAt: 2 },
+      ],
+      workoutItems: [
+        { ...legacy.workoutItems[0], updatedAt: 1, deletedAt: null },
+        {
+          id: 'wi-deleted',
+          workoutId: 'w-deleted',
+          exerciseId: 'custom-deleted',
+          order: 0,
+          sets: [{}],
+          updatedAt: 1,
+          deletedAt: 2,
+        },
+      ],
+      exercises: [
+        { ...legacy.exercises[0], updatedAt: 1, deletedAt: null },
+        {
+          id: 'custom-deleted',
+          name: '已删除动作',
+          bodyPart: 'back',
+          preset: false,
+          updatedAt: 1,
+          deletedAt: 2,
+        },
+      ],
+      weightLogs: [
+        { ...legacy.weightLogs[0], updatedAt: 1, deletedAt: null },
+        { id: 'weight-deleted', date: '2026-07-17', weightKg: 73, updatedAt: 1, deletedAt: 2 },
+      ],
+      profile: [{ id: 'me', weeklyGoal: 5, updatedAt: 1 }],
+    };
+
+    const candidate = await parseBackupFile(fileOf(earliest));
+
+    expect(candidate.data.workouts.map((row) => row.id)).toEqual(['w-1']);
+    expect(candidate.data.workoutItems.map((row) => row.id)).toEqual(['wi-1']);
+    expect(candidate.data.exercises.map((row) => row.id)).toEqual(['custom-row']);
+    expect(candidate.data.weightLogs.map((row) => row.id)).toEqual(['weight-1']);
+    expect(candidate.data.profile).toEqual([
+      { id: 'me', weeklyGoal: 5, onboarded: true },
+    ]);
+  });
+
   test('拒绝损坏的 JSON', async () => {
     await expect(parseBackupFile(fileOf('{bad json'))).rejects.toMatchObject({
       code: 'invalid-json',
@@ -120,5 +177,139 @@ describe('parseBackupFile', () => {
     await expect(parseBackupFile(file)).rejects.toMatchObject({
       code: 'file-too-large',
     });
+  });
+});
+
+function twoDayBackup() {
+  const backup = legacyBackup();
+  backup.workouts.push({ id: 'w-2', date: '2026-07-19', note: '胸部日' });
+  backup.workoutItems.push({
+    id: 'wi-2',
+    workoutId: 'w-2',
+    exerciseId: 'p-bench',
+    order: 0,
+    sets: [{ weight: 80, reps: 8 }],
+  });
+  return backup;
+}
+
+async function tableSnapshot() {
+  return {
+    workouts: await db.workouts.toArray(),
+    workoutItems: await db.workoutItems.toArray(),
+    exercises: await db.exercises.toArray(),
+    weightLogs: await db.weightLogs.toArray(),
+    profile: await db.profile.toArray(),
+  };
+}
+
+describe('restoreBackup', () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    await resetDb();
+    await seedPresets();
+  });
+
+  test('安全合并保留独有日期，以备份整体替换冲突日期且不改动照片', async () => {
+    await addWorkoutItem('2026-07-17', 'p-squat', [{ weight: 100, reps: 5 }]);
+    await addWorkoutItem('2026-07-18', 'p-bench', [{ weight: 60, reps: 10 }]);
+    await setWeight('2026-07-17', 73);
+    await setWeight('2026-07-18', 72.8);
+    await savePhoto('2026-07-18', new Blob(['proof'], { type: 'image/jpeg' }));
+    const candidate = await parseBackupFile(fileOf(twoDayBackup()));
+
+    const result = await restoreBackup(candidate, 'merge');
+
+    expect(result).toEqual({ workoutDays: 2 });
+    expect(await listAllWorkoutDates()).toEqual(['2026-07-17', '2026-07-18', '2026-07-19']);
+    const restoredConflictDay = await getDayItems('2026-07-18');
+    expect(restoredConflictDay).toHaveLength(1);
+    expect(restoredConflictDay[0].exercise.name).toBe('自创划船');
+    expect(restoredConflictDay[0].sets).toEqual([{ weight: 40, reps: 12 }, { reps: 10 }]);
+    expect((await db.weightLogs.where('date').equals('2026-07-18').toArray()))
+      .toMatchObject([{ weightKg: 72.5, deletedAt: null }]);
+    expect(await db.photos.count()).toBe(1);
+  });
+
+  test('重复合并同一备份不会制造重复记录', async () => {
+    const candidate = await parseBackupFile(fileOf(twoDayBackup()));
+
+    await restoreBackup(candidate, 'merge');
+    await restoreBackup(candidate, 'merge');
+
+    expect(await db.workouts.count()).toBe(2);
+    expect(await db.workoutItems.count()).toBe(2);
+    expect(await db.weightLogs.count()).toBe(1);
+    expect(await db.exercises.where('id').equals('custom-row').count()).toBe(1);
+  });
+
+  test('旧备份不能把当前系统预设辅助动作降级', async () => {
+    const backup = legacyBackup();
+    const downgradedPreset = {
+      id: 'p-assisted-pullup',
+      name: '旧辅助引体',
+      bodyPart: 'chest',
+      loadMode: 'external',
+      preset: true,
+      ignoredPrivateField: 'legacy',
+    };
+    backup.exercises.push(downgradedPreset);
+    const candidate = await parseBackupFile(fileOf(backup));
+
+    await restoreBackup(candidate, 'merge');
+
+    expect(await db.exercises.get('p-assisted-pullup')).toMatchObject({
+      name: '辅助引体向上',
+      bodyPart: 'back',
+      loadMode: 'assistance',
+      preset: true,
+    });
+  });
+
+  test('完整覆盖只保留备份训练并恢复个人设置，但保留本机照片', async () => {
+    await addWorkoutItem('2026-07-10', 'p-squat', [{ weight: 100, reps: 5 }]);
+    await setWeight('2026-07-10', 74);
+    await savePhoto('2026-07-10', new Blob(['proof'], { type: 'image/jpeg' }));
+    const candidate = await parseBackupFile(fileOf(twoDayBackup()));
+
+    await restoreBackup(candidate, 'replace');
+
+    expect(await listAllWorkoutDates()).toEqual(['2026-07-18', '2026-07-19']);
+    expect(await db.weightLogs.toArray()).toMatchObject([
+      { id: 'weight-1', date: '2026-07-18', weightKg: 72.5, deletedAt: null },
+    ]);
+    expect(await getProfile()).toMatchObject({ weeklyGoal: 4, nickname: '铁人', onboarded: true });
+    expect(await db.exercises.get('p-assisted-pullup')).toMatchObject({
+      loadMode: 'assistance',
+      preset: true,
+    });
+    expect(await db.photos.count()).toBe(1);
+  });
+
+  test('合并旧备份缺少可选个人字段时保留当前值', async () => {
+    await saveProfile({ weeklyGoal: 3, nickname: '当前昵称', onboarded: true });
+    const backup = legacyBackup();
+    backup.profile = [{ id: 'me', weeklyGoal: 5, nickname: '', onboarded: true }];
+    const rawProfile = backup.profile[0] as Record<string, unknown>;
+    delete rawProfile.nickname;
+    const candidate = await parseBackupFile(fileOf(backup));
+
+    await restoreBackup(candidate, 'merge');
+
+    expect(await getProfile()).toMatchObject({ weeklyGoal: 5, nickname: '当前昵称' });
+  });
+
+  test('事务中途失败会回滚全部可恢复表', async () => {
+    await addWorkoutItem('2026-07-10', 'p-squat', [{ weight: 100, reps: 5 }]);
+    await setWeight('2026-07-10', 74);
+    const before = await tableSnapshot();
+    const candidate = await parseBackupFile(fileOf(twoDayBackup()));
+    vi.spyOn(db.workoutItems, 'bulkPut').mockRejectedValueOnce(new Error('boom'));
+
+    await expect(restoreBackup(candidate, 'replace')).rejects.toMatchObject({
+      code: 'restore-failed',
+    });
+
+    expect(await tableSnapshot()).toEqual(before);
   });
 });

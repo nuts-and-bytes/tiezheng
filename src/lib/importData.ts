@@ -1,5 +1,6 @@
 import { PRESET_EXERCISES } from '../data/presetExercises';
 import { parseDate, toDateStr } from './dates';
+import { db, DEFAULT_PROFILE } from './db';
 import { BACKUP_SCHEMA_VERSION } from './exportData';
 import type {
   BodyPart,
@@ -87,6 +88,13 @@ function array(value: unknown, label: string): unknown[] {
   return value;
 }
 
+function activeLegacyRows(value: unknown, label: string): unknown[] {
+  return array(value, label).filter((raw, index) => {
+    const row = record(raw, `${label}第 ${index + 1} 行`);
+    return row.deletedAt === undefined || row.deletedAt === null;
+  });
+}
+
 function stringValue(
   value: unknown,
   label: string,
@@ -156,7 +164,7 @@ function parseBackupValue(value: unknown): RestoreCandidate {
   const exportedAt = stringValue(source.exportedAt, '备份时间', { max: 50 });
   if (!Number.isFinite(Date.parse(exportedAt))) invalid('备份时间不正确');
 
-  const workouts = array(source.workouts, '训练记录').map((raw, index): BackupWorkout => {
+  const workouts = activeLegacyRows(source.workouts, '训练记录').map((raw, index): BackupWorkout => {
     const row = record(raw, `第 ${index + 1} 条训练记录`);
     const note = row.note === undefined ? '' : stringValue(row.note, '训练备注', { empty: true, max: 10_000 });
     return {
@@ -166,7 +174,7 @@ function parseBackupValue(value: unknown): RestoreCandidate {
     };
   });
 
-  const workoutItems = array(source.workoutItems, '训练动作').map(
+  const workoutItems = activeLegacyRows(source.workoutItems, '训练动作').map(
     (raw, index): BackupWorkoutItem => {
       const row = record(raw, `第 ${index + 1} 条训练动作`);
       if (typeof row.order !== 'number' || !Number.isInteger(row.order) || row.order < 0) {
@@ -182,7 +190,16 @@ function parseBackupValue(value: unknown): RestoreCandidate {
     },
   );
 
-  const exercises = array(source.exercises, '动作库').map((raw, index): BackupExercise => {
+  const referencedExerciseIds = new Set(workoutItems.map((item) => item.exerciseId));
+  const exerciseRows = array(source.exercises, '动作库').filter((raw, index) => {
+    const row = record(raw, `动作库第 ${index + 1} 行`);
+    return (
+      row.deletedAt === undefined ||
+      row.deletedAt === null ||
+      (typeof row.id === 'string' && referencedExerciseIds.has(row.id))
+    );
+  });
+  const exercises = exerciseRows.map((raw, index): BackupExercise => {
     const row = record(raw, `第 ${index + 1} 个动作`);
     const id = idValue(row.id, '动作 ID');
     if (typeof row.bodyPart !== 'string' || !BODY_PARTS.has(row.bodyPart as BodyPart)) {
@@ -203,7 +220,7 @@ function parseBackupValue(value: unknown): RestoreCandidate {
     };
   });
 
-  const weightLogs = array(source.weightLogs, '体重记录').map((raw): BackupWeightLog => {
+  const weightLogs = activeLegacyRows(source.weightLogs, '体重记录').map((raw): BackupWeightLog => {
     const row = record(raw, '体重记录');
     if (typeof row.weightKg !== 'number' || !validBodyWeight(row.weightKg)) {
       invalid('体重数值超出范围');
@@ -228,16 +245,17 @@ function parseBackupValue(value: unknown): RestoreCandidate {
     ) {
       invalid('每周目标超出范围');
     }
-    if (typeof row.onboarded !== 'boolean') invalid('引导状态不正确');
-    return {
+    const onboarded = row.onboarded === undefined ? workouts.length > 0 : row.onboarded;
+    if (typeof onboarded !== 'boolean') invalid('引导状态不正确');
+    const result: BackupProfile = {
       id: 'me',
       weeklyGoal: row.weeklyGoal,
-      nickname:
-        row.nickname === undefined
-          ? ''
-          : stringValue(row.nickname, '昵称', { empty: true, max: 50 }),
-      onboarded: row.onboarded,
+      onboarded,
     };
+    if (row.nickname !== undefined) {
+      result.nickname = stringValue(row.nickname, '昵称', { empty: true, max: 50 });
+    }
+    return result;
   });
 
   unique(workouts.map((row) => row.id), '训练 ID');
@@ -294,4 +312,128 @@ export async function parseBackupFile(file: File): Promise<RestoreCandidate> {
   }
 
   return parseBackupValue(raw);
+}
+
+function currentPresetRows(now: number): Exercise[] {
+  return PRESET_EXERCISES.map((exercise) => ({
+    ...exercise,
+    preset: true,
+    updatedAt: now,
+    deletedAt: null,
+  }));
+}
+
+async function deleteWorkoutsMatching(candidate: RestoreCandidate): Promise<void> {
+  const dates = candidate.data.workouts.map((workout) => workout.date);
+  const incomingIds = candidate.data.workouts.map((workout) => workout.id);
+  const dateMatches =
+    dates.length > 0 ? await db.workouts.where('date').anyOf(dates).toArray() : [];
+  const idMatches = incomingIds.length > 0 ? await db.workouts.bulkGet(incomingIds) : [];
+  const ids = [
+    ...new Set([
+      ...dateMatches.map((workout) => workout.id),
+      ...idMatches.flatMap((workout) => (workout ? [workout.id] : [])),
+    ]),
+  ];
+  if (ids.length === 0) return;
+  await db.workoutItems.where('workoutId').anyOf(ids).delete();
+  await db.workouts.bulkDelete(ids);
+}
+
+async function deleteWeightsMatching(candidate: RestoreCandidate): Promise<void> {
+  const dates = candidate.data.weightLogs.map((weight) => weight.date);
+  const ids = candidate.data.weightLogs.map((weight) => weight.id);
+  if (dates.length > 0) await db.weightLogs.where('date').anyOf(dates).delete();
+  if (ids.length > 0) await db.weightLogs.bulkDelete(ids);
+}
+
+async function clearRestorableTables(): Promise<void> {
+  await db.workoutItems.clear();
+  await db.workouts.clear();
+  await db.exercises.clear();
+  await db.weightLogs.clear();
+  await db.profile.clear();
+}
+
+async function applyCandidate(candidate: RestoreCandidate, mode: RestoreMode): Promise<void> {
+  const now = Date.now();
+  await db.exercises.bulkPut(currentPresetRows(now));
+
+  const customExercises: Exercise[] = candidate.data.exercises
+    .filter((exercise) => !PRESET_IDS.has(exercise.id))
+    .map((exercise) => ({
+      ...exercise,
+      preset: false,
+      updatedAt: now,
+      deletedAt: null,
+    }));
+  if (customExercises.length > 0) await db.exercises.bulkPut(customExercises);
+
+  await deleteWorkoutsMatching(candidate);
+  const incomingItemIds = candidate.data.workoutItems.map((item) => item.id);
+  if (incomingItemIds.length > 0) await db.workoutItems.bulkDelete(incomingItemIds);
+
+  const workouts: Workout[] = candidate.data.workouts.map((workout) => ({
+    ...workout,
+    updatedAt: now,
+    deletedAt: null,
+  }));
+  const workoutItems: WorkoutItem[] = candidate.data.workoutItems.map((item) => ({
+    ...item,
+    updatedAt: now,
+    deletedAt: null,
+  }));
+  if (workouts.length > 0) await db.workouts.bulkPut(workouts);
+  if (workoutItems.length > 0) await db.workoutItems.bulkPut(workoutItems);
+
+  await deleteWeightsMatching(candidate);
+  const weights: WeightLog[] = candidate.data.weightLogs.map((weight) => ({
+    ...weight,
+    updatedAt: now,
+    deletedAt: null,
+  }));
+  if (weights.length > 0) await db.weightLogs.bulkPut(weights);
+
+  const backupProfile = candidate.data.profile[0];
+  if (mode === 'replace') {
+    await db.profile.put({
+      ...DEFAULT_PROFILE,
+      ...backupProfile,
+      id: 'me',
+      updatedAt: now,
+    });
+  } else if (backupProfile) {
+    const current = await db.profile.get('me');
+    await db.profile.put({
+      ...DEFAULT_PROFILE,
+      ...current,
+      ...backupProfile,
+      id: 'me',
+      updatedAt: now,
+    });
+  }
+}
+
+export async function restoreBackup(
+  candidate: RestoreCandidate,
+  mode: RestoreMode,
+): Promise<{ workoutDays: number }> {
+  try {
+    await db.transaction(
+      'rw',
+      db.workouts,
+      db.workoutItems,
+      db.exercises,
+      db.weightLogs,
+      db.profile,
+      async () => {
+        if (mode === 'replace') await clearRestorableTables();
+        await applyCandidate(candidate, mode);
+      },
+    );
+    return { workoutDays: candidate.preview.workoutDays };
+  } catch (error) {
+    if (error instanceof BackupImportError) throw error;
+    throw new BackupImportError('restore-failed', '恢复失败，原数据未发生变化');
+  }
 }
