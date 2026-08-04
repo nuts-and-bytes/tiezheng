@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { db } from './db';
+import { buildJsonExport } from './exportData';
 import {
   MAX_BACKUP_BYTES,
   parseBackupFile,
   restoreBackup,
 } from './importData';
-import { seedPresets } from '../repos/exerciseRepo';
+import { addCustomExercise, removeExercise, seedPresets } from '../repos/exerciseRepo';
 import { savePhoto } from '../repos/photoRepo';
 import { getProfile, saveProfile } from '../repos/profileRepo';
 import { addWorkoutItem, getDayItems, listAllWorkoutDates } from '../repos/workoutRepo';
@@ -56,6 +57,7 @@ describe('parseBackupFile', () => {
       bodyPart: 'back',
       loadMode: 'external',
       preset: false,
+      archived: false,
     });
     expect(candidate.preview).toEqual({
       exportedAt: backup.exportedAt,
@@ -71,13 +73,19 @@ describe('parseBackupFile', () => {
     const current = {
       ...backup,
       schemaVersion: 1,
-      exercises: [{ ...backup.exercises[0], loadMode: 'assistance' }],
+      exercises: [{ ...backup.exercises[0], loadMode: 'assistance', archived: false }],
     };
 
     const candidate = await parseBackupFile(fileOf(current));
 
     expect(candidate.schemaVersion).toBe(1);
     expect(candidate.data.exercises[0].loadMode).toBe('assistance');
+  });
+
+  test('新版备份缺少 loadMode 时拒绝而不是静默降级', async () => {
+    await expect(
+      parseBackupFile(fileOf({ ...legacyBackup(), schemaVersion: 1 })),
+    ).rejects.toMatchObject({ code: 'invalid-content' });
   });
 
   test('兼容最早期原始行备份，忽略实现字段且不复活软删记录', async () => {
@@ -243,6 +251,73 @@ describe('restoreBackup', () => {
     expect(await db.exercises.where('id').equals('custom-row').count()).toBe(1);
   });
 
+  test('安全合并拒绝跨日期的训练 ID 碰撞且不改动本机数据', async () => {
+    await db.workouts.add({
+      id: 'w-1',
+      date: '2026-07-17',
+      updatedAt: 1,
+      deletedAt: null,
+    });
+    await db.workoutItems.add({
+      id: 'local-item',
+      workoutId: 'w-1',
+      exerciseId: 'p-squat',
+      order: 0,
+      sets: [{ weight: 100, reps: 5 }],
+      updatedAt: 1,
+      deletedAt: null,
+    });
+    const before = await tableSnapshot();
+    const candidate = await parseBackupFile(fileOf(legacyBackup()));
+
+    await expect(restoreBackup(candidate, 'merge')).rejects.toMatchObject({
+      code: 'invalid-content',
+    });
+    expect(await tableSnapshot()).toEqual(before);
+  });
+
+  test('安全合并拒绝非冲突日期的训练动作 ID 碰撞', async () => {
+    await db.workouts.add({
+      id: 'local-workout',
+      date: '2026-07-17',
+      updatedAt: 1,
+      deletedAt: null,
+    });
+    await db.workoutItems.add({
+      id: 'wi-1',
+      workoutId: 'local-workout',
+      exerciseId: 'p-squat',
+      order: 0,
+      sets: [{ weight: 100, reps: 5 }],
+      updatedAt: 1,
+      deletedAt: null,
+    });
+    const before = await tableSnapshot();
+    const candidate = await parseBackupFile(fileOf(legacyBackup()));
+
+    await expect(restoreBackup(candidate, 'merge')).rejects.toMatchObject({
+      code: 'invalid-content',
+    });
+    expect(await tableSnapshot()).toEqual(before);
+  });
+
+  test('安全合并拒绝非冲突日期的体重 ID 碰撞', async () => {
+    await db.weightLogs.add({
+      id: 'weight-1',
+      date: '2026-07-17',
+      weightKg: 73,
+      updatedAt: 1,
+      deletedAt: null,
+    });
+    const before = await tableSnapshot();
+    const candidate = await parseBackupFile(fileOf(legacyBackup()));
+
+    await expect(restoreBackup(candidate, 'merge')).rejects.toMatchObject({
+      code: 'invalid-content',
+    });
+    expect(await tableSnapshot()).toEqual(before);
+  });
+
   test('旧备份不能把当前系统预设辅助动作降级', async () => {
     const backup = legacyBackup();
     const downgradedPreset = {
@@ -266,6 +341,24 @@ describe('restoreBackup', () => {
     });
   });
 
+  test('导出后恢复仍被历史引用的软删动作，不让它重新出现在动作库', async () => {
+    const exercise = await addCustomExercise('历史自创划船', 'back');
+    await addWorkoutItem('2026-07-16', exercise.id, [{ weight: 40, reps: 12 }]);
+    await removeExercise(exercise.id);
+    const backup = await buildJsonExport();
+    await resetDb();
+    await seedPresets();
+    const candidate = await parseBackupFile(fileOf(backup));
+
+    await restoreBackup(candidate, 'replace');
+
+    expect(await db.exercises.get(exercise.id)).toMatchObject({
+      name: '历史自创划船',
+      deletedAt: expect.any(Number),
+    });
+    expect((await getDayItems('2026-07-16'))[0].exercise.name).toBe('历史自创划船');
+  });
+
   test('完整覆盖只保留备份训练并恢复个人设置，但保留本机照片', async () => {
     await addWorkoutItem('2026-07-10', 'p-squat', [{ weight: 100, reps: 5 }]);
     await setWeight('2026-07-10', 74);
@@ -284,6 +377,16 @@ describe('restoreBackup', () => {
       preset: true,
     });
     expect(await db.photos.count()).toBe(1);
+  });
+
+  test('完整覆盖缺少个人设置的旧备份时，有训练记录就不会重新进入引导', async () => {
+    const backup = legacyBackup();
+    backup.profile = [];
+    const candidate = await parseBackupFile(fileOf(backup));
+
+    await restoreBackup(candidate, 'replace');
+
+    expect(await getProfile()).toMatchObject({ onboarded: true, weeklyGoal: 4 });
   });
 
   test('合并旧备份缺少可选个人字段时保留当前值', async () => {

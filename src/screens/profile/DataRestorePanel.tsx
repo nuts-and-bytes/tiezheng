@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Button } from '../../components/Button';
 import { todayStr } from '../../lib/dates';
 import { buildJsonExport, downloadText } from '../../lib/exportData';
@@ -34,9 +34,15 @@ function PreviewStat({ value, label }: { value: string; label: string }) {
 
 export function DataRestorePanel({ onRestored }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const entryButtonContainerRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
   const [candidate, setCandidate] = useState<RestoreCandidate | null>(null);
+  const [fileName, setFileName] = useState('');
   const [mode, setMode] = useState<RestoreMode>('merge');
   const [confirmReplace, setConfirmReplace] = useState(false);
+  const [backupConfirmed, setBackupConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -44,8 +50,48 @@ export function DataRestorePanel({ onRestored }: Props) {
   function closePreview() {
     if (busy) return;
     setCandidate(null);
+    setFileName('');
     setMode('merge');
     setConfirmReplace(false);
+    setBackupConfirmed(false);
+  }
+
+  useEffect(() => {
+    if (!candidate) return;
+    const active = document.activeElement;
+    const entryButton = entryButtonContainerRef.current?.querySelector('button') ?? null;
+    previousFocusRef.current =
+      active === inputRef.current
+        ? entryButton
+        : active instanceof HTMLElement
+          ? active
+          : entryButton;
+    closeButtonRef.current?.focus();
+    return () => previousFocusRef.current?.focus();
+  }, [candidate]);
+
+  function handleDialogKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === 'Escape' && !busy) {
+      event.preventDefault();
+      closePreview();
+      return;
+    }
+    if (event.key !== 'Tab' || !dialogRef.current) return;
+    const focusable = [
+      ...dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      ),
+    ];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   async function handleFile(event: React.ChangeEvent<HTMLInputElement>) {
@@ -56,10 +102,14 @@ export function DataRestorePanel({ onRestored }: Props) {
     setError(null);
     setSuccess(null);
     setCandidate(null);
+    setFileName('');
     setMode('merge');
     setConfirmReplace(false);
+    setBackupConfirmed(false);
     try {
-      setCandidate(await parseBackupFile(file));
+      const parsed = await parseBackupFile(file);
+      setFileName(file.name);
+      setCandidate(parsed);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -82,6 +132,7 @@ export function DataRestorePanel({ onRestored }: Props) {
           'application/json',
         );
         setConfirmReplace(true);
+        setBackupConfirmed(false);
       } catch {
         setError('无法保存当前数据，未执行覆盖');
       } finally {
@@ -119,14 +170,16 @@ export function DataRestorePanel({ onRestored }: Props) {
         className="hidden"
         onChange={handleFile}
       />
-      <Button
-        variant="tertiary"
-        className="min-h-11 w-full"
-        disabled={busy}
-        onClick={() => inputRef.current?.click()}
-      >
-        {busy && !candidate ? '正在读取…' : '从 JSON 恢复'}
-      </Button>
+      <div ref={entryButtonContainerRef}>
+        <Button
+          variant="tertiary"
+          className="min-h-11 w-full"
+          disabled={busy}
+          onClick={() => inputRef.current?.click()}
+        >
+          {busy && !candidate ? '正在读取…' : '从 JSON 恢复'}
+        </Button>
+      </div>
 
       {error && (
         <p role="alert" className="mt-2 text-xs leading-relaxed text-iron">
@@ -142,9 +195,11 @@ export function DataRestorePanel({ onRestored }: Props) {
       {candidate && (
         <div className="fixed inset-0 z-50 flex items-end bg-black/70 px-3 pt-12 sm:items-center">
           <section
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="restore-title"
+            onKeyDown={handleDialogKeyDown}
             className="mx-auto max-h-[calc(100dvh-3rem)] w-full max-w-md overflow-y-auto rounded-t-2xl border border-line bg-base px-5 pt-5 pb-[calc(env(safe-area-inset-bottom)+20px)] shadow-[0_-18px_60px_rgba(0,0,0,.45)] sm:rounded-2xl sm:pb-5"
           >
             <div className="flex items-start justify-between gap-4">
@@ -155,6 +210,8 @@ export function DataRestorePanel({ onRestored }: Props) {
                 </h2>
               </div>
               <button
+                ref={closeButtonRef}
+                data-ui-control="restore-dialog-close"
                 type="button"
                 aria-label="关闭恢复面板"
                 disabled={busy}
@@ -165,6 +222,7 @@ export function DataRestorePanel({ onRestored }: Props) {
               </button>
             </div>
 
+            <p className="mt-2 truncate text-xs font-semibold text-text">{fileName}</p>
             <p className="mt-2 text-xs text-mute">
               备份于 {new Date(candidate.preview.exportedAt).toLocaleString('zh-CN')}
             </p>
@@ -191,6 +249,7 @@ export function DataRestorePanel({ onRestored }: Props) {
                     onChange={() => {
                       setMode('merge');
                       setConfirmReplace(false);
+                      setBackupConfirmed(false);
                     }}
                     className="accent-current"
                   />
@@ -215,6 +274,7 @@ export function DataRestorePanel({ onRestored }: Props) {
                     onChange={() => {
                       setMode('replace');
                       setConfirmReplace(false);
+                      setBackupConfirmed(false);
                     }}
                     className="accent-current"
                   />
@@ -231,9 +291,18 @@ export function DataRestorePanel({ onRestored }: Props) {
             </p>
 
             {confirmReplace && (
-              <p className="mt-4 rounded-lg border border-iron/60 px-3 py-2.5 text-xs leading-relaxed text-iron">
-                当前数据备份已下载。再次确认后，训练、动作、体重和个人设置将被替换。
-              </p>
+              <div className="mt-4 rounded-lg border border-iron/60 px-3 py-3 text-xs leading-relaxed text-iron">
+                <p>已发起当前数据备份下载。请确认文件已保存，再继续覆盖。</p>
+                <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-2 text-text">
+                  <input
+                    type="checkbox"
+                    checked={backupConfirmed}
+                    onChange={(event) => setBackupConfirmed(event.currentTarget.checked)}
+                    className="size-4 accent-current"
+                  />
+                  <span>我已确认当前备份文件已保存</span>
+                </label>
+              </div>
             )}
 
             <div className="mt-5 flex gap-2">
@@ -248,7 +317,7 @@ export function DataRestorePanel({ onRestored }: Props) {
               <Button
                 variant={mode === 'replace' ? 'secondary' : 'primary'}
                 className={`min-h-11 flex-[1.6] ${confirmReplace ? 'border-iron text-iron' : ''}`}
-                disabled={busy}
+                disabled={busy || (confirmReplace && !backupConfirmed)}
                 onClick={submitRestore}
               >
                 {busy ? '处理中…' : actionLabel}

@@ -101,6 +101,9 @@ test('buildJsonExport：软删但历史仍在引用的动作必须导出（引�
   const json = JSON.parse(await buildJsonExport());
   expect(json.workoutItems).toHaveLength(1);
   expect(json.exercises.map((e: { name: string }) => e.name)).toContain('自创划船');
+  expect(json.exercises.find((e: { id: string }) => e.id === ex.id)).toMatchObject({
+    archived: true,
+  });
 });
 
 test('buildJsonExport：历史动作缺少重量类型时导出 external，辅助动作导出 assistance', async () => {
@@ -134,6 +137,6 @@ test('buildJsonExport：导出字段是显式白名单，不是整行 dump', asy
     'exerciseId', 'id', 'order', 'sets', 'workoutId',
   ]);
   expect(Object.keys(json.exercises[0]).sort()).toEqual([
-    'bodyPart', 'id', 'loadMode', 'name', 'preset',
+    'archived', 'bodyPart', 'id', 'loadMode', 'name', 'preset',
   ]);
 });

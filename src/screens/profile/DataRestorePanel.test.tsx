@@ -62,6 +62,7 @@ test('选择备份后显示统计和两种恢复方式的明确区别', async ()
   await user.upload(input, backupFile());
 
   const dialog = await screen.findByRole('dialog', { name: '恢复数据' });
+  expect(within(dialog).getByText('tiezheng-2026-08-04.json')).toBeInTheDocument();
   expect(within(dialog).getByText('12 天')).toBeInTheDocument();
   expect(within(dialog).getByText('8 个')).toBeInTheDocument();
   expect(within(dialog).getByText('86 组')).toBeInTheDocument();
@@ -110,9 +111,14 @@ test('完整覆盖先下载当前备份，二次确认后才恢复', async () =>
     'application/json',
   );
   expect(restoreBackup).not.toHaveBeenCalled();
-  expect(await screen.findByText(/当前数据备份已下载/)).toBeInTheDocument();
+  expect(await screen.findByText(/已发起当前数据备份下载/)).toBeInTheDocument();
+  const confirmButton = screen.getByRole('button', { name: '确认覆盖' });
+  expect(confirmButton).toBeDisabled();
 
-  await user.click(screen.getByRole('button', { name: '确认覆盖' }));
+  await user.click(screen.getByRole('checkbox', { name: '我已确认当前备份文件已保存' }));
+  expect(confirmButton).toBeEnabled();
+
+  await user.click(confirmButton);
 
   expect(restoreBackup).toHaveBeenCalledWith(candidate, 'replace');
 });
@@ -143,4 +149,19 @@ test('文件错误显示可理解的分类提示', async () => {
 
   expect(await screen.findByText('备份来自更新版本，请先更新铁证')).toBeInTheDocument();
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+
+test('恢复面板打开时接管焦点，Escape 关闭后归还入口', async () => {
+  const user = userEvent.setup();
+  const { input } = renderPanel();
+  const entry = screen.getByRole('button', { name: '从 JSON 恢复' });
+  entry.focus();
+
+  await user.upload(input, backupFile());
+
+  const dialog = await screen.findByRole('dialog', { name: '恢复数据' });
+  expect(within(dialog).getByRole('button', { name: '关闭恢复面板' })).toHaveFocus();
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(entry).toHaveFocus();
 });

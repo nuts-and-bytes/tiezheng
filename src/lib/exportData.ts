@@ -96,6 +96,7 @@ export async function buildJsonExport(): Promise<string> {
           bodyPart: e.bodyPart,
           loadMode: loadModeOf(e),
           preset: e.preset,
+          archived: e.deletedAt !== null,
         })),
       weightLogs: allWeightLogs
         .filter((l) => l.deletedAt === null)

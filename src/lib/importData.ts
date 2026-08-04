@@ -44,7 +44,9 @@ export interface BackupPreview {
 
 type BackupWorkout = Pick<Workout, 'id' | 'date' | 'note'>;
 type BackupWorkoutItem = Pick<WorkoutItem, 'id' | 'workoutId' | 'exerciseId' | 'order' | 'sets'>;
-type BackupExercise = Required<Pick<Exercise, 'id' | 'name' | 'bodyPart' | 'loadMode' | 'preset'>>;
+type BackupExercise = Required<Pick<Exercise, 'id' | 'name' | 'bodyPart' | 'loadMode' | 'preset'>> & {
+  archived: boolean;
+};
 type BackupWeightLog = Pick<WeightLog, 'id' | 'date' | 'weightKg'>;
 type BackupProfile = Pick<Profile, 'id' | 'weeklyGoal' | 'nickname' | 'onboarded'>;
 
@@ -205,18 +207,24 @@ function parseBackupValue(value: unknown): RestoreCandidate {
     if (typeof row.bodyPart !== 'string' || !BODY_PARTS.has(row.bodyPart as BodyPart)) {
       invalid('动作部位不正确');
     }
+    if (schemaVersion === 1 && row.loadMode === undefined) {
+      invalid('新版备份的动作缺少重量类型');
+    }
     const loadMode = row.loadMode === undefined ? 'external' : row.loadMode;
     if (typeof loadMode !== 'string' || !LOAD_MODES.has(loadMode as LoadMode)) {
       invalid('动作重量类型不正确');
     }
     if (typeof row.preset !== 'boolean') invalid('动作预设标记不正确');
     if (row.preset && !PRESET_IDS.has(id)) invalid('备份包含未知的系统预设动作');
+    const archived = schemaVersion === 0 ? row.deletedAt !== undefined && row.deletedAt !== null : row.archived;
+    if (typeof archived !== 'boolean') invalid('新版备份的动作缺少归档状态');
     return {
       id,
       name: stringValue(row.name, '动作名称', { max: 100 }),
       bodyPart: row.bodyPart as BodyPart,
       loadMode: loadMode as LoadMode,
       preset: row.preset,
+      archived,
     };
   });
 
@@ -325,16 +333,9 @@ function currentPresetRows(now: number): Exercise[] {
 
 async function deleteWorkoutsMatching(candidate: RestoreCandidate): Promise<void> {
   const dates = candidate.data.workouts.map((workout) => workout.date);
-  const incomingIds = candidate.data.workouts.map((workout) => workout.id);
   const dateMatches =
     dates.length > 0 ? await db.workouts.where('date').anyOf(dates).toArray() : [];
-  const idMatches = incomingIds.length > 0 ? await db.workouts.bulkGet(incomingIds) : [];
-  const ids = [
-    ...new Set([
-      ...dateMatches.map((workout) => workout.id),
-      ...idMatches.flatMap((workout) => (workout ? [workout.id] : [])),
-    ]),
-  ];
+  const ids = [...new Set(dateMatches.map((workout) => workout.id))];
   if (ids.length === 0) return;
   await db.workoutItems.where('workoutId').anyOf(ids).delete();
   await db.workouts.bulkDelete(ids);
@@ -342,9 +343,50 @@ async function deleteWorkoutsMatching(candidate: RestoreCandidate): Promise<void
 
 async function deleteWeightsMatching(candidate: RestoreCandidate): Promise<void> {
   const dates = candidate.data.weightLogs.map((weight) => weight.date);
-  const ids = candidate.data.weightLogs.map((weight) => weight.id);
   if (dates.length > 0) await db.weightLogs.where('date').anyOf(dates).delete();
-  if (ids.length > 0) await db.weightLogs.bulkDelete(ids);
+}
+
+async function assertMergeIdSafety(candidate: RestoreCandidate): Promise<void> {
+  const workoutDates = new Set(candidate.data.workouts.map((workout) => workout.date));
+  const currentWorkouts = await db.workouts.bulkGet(
+    candidate.data.workouts.map((workout) => workout.id),
+  );
+  if (
+    currentWorkouts.some(
+      (workout) => workout && workout.deletedAt === null && !workoutDates.has(workout.date),
+    )
+  ) {
+    invalid('备份训练 ID 与本机其他日期冲突');
+  }
+
+  const dateMatches =
+    workoutDates.size > 0
+      ? await db.workouts.where('date').anyOf([...workoutDates]).toArray()
+      : [];
+  const replaceableWorkoutIds = new Set(dateMatches.map((workout) => workout.id));
+  const currentItems = await db.workoutItems.bulkGet(
+    candidate.data.workoutItems.map((item) => item.id),
+  );
+  if (
+    currentItems.some(
+      (item) =>
+        item && item.deletedAt === null && !replaceableWorkoutIds.has(item.workoutId),
+    )
+  ) {
+    invalid('备份训练动作 ID 与本机其他日期冲突');
+  }
+
+  const weightDates = new Set(candidate.data.weightLogs.map((weight) => weight.date));
+  const currentWeights = await db.weightLogs.bulkGet(
+    candidate.data.weightLogs.map((weight) => weight.id),
+  );
+  if (
+    currentWeights.some(
+      (weight) => weight && weight.deletedAt === null && !weightDates.has(weight.date),
+    )
+  ) {
+    invalid('备份体重 ID 与本机其他日期冲突');
+  }
 }
 
 async function clearRestorableTables(): Promise<void> {
@@ -357,21 +399,20 @@ async function clearRestorableTables(): Promise<void> {
 
 async function applyCandidate(candidate: RestoreCandidate, mode: RestoreMode): Promise<void> {
   const now = Date.now();
+  if (mode === 'merge') await assertMergeIdSafety(candidate);
   await db.exercises.bulkPut(currentPresetRows(now));
 
   const customExercises: Exercise[] = candidate.data.exercises
     .filter((exercise) => !PRESET_IDS.has(exercise.id))
-    .map((exercise) => ({
+    .map(({ archived, ...exercise }) => ({
       ...exercise,
       preset: false,
       updatedAt: now,
-      deletedAt: null,
+      deletedAt: archived ? now : null,
     }));
   if (customExercises.length > 0) await db.exercises.bulkPut(customExercises);
 
   await deleteWorkoutsMatching(candidate);
-  const incomingItemIds = candidate.data.workoutItems.map((item) => item.id);
-  if (incomingItemIds.length > 0) await db.workoutItems.bulkDelete(incomingItemIds);
 
   const workouts: Workout[] = candidate.data.workouts.map((workout) => ({
     ...workout,
@@ -399,6 +440,7 @@ async function applyCandidate(candidate: RestoreCandidate, mode: RestoreMode): P
     await db.profile.put({
       ...DEFAULT_PROFILE,
       ...backupProfile,
+      onboarded: backupProfile?.onboarded ?? candidate.data.workouts.length > 0,
       id: 'me',
       updatedAt: now,
     });
