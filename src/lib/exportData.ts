@@ -63,13 +63,19 @@ export async function buildWorkoutCsv(): Promise<string> {
  *    而不是 spread 的副作用；否则下一个往 Workout 上加字段的人会静默地把它送出去。
  */
 export async function buildJsonExport(): Promise<string> {
-  const [allWorkouts, allItems, allExercises, allWeightLogs, profileRows] = await Promise.all([
-    db.workouts.toArray(),
-    db.workoutItems.toArray(),
-    db.exercises.toArray(),
-    db.weightLogs.toArray(),
-    db.profile.toArray(),
-  ]);
+  const [allWorkouts, allItems, allExercises, allWeightLogs, profileRows] =
+    await db.transaction(
+      'r',
+      [db.workouts, db.workoutItems, db.exercises, db.weightLogs, db.profile],
+      () =>
+        Promise.all([
+          db.workouts.toArray(),
+          db.workoutItems.toArray(),
+          db.exercises.toArray(),
+          db.weightLogs.toArray(),
+          db.profile.toArray(),
+        ]),
+    );
 
   const items = allItems.filter((i) => i.deletedAt === null);
   const referenced = new Set(items.map((i) => i.exerciseId));
