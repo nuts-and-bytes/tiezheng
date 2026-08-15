@@ -15,6 +15,7 @@ import { getProfile } from '../../repos/profileRepo';
 import { getWeight, setWeight } from '../../repos/weightRepo';
 import { getDayItems, listAllWorkoutDates, type DayItem } from '../../repos/workoutRepo';
 import { useLogDraft } from '../../stores/logDraftStore';
+import { TodayNutritionSummary } from './TodayNutritionSummary';
 
 interface PartGroup {
   part: BodyPart;
@@ -172,6 +173,9 @@ export function TodayScreen() {
         <NavGlyph icon="today" size={22} />
         {hasDraft ? '继续未完成的记录' : trained ? '继续打卡' : '开始今日训练'}
       </Link>
+
+      <div className="etch" />
+      <TodayNutritionSummary />
 
       <div className="etch" />
       <WeightQuickEntry today={today} />

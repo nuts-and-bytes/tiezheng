@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { todayStr } from '../../lib/dates';
@@ -118,6 +118,21 @@ test('存在未完成草稿且今日未练时 CTA 为继续记录', async () => 
   useLogDraft.setState({ active: true, parts: ['chest'], items: [] });
   renderToday();
   expect(await screen.findByText('继续未完成的记录')).toBeInTheDocument();
+});
+
+test('训练、饮食与体重按今日流的顺序出现，只有训练入口是热区', async () => {
+  renderToday();
+
+  const training = await screen.findByRole('link', { name: '开始今日训练' });
+  const nutrition = screen.getByRole('region', { name: '今日饮食' });
+  const weight = screen.getByText('今日体重').closest('section');
+  const healthEntry = within(nutrition).getByRole('link', { name: '进入健康' });
+
+  expect(weight).not.toBeNull();
+  expect(training.compareDocumentPosition(nutrition) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(nutrition.compareDocumentPosition(weight!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(training).toHaveClass('heat');
+  expect(healthEntry).not.toHaveClass('heat');
 });
 
 test('体重超限提示错误', async () => {

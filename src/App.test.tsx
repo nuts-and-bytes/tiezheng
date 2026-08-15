@@ -91,6 +91,23 @@ test('已引导用户直连 #/health 显示全屏健康页，没有底栏', asyn
   }
 });
 
+test('从今日饮食入口进入健康页，且没有底栏', async () => {
+  const user = userEvent.setup();
+  await db.profile.put({ id: 'me', weeklyGoal: 4, onboarded: true, updatedAt: Date.now() });
+  render(<App />);
+
+  const training = await screen.findByRole('link', { name: '开始今日训练' });
+  const healthEntry = screen.getByRole('link', { name: '进入健康' });
+  expect(training).toHaveClass('heat');
+  expect(healthEntry).not.toHaveClass('heat');
+
+  await user.click(healthEntry);
+
+  expect(await screen.findByRole('heading', { name: '健康' })).toBeInTheDocument();
+  expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+  expect(window.location.hash).toBe('#/health');
+});
+
 test('未引导用户直连 #/health 仍被引导门拦截', async () => {
   window.location.hash = '#/health';
   try {
