@@ -1,10 +1,10 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
 import { db } from './lib/db';
 import { seedPresets } from './repos/exerciseRepo';
 import { resetDb } from './test/dbTestUtils';
-import { completeOnboarding } from './test/helpers';
+import { completeOnboarding, reachOnboardingGoal } from './test/helpers';
 
 /**
  * 这个文件只管**引导门与路由**：没引导过的人能不能绕过引导。
@@ -87,6 +87,23 @@ test('走完引导后落库 onboarded 并进入记录流', async () => {
   const profile = await db.profile.get('me');
   expect(profile?.onboarded).toBe(true);
   expect(profile?.weeklyGoal).toBe(4);
+});
+
+test('暂不训练完成引导后进入今日页，且不创建训练', async () => {
+  const user = userEvent.setup();
+  render(<App />);
+
+  await reachOnboardingGoal(user);
+  await user.click(screen.getByRole('button', { name: '暂不训练，先看看' }));
+  await act(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(await screen.findByRole('heading', { name: '今天，留证。' })).toBeInTheDocument();
+  expect(screen.getByRole('navigation')).toBeInTheDocument();
+  expect(window.location.hash).toBe('#/');
+  expect(await db.workouts.count()).toBe(0);
+  expect(await db.profile.get('me')).toMatchObject({ onboarded: true, weeklyGoal: 4 });
 });
 
 test('未知路由回退到今日页（已引导）', async () => {

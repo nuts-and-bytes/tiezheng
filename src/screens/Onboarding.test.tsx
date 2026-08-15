@@ -1,13 +1,37 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { createMemoryRouter, MemoryRouter, RouterProvider, useLocation, useNavigationType } from 'react-router-dom';
 import { Onboarding } from './Onboarding';
+import { track } from '../lib/analytics';
 import { db } from '../lib/db';
+import { useLogDraft } from '../stores/logDraftStore';
 import { resetDb } from '../test/dbTestUtils';
-import { completeOnboarding } from '../test/helpers';
+import { completeOnboarding, reachOnboardingGoal } from '../test/helpers';
+
+vi.mock('../lib/analytics', { spy: true });
+
+class TestRequest {
+  url: string;
+  signal: AbortSignal;
+  method: string;
+  headers: Headers;
+
+  constructor(input: string | URL, init: RequestInit = {}) {
+    this.url = String(input);
+    this.signal = init.signal ?? new AbortController().signal;
+    this.method = init.method ?? 'GET';
+    this.headers = new Headers(init.headers);
+  }
+}
 
 beforeEach(async () => {
+  // react-router 的 data router 用 jsdom AbortSignal 创建 Request；Node 内建 Request 会拒绝该 signal。
+  // 这个最小 Request 只服务无 loader/action 的路由探针。
+  vi.stubGlobal('Request', TestRequest);
   await resetDb();
+  localStorage.clear();
+  useLogDraft.setState({ active: false, parts: [], items: [] });
+  vi.clearAllMocks();
 });
 
 function renderOnboarding() {
@@ -16,6 +40,24 @@ function renderOnboarding() {
       <Onboarding />
     </MemoryRouter>,
   );
+}
+
+function RouteProbe({ name }: { name: string }) {
+  const location = useLocation();
+  const historyAction = useNavigationType();
+  return <output>{`${name}; ${location.pathname}; ${historyAction}`}</output>;
+}
+
+function renderRoutedOnboarding() {
+  const router = createMemoryRouter(
+    [
+      { path: '/onboarding', element: <Onboarding /> },
+      { path: '/', element: <RouteProbe name="今日页探针" /> },
+      { path: '/log', element: <RouteProbe name="记录页探针" /> },
+    ],
+    { initialEntries: ['/onboarding'] },
+  );
+  return { router, ...render(<RouterProvider router={router} />) };
 }
 
 /**
@@ -96,6 +138,7 @@ function enableShare() {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   delete (navigator as { share?: unknown }).share;
   delete (navigator as { canShare?: unknown }).canShare;
   vi.useRealTimers();
@@ -148,10 +191,16 @@ test('周目标默认是 4', async () => {
 
 test('走完四屏落库 onboarded=true 与默认 weeklyGoal=4', async () => {
   const user = userEvent.setup();
-  renderOnboarding();
+  render(
+    <MemoryRouter>
+      <Onboarding />
+      <RouteProbe name="路径探针" />
+    </MemoryRouter>,
+  );
 
   await completeOnboarding(user);
 
+  expect(await screen.findByText('路径探针; /log; PUSH')).toBeInTheDocument();
   const profile = await db.profile.get('me');
   expect(profile?.onboarded).toBe(true);
   expect(profile?.weeklyGoal).toBe(4);
@@ -169,6 +218,44 @@ test('改选周目标 5 后落库的是 5', async () => {
   const profile = await db.profile.get('me');
   expect(profile?.weeklyGoal).toBe(5);
   expect(profile?.onboarded).toBe(true);
+});
+
+test('最后一屏同时提供开始训练与暂不训练的出口', async () => {
+  const user = userEvent.setup();
+  renderOnboarding();
+
+  await reachOnboardingGoal(user);
+
+  expect(screen.getByRole('button', { name: '开始第一次打卡' })).toHaveAttribute('data-variant', 'primary');
+  expect(screen.getByRole('button', { name: '暂不训练，先看看' })).toHaveAttribute('data-variant', 'tertiary');
+});
+
+test('暂不训练会保存目标并 replace 到今日页，不创建训练或草稿', async () => {
+  const user = userEvent.setup();
+  renderRoutedOnboarding();
+
+  await reachOnboardingGoal(user);
+  await user.click(screen.getByRole('button', { name: '5' }));
+  await user.click(screen.getByRole('button', { name: '暂不训练，先看看' }));
+
+  expect(await screen.findByText('今日页探针; /; REPLACE')).toBeInTheDocument();
+  expect(await db.workouts.count()).toBe(0);
+  expect(await db.profile.get('me')).toMatchObject({ onboarded: true, weeklyGoal: 5 });
+  expect(useLogDraft.getState()).toMatchObject({ active: false, parts: [], items: [] });
+  expect(track).toHaveBeenCalledWith('onboarding_done_without_workout');
+});
+
+test('连点暂不训练只保存一次', async () => {
+  const user = userEvent.setup();
+  const spy = vi.spyOn(db.profile, 'put');
+  renderRoutedOnboarding();
+
+  await reachOnboardingGoal(user);
+  const skip = screen.getByRole('button', { name: '暂不训练，先看看' });
+  await Promise.all([user.click(skip), user.click(skip), user.click(skip)]);
+
+  expect(spy).toHaveBeenCalledTimes(1);
+  spy.mockRestore();
 });
 
 test('「跳过」直接跳到最后一屏的周目标', async () => {

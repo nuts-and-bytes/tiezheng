@@ -26,6 +26,12 @@ const HOW_STEPS = [
   { t: '盖钢印', d: '可顺手拍一张，只存本机' },
 ];
 
+interface Completion {
+  destination: '/log' | '/';
+  event: 'onboarding_done' | 'onboarding_done_without_workout';
+  replace?: boolean;
+}
+
 export function Onboarding() {
   const nav = useNavigate();
   const [step, setStep] = useState(0);
@@ -39,7 +45,7 @@ export function Onboarding() {
     setStep(next);
   }
 
-  async function start() {
+  async function complete({ destination, event, replace = false }: Completion) {
     // 门闩：提交期间重入直接返回（ref 保证同 tick 连点也拦得住，LogFlow 判例）。
     // 成功后**不复位** —— 复位会让「点完第一次已落库、第二次点进来」的串行连点再写一遍。
     if (submittingRef.current) return;
@@ -47,8 +53,8 @@ export function Onboarding() {
     try {
       vibrate(18);
       await saveProfile({ weeklyGoal: goal, onboarded: true });
-      track('onboarding_done'); // 只有事件名。每周目标是他的数据，不出境
-      nav('/log');
+      track(event); // 只有事件名。每周目标是他的数据，不出境
+      nav(destination, { replace });
     } catch (err) {
       submittingRef.current = false; // 写失败要允许重试
       throw err;
@@ -141,12 +147,22 @@ export function Onboarding() {
           ))}
         </div>
         <Button
-          onClick={last ? start : () => go(step + 1)}
+          onClick={last ? () => complete({ destination: '/log', event: 'onboarding_done' }) : () => go(step + 1)}
           fullWidth
           className="min-h-14 text-[15px]"
         >
           {CTA_LABELS[step]}
         </Button>
+        {last && (
+          <Button
+            variant="tertiary"
+            onClick={() => complete({ destination: '/', event: 'onboarding_done_without_workout', replace: true })}
+            fullWidth
+            className="mt-2 min-h-11 text-[13px]"
+          >
+            暂不训练，先看看
+          </Button>
+        )}
       </div>
     </div>
   );
