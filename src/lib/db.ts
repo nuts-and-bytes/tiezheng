@@ -1,18 +1,34 @@
 import Dexie, { type EntityTable } from 'dexie';
+import type {
+  Food,
+  Meal,
+  MealEstimate,
+  MealItem,
+  MealPhoto,
+  NutritionPlan,
+} from './nutritionTypes';
 import type { Exercise, Photo, Profile, WeightLog, Workout, WorkoutItem } from './types';
 import { sanitizeSets } from './validation';
 
 /** 单一出处：v3 迁移和 profileRepo 都要它，放在这里避免 repo → db 的反向依赖。 */
 export const DEFAULT_PROFILE: Profile = { id: 'me', weeklyGoal: 4, onboarded: false, updatedAt: 0 };
 
-export const db = new Dexie('tiezheng') as Dexie & {
+export type NutritionDb = Dexie & {
   workouts: EntityTable<Workout, 'id'>;
   workoutItems: EntityTable<WorkoutItem, 'id'>;
   exercises: EntityTable<Exercise, 'id'>;
   weightLogs: EntityTable<WeightLog, 'id'>;
   photos: EntityTable<Photo, 'id'>;
   profile: EntityTable<Profile, 'id'>;
+  nutritionPlans: EntityTable<NutritionPlan, 'id'>;
+  foods: EntityTable<Food, 'id'>;
+  meals: EntityTable<Meal, 'id'>;
+  mealItems: EntityTable<MealItem, 'id'>;
+  mealPhotos: EntityTable<MealPhoto, 'id'>;
+  mealEstimates: EntityTable<MealEstimate, 'id'>;
 };
+
+export const db = new Dexie('tiezheng') as NutritionDb;
 
 db.version(1).stores({
   workouts: 'id, date, updatedAt',
@@ -56,3 +72,20 @@ db.version(3).upgrade(async (tx) => {
     updatedAt: Date.now(),
   });
 });
+
+export const DB_V4_STORES = {
+  workouts: 'id, date, updatedAt',
+  workoutItems: 'id, workoutId, exerciseId, updatedAt',
+  exercises: 'id, bodyPart, updatedAt',
+  weightLogs: 'id, date, updatedAt',
+  photos: 'id, date, updatedAt',
+  profile: 'id',
+  nutritionPlans: 'id, effectiveFrom, updatedAt, deletedAt',
+  foods: 'id, name, updatedAt, deletedAt',
+  meals: 'id, date, slot, [date+slot], updatedAt, deletedAt',
+  mealItems: 'id, mealId, [mealId+order], updatedAt, deletedAt',
+  mealPhotos: 'id, mealId, updatedAt',
+  mealEstimates: 'id, mealId, status, updatedAt',
+} as const;
+
+db.version(4).stores(DB_V4_STORES);

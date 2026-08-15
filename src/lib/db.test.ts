@@ -3,10 +3,26 @@ import { resetDb } from '../test/dbTestUtils';
 
 beforeEach(resetDb);
 
-test('六张表齐全', () => {
+test('十二张表齐全，营养表仅声明必要索引', () => {
   expect(db.tables.map((t) => t.name).sort()).toEqual(
-    ['exercises', 'photos', 'profile', 'weightLogs', 'workoutItems', 'workouts'],
+    [
+      'exercises',
+      'foods',
+      'mealEstimates',
+      'mealItems',
+      'mealPhotos',
+      'meals',
+      'nutritionPlans',
+      'photos',
+      'profile',
+      'weightLogs',
+      'workoutItems',
+      'workouts',
+    ],
   );
+  expect(db.meals.schema.indexes.map((index) => index.name)).toContain('[date+slot]');
+  expect(db.mealItems.schema.indexes.map((index) => index.name)).toContain('[mealId+order]');
+  expect(db.foods.schema.indexes.map((index) => index.name)).not.toContain('preset');
 });
 
 test('写入并读回一条训练', async () => {
