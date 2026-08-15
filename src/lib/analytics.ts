@@ -32,7 +32,12 @@
  */
 
 /** 白名单：能出境的事件，就这几个 */
-export type AnalyticsEvent = 'onboarding_done' | 'workout_logged' | 'poster_exported';
+export type AnalyticsEvent =
+  | 'onboarding_done'
+  | 'onboarding_done_without_workout'
+  | 'workout_logged'
+  | 'poster_exported'
+  | 'health_opened';
 
 /** 白名单：能出境的屏幕名 */
 export type AnalyticsScreen =
@@ -40,6 +45,7 @@ export type AnalyticsScreen =
   | 'calendar'
   | 'stats'
   | 'profile'
+  | 'health'
   | 'log'
   | 'poster'
   | 'day';
@@ -50,6 +56,7 @@ const SCREENS: Record<AnalyticsScreen, { url: string; title: string }> = {
   calendar: { url: '/calendar', title: '日历' },
   stats: { url: '/stats', title: '数据' },
   profile: { url: '/profile', title: '我的' },
+  health: { url: '/health', title: '健康' },
   log: { url: '/log', title: '记录训练' },
   poster: { url: '/poster', title: '海报' },
   day: { url: '/day', title: '训练详情' },
@@ -61,6 +68,7 @@ const BY_SEGMENT: Record<string, AnalyticsScreen> = {
   calendar: 'calendar',
   stats: 'stats',
   profile: 'profile',
+  health: 'health',
   log: 'log',
   poster: 'poster',
   day: 'day',

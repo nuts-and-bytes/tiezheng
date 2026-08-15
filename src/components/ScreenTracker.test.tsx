@@ -30,6 +30,12 @@ test('停在 / 时上报 today', () => {
   expect(trackScreen).toHaveBeenCalledWith('today');
 });
 
+test('停在 /health 时上报 health 白名单屏幕名', () => {
+  at('/health');
+  expect(trackScreen).toHaveBeenCalledWith('health');
+  expect(trackScreen).toHaveBeenCalledTimes(1);
+});
+
 test('认不出的路径不上报 —— 宁可少一条记录，也不把未知字符串发出去', () => {
   at('/nonsense/x');
   expect(trackScreen).not.toHaveBeenCalled();

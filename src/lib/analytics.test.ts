@@ -107,6 +107,16 @@ describe('track', () => {
     expect(spy).toHaveBeenCalledWith('workout_logged');
     expect(spy.mock.calls[0]).toHaveLength(1);
   });
+
+  test('引导跳过与健康入口只发送白名单事件名字面量', () => {
+    const spy = fakeUmami();
+    track('onboarding_done_without_workout');
+    track('health_opened');
+    expect(spy.mock.calls.map(([payload]) => payload)).toEqual([
+      'onboarding_done_without_workout',
+      'health_opened',
+    ]);
+  });
 });
 
 describe('trackScreen', () => {
@@ -198,6 +208,7 @@ describe('screenOf', () => {
     ['/calendar', 'calendar'],
     ['/stats', 'stats'],
     ['/profile', 'profile'],
+    ['/health', 'health'],
     ['/log', 'log'],
     ['/poster', 'poster'],
   ])('%s → %s', (path, screen) => {
