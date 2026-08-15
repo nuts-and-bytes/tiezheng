@@ -143,6 +143,13 @@ test('重复删除已经软删的自定义食物是 no-op，删除时间不漂�
   expect(deleted).toMatchObject({ updatedAt: 200, deletedAt: 200 });
 });
 
+test('Food 持久化边界拒绝不安全写入时间', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(Number.NaN);
+
+  await expect(saveCustomFood('unsafe-clock', customInput)).rejects.toThrow('updatedAt');
+  expect(await db.foods.count()).toBe(0);
+});
+
 test.each(['', '../escape', 'has whitespace', 'a'.repeat(129)])(
   '不安全 operation id %j fail closed',
   async (operationId) => {

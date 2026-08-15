@@ -4,6 +4,7 @@ import {
   normalizeFoodNutrients,
   type FoodNormalizationInput,
 } from '../lib/foodNormalization';
+import { assertFoodSnapshot } from '../lib/foodSnapshotValidation';
 import { operationKey } from '../lib/nutritionIds';
 import { stableJson } from '../lib/stableJson';
 import type { Food, FoodDataType } from '../lib/nutritionTypes';
@@ -187,6 +188,7 @@ function buildCustomFood(id: string, input: SaveCustomFoodInput, now: number): F
 }
 
 export async function seedPresetFoods(): Promise<void> {
+  PRESET_FOODS.forEach(assertFoodSnapshot);
   await db.transaction('rw', db.foods, async () => {
     const existing = await db.foods.bulkGet(PRESET_FOODS.map((food) => food.id));
     const missing = PRESET_FOODS.filter((_food, index) => existing[index] === undefined);
@@ -229,6 +231,7 @@ export async function saveCustomFood(
   const id = `food:custom:${operationKey(operationId)}`;
   return db.transaction('rw', db.foods, async () => {
     const candidate = buildCustomFood(id, input, Date.now());
+    assertFoodSnapshot(candidate);
     const existing = await db.foods.get(id);
     if (existing !== undefined) {
       if (
@@ -254,6 +257,8 @@ export async function removeCustomFood(id: string): Promise<void> {
     if (existing.preset) throw new Error('preset foods cannot be removed');
     if (existing.deletedAt !== null) return;
     const now = Date.now();
-    await db.foods.put({ ...existing, updatedAt: now, deletedAt: now });
+    const tombstone = { ...existing, updatedAt: now, deletedAt: now };
+    assertFoodSnapshot(tombstone);
+    await db.foods.put(tombstone);
   });
 }
