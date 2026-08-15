@@ -7,6 +7,7 @@ import { UpdateToast } from './components/UpdateToast';
 import { TabBar } from './components/TabBar';
 import { CalendarScreen } from './screens/calendar/CalendarScreen';
 import { DayDetailScreen } from './screens/calendar/DayDetailScreen';
+import { HealthScreen } from './screens/health/HealthScreen';
 import { LogFlow } from './screens/log/LogFlow';
 import { PosterScreen } from './screens/poster/PosterScreen';
 import { ProfileScreen } from './screens/profile/ProfileScreen';
@@ -43,6 +44,7 @@ function OnboardingGate() {
         <Route path="/log" element={<LogFlow />} />
         <Route path="/day/:date" element={<DayDetailScreen />} />
         <Route path="/poster" element={<PosterScreen />} />
+        <Route path="/health" element={<HealthScreen />} />
         <Route element={<TabLayout />}>
           <Route path="/" element={<TodayScreen />} />
           <Route path="/calendar" element={<CalendarScreen />} />

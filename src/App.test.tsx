@@ -79,6 +79,29 @@ test('未引导用户直连 #/log 仍被引导门拦截', async () => {
   }
 });
 
+test('已引导用户直连 #/health 显示全屏健康页，没有底栏', async () => {
+  await db.profile.put({ id: 'me', weeklyGoal: 4, onboarded: true, updatedAt: Date.now() });
+  window.location.hash = '#/health';
+  try {
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: '健康' })).toBeInTheDocument();
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+  } finally {
+    window.location.hash = '';
+  }
+});
+
+test('未引导用户直连 #/health 仍被引导门拦截', async () => {
+  window.location.hash = '#/health';
+  try {
+    render(<App />);
+    expect(await screen.findByText('你练过的，都有铁证。')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '健康' })).not.toBeInTheDocument();
+  } finally {
+    window.location.hash = '';
+  }
+});
+
 test('走完引导后落库 onboarded 并进入记录流', async () => {
   const user = userEvent.setup();
   render(<App />);
