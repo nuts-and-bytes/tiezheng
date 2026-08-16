@@ -175,7 +175,7 @@ export function TodayScreen() {
       </Link>
 
       <div className="etch" />
-      <TodayNutritionSummary />
+      <TodayNutritionSummary date={today} />
 
       <div className="etch" />
       <WeightQuickEntry today={today} />

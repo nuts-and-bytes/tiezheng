@@ -140,6 +140,7 @@ test('暂不训练完成引导后进入今日页，且不创建训练', async ()
   });
 
   expect(await screen.findByRole('heading', { name: '今天，留证。' })).toBeInTheDocument();
+  expect(await screen.findByText('记录今天吃了什么')).toBeInTheDocument();
   expect(screen.getByRole('navigation')).toBeInTheDocument();
   expect(window.location.hash).toBe('#/');
   expect(await db.workouts.count()).toBe(0);

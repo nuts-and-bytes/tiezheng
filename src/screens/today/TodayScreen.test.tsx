@@ -1,12 +1,19 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { PRESET_FOODS } from '../../data/presetFoods';
 import { todayStr } from '../../lib/dates';
 import { seedPresets } from '../../repos/exerciseRepo';
+import { saveConfirmedFoodItem } from '../../repos/mealRepo';
 import { addWorkoutItem } from '../../repos/workoutRepo';
 import { resetDb } from '../../test/dbTestUtils';
 import { useLogDraft } from '../../stores/logDraftStore';
 import { TodayScreen } from './TodayScreen';
+
+vi.mock('../../lib/dates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/dates')>();
+  return { ...actual, todayStr: () => '2026-08-14' };
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -133,6 +140,20 @@ test('训练、饮食与体重按今日流的顺序出现，只有训练入口�
   expect(nutrition.compareDocumentPosition(weight!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(training).toHaveClass('heat');
   expect(healthEntry).not.toHaveClass('heat');
+});
+
+test('TodayScreen 把自己计算的显式日期交给实时饮食摘要', async () => {
+  await saveConfirmedFoodItem({
+    operationId: 'today-screen-rice',
+    date: '2026-08-14',
+    slot: 'lunch',
+    food: PRESET_FOODS[0],
+    amount: 150,
+  });
+
+  renderToday();
+
+  expect(await screen.findByText('195 kcal · 4 g 蛋白质')).toBeInTheDocument();
 });
 
 test('体重超限提示错误', async () => {
