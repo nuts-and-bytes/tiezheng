@@ -3,6 +3,12 @@ import { nutritionPlanId } from '../lib/nutritionIds';
 import { assertNutritionPlanSemantics } from '../lib/nutritionPlanValidation';
 import { stableJson } from '../lib/stableJson';
 import type { NutritionPlan } from '../lib/nutritionTypes';
+import { setWeight } from './weightRepo';
+
+export interface NutritionPlanWeightInput {
+  date: string;
+  weightKg: number;
+}
 
 function assertSafeTimestamp(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -33,6 +39,16 @@ export async function saveNutritionPlan(plan: NutritionPlan): Promise<NutritionP
 
     await db.nutritionPlans.put(row);
     return row;
+  });
+}
+
+export async function saveNutritionPlanWithWeight(
+  plan: NutritionPlan,
+  weight: NutritionPlanWeightInput,
+): Promise<NutritionPlan> {
+  return db.transaction('rw', [db.weightLogs, db.nutritionPlans], async () => {
+    await setWeight(weight.date, weight.weightKg);
+    return saveNutritionPlan(plan);
   });
 }
 

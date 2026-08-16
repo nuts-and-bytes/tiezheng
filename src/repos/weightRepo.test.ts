@@ -1,6 +1,6 @@
 import { db } from '../lib/db';
 import { resetDb } from '../test/dbTestUtils';
-import { getWeight, listWeights, removeWeight, setWeight } from './weightRepo';
+import { getLatestWeightOnOrBefore, getWeight, listWeights, removeWeight, setWeight } from './weightRepo';
 
 beforeEach(resetDb);
 
@@ -36,4 +36,16 @@ test('setWeight 并发同日写入仅保留一条活跃记录', async () => {
   const all = await db.weightLogs.toArray();
   const active = all.filter((w) => w.date === '2026-07-08' && w.deletedAt === null);
   expect(active).toHaveLength(1);
+});
+
+test('只取目标日及之前最新的有效体重并保留真实日期', async () => {
+  await setWeight('2026-08-10', 80);
+  await setWeight('2026-08-12', 79.5);
+  await removeWeight('2026-08-12');
+  await setWeight('2026-08-15', 79);
+
+  expect(await getLatestWeightOnOrBefore('2026-08-14')).toMatchObject({
+    date: '2026-08-10',
+    weightKg: 80,
+  });
 });

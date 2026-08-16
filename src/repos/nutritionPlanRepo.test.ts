@@ -3,11 +3,13 @@ import { db } from '../lib/db';
 import { buildNutritionPlan } from '../lib/nutritionPlan';
 import { resetDb } from '../test/dbTestUtils';
 import { nutritionPlanRow } from '../test/nutritionFixtures';
+import { getWeight } from './weightRepo';
 import {
   getEffectiveNutritionPlan,
   listNutritionPlans,
   removeNutritionPlan,
   saveNutritionPlan,
+  saveNutritionPlanWithWeight,
 } from './nutritionPlanRepo';
 
 beforeEach(resetDb);
@@ -96,6 +98,34 @@ test('较旧 updatedAt 不能覆盖同日较新计划', async () => {
   await expect(saveNutritionPlan(validPlan('2026-08-14', 100))).rejects.toThrow('stale');
 
   expect(await db.nutritionPlans.get(newer.id)).toEqual(newer);
+});
+
+test('计划 CAS 失败时同事务手输体重也回滚', async () => {
+  await saveNutritionPlan(validPlan('2026-08-14', 200));
+
+  await expect(
+    saveNutritionPlanWithWeight(validPlan('2026-08-14', 100), {
+      date: '2026-08-14',
+      weightKg: 80,
+    }),
+  ).rejects.toThrow('stale');
+
+  expect(await getWeight('2026-08-14')).toBeUndefined();
+  expect(await db.weightLogs.count()).toBe(0);
+});
+
+test('手输体重与计划在同一事务成功保存', async () => {
+  await expect(
+    saveNutritionPlanWithWeight(validPlan('2026-08-14', 200), {
+      date: '2026-08-14',
+      weightKg: 80,
+    }),
+  ).resolves.toMatchObject({ effectiveFrom: '2026-08-14', updatedAt: 200 });
+
+  expect(await getWeight('2026-08-14')).toMatchObject({
+    date: '2026-08-14',
+    weightKg: 80,
+  });
 });
 
 test('相同 updatedAt 与相同完整语义幂等，不同语义 fail closed', async () => {

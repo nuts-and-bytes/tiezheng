@@ -33,6 +33,13 @@ export async function listWeights(from: string, to: string): Promise<WeightLog[]
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
+export async function getLatestWeightOnOrBefore(date: string): Promise<WeightLog | undefined> {
+  const rows = await db.weightLogs.where('date').belowOrEqual(date).toArray();
+  return rows
+    .filter((row) => row.deletedAt === null)
+    .sort((left, right) => right.date.localeCompare(left.date))[0];
+}
+
 export async function removeWeight(date: string): Promise<void> {
   const existing = await activeByDate(date);
   if (existing) {
