@@ -1,8 +1,9 @@
 import { db } from './db';
 import { downloadBlob } from './download';
+import { serializeNutritionSection } from './nutritionBackup';
 import { loadModeOf } from './types';
 
-export const BACKUP_SCHEMA_VERSION = 2;
+export const BACKUP_SCHEMA_VERSION = 3;
 
 export function csvEscape(value: string): string {
   // OWASP CSV Injection：前导 = + - @ 会被 Excel/WPS 当公式执行，加单引号中和（先前缀再走引号转义）
@@ -63,19 +64,49 @@ export async function buildWorkoutCsv(): Promise<string> {
  *    而不是 spread 的副作用；否则下一个往 Workout 上加字段的人会静默地把它送出去。
  */
 export async function buildJsonExport(): Promise<string> {
-  const [allWorkouts, allItems, allExercises, allWeightLogs, profileRows] =
-    await db.transaction(
-      'r',
-      [db.workouts, db.workoutItems, db.exercises, db.weightLogs, db.profile],
-      () =>
-        Promise.all([
-          db.workouts.toArray(),
-          db.workoutItems.toArray(),
-          db.exercises.toArray(),
-          db.weightLogs.toArray(),
-          db.profile.toArray(),
-        ]),
-    );
+  const [
+    allWorkouts,
+    allItems,
+    allExercises,
+    allWeightLogs,
+    profileRows,
+    allNutritionPlans,
+    allFoods,
+    allMeals,
+    allMealItems,
+  ] = await db.transaction(
+    'r',
+    [
+      db.workouts,
+      db.workoutItems,
+      db.exercises,
+      db.weightLogs,
+      db.profile,
+      db.nutritionPlans,
+      db.foods,
+      db.meals,
+      db.mealItems,
+    ],
+    () =>
+      Promise.all([
+        db.workouts.toArray(),
+        db.workoutItems.toArray(),
+        db.exercises.toArray(),
+        db.weightLogs.toArray(),
+        db.profile.toArray(),
+        db.nutritionPlans.toArray(),
+        db.foods.toArray(),
+        db.meals.toArray(),
+        db.mealItems.toArray(),
+      ]),
+  );
+
+  const nutrition = serializeNutritionSection({
+    nutritionPlans: allNutritionPlans,
+    foods: allFoods,
+    meals: allMeals,
+    mealItems: allMealItems,
+  });
 
   const items = allItems.filter((i) => i.deletedAt === null);
   const referenced = new Set(items.map((i) => i.exerciseId));
@@ -84,6 +115,7 @@ export async function buildJsonExport(): Promise<string> {
     {
       schemaVersion: BACKUP_SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
+      ...nutrition,
       workouts: allWorkouts
         .filter((w) => w.deletedAt === null)
         .map((w) => ({ id: w.id, date: w.date, note: w.note ?? '' })),

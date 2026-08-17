@@ -1,7 +1,20 @@
+import Dexie from 'dexie';
 import { PRESET_EXERCISES } from '../data/presetExercises';
 import { parseDate, toDateStr } from './dates';
 import { db, DEFAULT_PROFILE } from './db';
 import { BACKUP_SCHEMA_VERSION } from './exportData';
+import {
+  parseNutritionSection,
+  type NutritionBackupSection,
+} from './nutritionBackup';
+import {
+  applyNutritionRestore,
+  assertNutritionMergeIdSafety,
+  buildIncomingMealHashes,
+  calculateNutritionRestorePlan,
+  type NutritionRestorePlan,
+} from './nutritionRestore';
+import { stableJson } from './stableJson';
 import type {
   BodyPart,
   Exercise,
@@ -22,6 +35,9 @@ export type BackupErrorCode =
   | 'invalid-json'
   | 'future-version'
   | 'invalid-content'
+  | 'restore-preview-stale'
+  | 'photo-confirmation-required'
+  | 'draft-confirmation-required'
   | 'restore-failed';
 
 export class BackupImportError extends Error {
@@ -40,6 +56,10 @@ export interface BackupPreview {
   exercises: number;
   sets: number;
   weightLogs: number;
+  nutritionPlans: number;
+  nutritionDays: number;
+  meals: number;
+  mealItems: number;
 }
 
 type BackupWorkout = Pick<Workout, 'id' | 'date' | 'note'>;
@@ -51,7 +71,7 @@ type BackupWeightLog = Pick<WeightLog, 'id' | 'date' | 'weightKg'>;
 type BackupProfile = Pick<Profile, 'id' | 'weeklyGoal' | 'nickname' | 'onboarded'>;
 
 export interface RestoreCandidate {
-  schemaVersion: 0 | 1 | 2;
+  schemaVersion: 0 | 1 | 2 | 3;
   preview: BackupPreview;
   data: {
     workouts: BackupWorkout[];
@@ -59,7 +79,19 @@ export interface RestoreCandidate {
     exercises: BackupExercise[];
     weightLogs: BackupWeightLog[];
     profile: BackupProfile[];
-  };
+  } & NutritionBackupSection;
+}
+
+export interface ModeRestorePreview extends BackupPreview {
+  fingerprint: string;
+  mealPhotosToDelete: number;
+  mealEstimatesToDiscard: number;
+}
+
+export interface RestoreApproval {
+  previewFingerprint: string;
+  allowPhotoDeletion: boolean;
+  allowEstimateDiscard: boolean;
 }
 
 const BODY_PARTS = new Set<BodyPart>([
@@ -148,7 +180,7 @@ function parseSets(value: unknown, label: string): SetEntry[] {
   });
 }
 
-function schemaVersionOf(source: Record<string, unknown>): 0 | 1 | 2 {
+function schemaVersionOf(source: Record<string, unknown>): 0 | 1 | 2 | 3 {
   if (source.schemaVersion === undefined) return 0;
   if (!Number.isInteger(source.schemaVersion) || typeof source.schemaVersion !== 'number') {
     invalid('备份版本格式不正确');
@@ -159,7 +191,8 @@ function schemaVersionOf(source: Record<string, unknown>): 0 | 1 | 2 {
   if (
     source.schemaVersion !== 0 &&
     source.schemaVersion !== 1 &&
-    source.schemaVersion !== 2
+    source.schemaVersion !== 2 &&
+    source.schemaVersion !== 3
   ) {
     invalid('备份版本不受支持');
   }
@@ -296,6 +329,15 @@ function parseBackupValue(value: unknown): RestoreCandidate {
     invalid('训练记录缺少动作明细');
   }
 
+  const parsedNutrition = parseNutritionSection(source, schemaVersion, invalid);
+  const nutrition: NutritionBackupSection = {
+    nutritionPlans: [...parsedNutrition.nutritionPlans],
+    foods: [...parsedNutrition.foods],
+    meals: [...parsedNutrition.meals],
+    mealItems: [...parsedNutrition.mealItems],
+  };
+  const nutritionDays = new Set(nutrition.meals.map((meal) => meal.date)).size;
+
   return {
     schemaVersion,
     preview: {
@@ -304,8 +346,12 @@ function parseBackupValue(value: unknown): RestoreCandidate {
       exercises: exercises.length,
       sets: workoutItems.reduce((sum, item) => sum + item.sets.length, 0),
       weightLogs: weightLogs.length,
+      nutritionPlans: nutrition.nutritionPlans.length,
+      nutritionDays,
+      meals: nutrition.meals.length,
+      mealItems: nutrition.mealItems.length,
     },
-    data: { workouts, workoutItems, exercises, weightLogs, profile },
+    data: { workouts, workoutItems, exercises, weightLogs, profile, ...nutrition },
   };
 }
 
@@ -410,7 +456,6 @@ async function clearRestorableTables(): Promise<void> {
 
 async function applyCandidate(candidate: RestoreCandidate, mode: RestoreMode): Promise<void> {
   const now = Date.now();
-  if (mode === 'merge') await assertMergeIdSafety(candidate);
   await db.exercises.bulkPut(currentPresetRows(now));
 
   const customExercises: Exercise[] = candidate.data.exercises
@@ -467,24 +512,187 @@ async function applyCandidate(candidate: RestoreCandidate, mode: RestoreMode): P
   }
 }
 
+interface CalculatedRestoreApprovalPlan {
+  fingerprint: string;
+  nutritionPlan: NutritionRestorePlan;
+}
+
+const restoreTables = () => [
+  db.workouts,
+  db.workoutItems,
+  db.exercises,
+  db.weightLogs,
+  db.profile,
+  db.nutritionPlans,
+  db.foods,
+  db.meals,
+  db.mealItems,
+  db.mealPhotos,
+  db.mealEstimates,
+] as const;
+
+function sortedById<T extends { id: string }>(rows: T[]): T[] {
+  return [...rows].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function hex(bytes: ArrayBuffer): string {
+  return Array.from(
+    new Uint8Array(bytes),
+    (byte) => byte.toString(16).padStart(2, '0'),
+  ).join('');
+}
+
+async function thumbnailFingerprint(thumbnail: Blob) {
+  const sha256 = await Dexie.waitFor((async () => {
+    const bytes = await thumbnail.arrayBuffer();
+    return hex(await crypto.subtle.digest('SHA-256', bytes));
+  })());
+  return { type: thumbnail.type, size: thumbnail.size, sha256 };
+}
+
+async function snapshotRestoreLocalState() {
+  const [
+    workouts,
+    workoutItems,
+    exercises,
+    weightLogs,
+    profile,
+    nutritionPlans,
+    foods,
+    meals,
+    mealItems,
+    mealPhotos,
+    mealEstimates,
+  ] = await Promise.all([
+    db.workouts.toArray(),
+    db.workoutItems.toArray(),
+    db.exercises.toArray(),
+    db.weightLogs.toArray(),
+    db.profile.toArray(),
+    db.nutritionPlans.toArray(),
+    db.foods.toArray(),
+    db.meals.toArray(),
+    db.mealItems.toArray(),
+    db.mealPhotos.toArray(),
+    db.mealEstimates.toArray(),
+  ]);
+  const mealPhotoRows = await Promise.all(mealPhotos.map(async ({ thumbnail, ...row }) => ({
+    ...row,
+    thumbnail: await thumbnailFingerprint(thumbnail),
+  })));
+  return {
+    workouts: sortedById(workouts),
+    workoutItems: sortedById(workoutItems),
+    exercises: sortedById(exercises),
+    weightLogs: sortedById(weightLogs),
+    profile: sortedById(profile),
+    nutritionPlans: sortedById(nutritionPlans),
+    foods: sortedById(foods),
+    meals: sortedById(meals),
+    mealItems: sortedById(mealItems),
+    mealPhotos: sortedById(mealPhotoRows),
+    mealEstimates: sortedById(mealEstimates),
+  };
+}
+
+async function calculateRestoreApprovalPlan(
+  candidate: RestoreCandidate,
+  mode: RestoreMode,
+  hashes: Map<string, string>,
+): Promise<CalculatedRestoreApprovalPlan> {
+  const nutritionPlan = await calculateNutritionRestorePlan(candidate.data, mode, hashes);
+  const localState = await snapshotRestoreLocalState();
+  return {
+    fingerprint: stableJson({
+      version: 'restore-preview-v2',
+      mode,
+      candidate: candidate.data,
+      nutritionFingerprint: nutritionPlan.fingerprint,
+      localState,
+    }),
+    nutritionPlan,
+  };
+}
+
+export async function previewRestore(
+  candidate: RestoreCandidate,
+  mode: RestoreMode,
+): Promise<ModeRestorePreview> {
+  const candidateSnapshot = structuredClone(candidate);
+  const hashes = await buildIncomingMealHashes(candidateSnapshot.data);
+  return db.transaction('r', restoreTables(), async () => {
+    const plan = await calculateRestoreApprovalPlan(candidateSnapshot, mode, hashes);
+    return {
+      ...candidateSnapshot.preview,
+      fingerprint: plan.fingerprint,
+      mealPhotosToDelete: plan.nutritionPlan.photoIdsToDelete.length,
+      mealEstimatesToDiscard: plan.nutritionPlan.estimateIdsToDelete.length,
+    };
+  });
+}
+
 export async function restoreBackup(
   candidate: RestoreCandidate,
   mode: RestoreMode,
-): Promise<{ workoutDays: number }> {
+  approval: RestoreApproval,
+): Promise<{ workoutDays: number; nutritionDays: number }> {
+  const candidateSnapshot = structuredClone(candidate);
+  const approvalSnapshot = { ...approval };
+  const hashes = await buildIncomingMealHashes(candidateSnapshot.data);
   try {
     await db.transaction(
       'rw',
-      db.workouts,
-      db.workoutItems,
-      db.exercises,
-      db.weightLogs,
-      db.profile,
+      [
+        db.workouts,
+        db.workoutItems,
+        db.exercises,
+        db.weightLogs,
+        db.profile,
+        db.nutritionPlans,
+        db.foods,
+        db.meals,
+        db.mealItems,
+        db.mealPhotos,
+        db.mealEstimates,
+      ],
       async () => {
+        const restorePlan = await calculateRestoreApprovalPlan(candidateSnapshot, mode, hashes);
+        const { nutritionPlan } = restorePlan;
+        if (restorePlan.fingerprint !== approvalSnapshot.previewFingerprint) {
+          throw new BackupImportError(
+            'restore-preview-stale',
+            '本机数据在预览后发生变化，请重新确认恢复影响',
+          );
+        }
+        if (nutritionPlan.photoIdsToDelete.length > 0 && !approvalSnapshot.allowPhotoDeletion) {
+          throw new BackupImportError(
+            'photo-confirmation-required',
+            '需要先确认删除冲突的本机餐食缩略图',
+          );
+        }
+        if (
+          nutritionPlan.estimateIdsToDelete.length > 0
+          && !approvalSnapshot.allowEstimateDiscard
+        ) {
+          throw new BackupImportError(
+            'draft-confirmation-required',
+            '需要先确认丢弃未保存的食物识别候选',
+          );
+        }
+
+        if (mode === 'merge') {
+          await assertMergeIdSafety(candidateSnapshot);
+        }
+        await assertNutritionMergeIdSafety(candidateSnapshot.data, mode, invalid);
         if (mode === 'replace') await clearRestorableTables();
-        await applyCandidate(candidate, mode);
+        await applyCandidate(candidateSnapshot, mode);
+        await applyNutritionRestore(candidateSnapshot.data, mode, nutritionPlan, Date.now());
       },
     );
-    return { workoutDays: candidate.preview.workoutDays };
+    return {
+      workoutDays: candidateSnapshot.preview.workoutDays,
+      nutritionDays: candidateSnapshot.preview.nutritionDays,
+    };
   } catch (error) {
     if (error instanceof BackupImportError) throw error;
     throw new BackupImportError('restore-failed', '恢复失败，原数据未发生变化');

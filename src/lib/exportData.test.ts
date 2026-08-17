@@ -1,7 +1,17 @@
+import Dexie from 'dexie';
 import { resetDb } from '../test/dbTestUtils';
+import {
+  customFoodRow,
+  mealEstimateRow,
+  mealItemRow,
+  mealPhotoRow,
+  mealRow,
+  nutritionPlanRow,
+  presetFoodRow,
+} from '../test/nutritionBackupFixtures';
 import { addCustomExercise, removeExercise, seedPresets } from '../repos/exerciseRepo';
 import { addWorkoutItem, getDayItems, removeWorkoutItem } from '../repos/workoutRepo';
-import { db } from './db';
+import { DB_V4_STORES, db, type NutritionDb } from './db';
 import { buildJsonExport, buildWorkoutCsv, csvEscape } from './exportData';
 
 beforeEach(async () => {
@@ -56,13 +66,13 @@ test('buildJsonExport 含全部表（照片除外）', async () => {
   expect(json).not.toHaveProperty('photos');
 });
 
-test('buildJsonExport：顶层声明当前备份格式版本', async () => {
+test('buildJsonExport：顶层声明备份格式 v3', async () => {
   const json = JSON.parse(await buildJsonExport());
-  expect(json.schemaVersion).toBe(2);
+  expect(json.schemaVersion).toBe(3);
   expect(json.exportedAt).toEqual(expect.any(String));
 });
 
-test('buildJsonExport：在单个只读事务中读取全部可恢复表', async () => {
+test('buildJsonExport：一个只读事务读取全部九张可恢复表', async () => {
   const transaction = vi.spyOn(db, 'transaction');
 
   await buildJsonExport();
@@ -75,7 +85,157 @@ test('buildJsonExport：在单个只读事务中读取全部可恢复表', async
     db.exercises,
     db.weightLogs,
     db.profile,
+    db.nutritionPlans,
+    db.foods,
+    db.meals,
+    db.mealItems,
   ]);
+});
+
+test('buildJsonExport：含营养白名单但排除图片、候选、临时状态和内置目录资产', async () => {
+  const privateDataUrl = 'data:image/png;base64,cHJpdmF0ZQ==';
+  const customFood = Object.assign(customFoodRow(), { imageAsset: privateDataUrl });
+  const presetFood = Object.assign(presetFoodRow(), { imageAsset: privateDataUrl });
+  const estimate = {
+    ...mealEstimateRow(),
+    requestId: 'request:private',
+    requestFingerprint: privateDataUrl,
+    candidates: [
+      {
+        id: 'candidate:private',
+        name: '候选食物',
+        preparation: '未知',
+        amountLow: 1,
+        amountHigh: 2,
+        unit: 'g' as const,
+        catalogFoodId: null,
+      },
+    ],
+    consent: {
+      uploadBlobSha256: 'a'.repeat(64),
+      requestId: 'request:private',
+      providerPolicyVersion: 'private-policy',
+      consentedAt: 1,
+      expiresAt: 2,
+    },
+  };
+
+  await db.nutritionPlans.add(nutritionPlanRow());
+  await db.foods.bulkAdd([customFood, presetFood]);
+  await db.meals.add(mealRow());
+  await db.mealItems.add(mealItemRow());
+  await db.photos.add({
+    id: 'body-photo:private',
+    date: '2026-08-14',
+    blob: new Blob(['private-body-image']),
+    size: 18,
+    updatedAt: 1,
+    deletedAt: null,
+  });
+  await db.mealPhotos.add(mealPhotoRow(new Blob(['private-meal-image'])));
+  await db.mealEstimates.add(estimate);
+
+  const exported = await buildJsonExport();
+  const json = JSON.parse(exported);
+
+  expect(json.nutritionPlans).toHaveLength(1);
+  expect(json.foods.map((row: { id: string }) => row.id)).toEqual([
+    'food:custom:tofu-bowl',
+  ]);
+  expect(json.foods[0]).not.toHaveProperty('imageAsset');
+  expect(json.meals).toHaveLength(1);
+  expect(json.mealItems).toHaveLength(1);
+  expect(json).not.toHaveProperty('bodyPhotos');
+  expect(json).not.toHaveProperty('photos');
+  expect(json).not.toHaveProperty('mealPhotos');
+  expect(json).not.toHaveProperty('mealEstimates');
+  expect(exported).not.toMatch(/Blob|base64|data:image|private-(?:body|meal)-image/);
+});
+
+test('buildJsonExport：九表快照不会被第二连接的中途写入撕裂', async () => {
+  const beforeFood = { ...customFoodRow(), name: '写入前食物' };
+  const afterFood = { ...beforeFood, name: '写入后食物', updatedAt: 2 };
+  const beforeProfile = {
+    id: 'me',
+    weeklyGoal: 4,
+    nickname: '写入前昵称',
+    onboarded: true,
+    updatedAt: 1,
+  };
+  const afterProfile = { ...beforeProfile, nickname: '写入后昵称', updatedAt: 2 };
+  await db.profile.put(beforeProfile);
+  await db.foods.put(beforeFood);
+
+  const second = new Dexie('tiezheng') as NutritionDb;
+  second.version(4).stores(DB_V4_STORES);
+  await second.open();
+
+  let writePromise: Promise<void> | undefined;
+  let exportSettled = false;
+  let writeObservedExportSettled: boolean | undefined;
+  let gateOutcome: 'written' | 'timeout' | undefined;
+  const waitForWrite = (timeoutMs: number): Promise<'written' | 'timeout'> => {
+    if (writePromise === undefined) throw new Error('测试写入尚未启动');
+    const pending = writePromise;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => resolve('timeout'), timeoutMs);
+      pending.then(
+        () => {
+          clearTimeout(timeout);
+          resolve('written');
+        },
+        (error: unknown) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      );
+    });
+  };
+
+  const nutritionPlansToArray = db.nutritionPlans.toArray.bind(db.nutritionPlans);
+  const readGate = vi.spyOn(db.nutritionPlans, 'toArray').mockImplementation(() => {
+    writePromise ??= Dexie.ignoreTransaction(() =>
+      second
+        .transaction('rw', [second.profile, second.foods], () =>
+          Promise.all([
+            second.profile.put(afterProfile),
+            second.foods.put(afterFood),
+          ]).then(() => undefined),
+        )
+        .then(() => {
+          writeObservedExportSettled = exportSettled;
+        }),
+    );
+    return Dexie.Promise.resolve(Dexie.waitFor(waitForWrite(100))).then((outcome) => {
+      gateOutcome = outcome;
+      return nutritionPlansToArray();
+    });
+  });
+
+  try {
+    const json = JSON.parse(
+      await buildJsonExport().finally(() => {
+        exportSettled = true;
+      }),
+    );
+
+    expect({
+      nickname: json.profile[0]?.nickname,
+      foodName: json.foods[0]?.name,
+    }).toEqual({ nickname: '写入前昵称', foodName: '写入前食物' });
+    expect(gateOutcome).toBe('timeout');
+    expect(writePromise).toBeDefined();
+    await expect(waitForWrite(1_000)).resolves.toBe('written');
+    expect(writeObservedExportSettled).toBe(true);
+    expect((await db.profile.get('me'))?.nickname).toBe('写入后昵称');
+    expect((await db.foods.get(beforeFood.id))?.name).toBe('写入后食物');
+  } finally {
+    readGate.mockRestore();
+    if (writePromise !== undefined) {
+      await waitForWrite(1_000).catch(() => 'timeout' as const);
+    }
+    second.close();
+  }
 });
 
 /**

@@ -209,11 +209,15 @@ test('导出 CSV 失败时显示错误文案（无 unhandled rejection）', asyn
   expect(await screen.findByText('导出失败，请重试')).toBeInTheDocument();
 });
 
-test('数据导出区域提供 JSON 恢复入口', async () => {
+test('数据导出说明披露未加密健康资料', async () => {
   renderProfile();
 
   expect(await screen.findByRole('button', { name: '从 JSON 恢复' })).toBeInTheDocument();
-  expect(screen.getByText('数据主权归你 · 照片仅存本机，不含在导出文件中')).toBeInTheDocument();
+  expect(await screen.findByText(/JSON 含个人健康资料且未加密/)).toBeInTheDocument();
+  expect(screen.getByText(/体型照和餐食缩略图不含在导出文件中/)).toBeInTheDocument();
+  expect(screen.getByText(/训练、体重、饮食和健康计划等敏感数据/)).toBeInTheDocument();
+  expect(screen.getByText(/建议只保存在可信设备/)).toBeInTheDocument();
+  expect(screen.getByText(/识别临时数据也不会导出/)).toBeInTheDocument();
 });
 
 test('不再使用废弃别名 card2 / iron2', async () => {

@@ -273,7 +273,7 @@ export function ProfileScreen() {
           <span className="min-w-0 flex-1">
             <b className="block text-[15px] font-semibold">数据导出</b>
             <span className="mt-0.5 block text-xs text-mute">
-              数据主权归你 · 照片仅存本机，不含在导出文件中
+              JSON 含个人健康资料且未加密，包括训练、体重、饮食和健康计划等敏感数据；建议只保存在可信设备 · 体型照和餐食缩略图不含在导出文件中，识别临时数据也不会导出
             </span>
           </span>
         </div>
