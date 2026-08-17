@@ -2914,7 +2914,7 @@ export async function assertNutritionMergeIdSafety(
 ): Promise<void> {
   const [currentFoods, currentPlans] = await Promise.all([
     db.foods.bulkGet(section.foods.map((food) => food.id)),
-    db.nutritionPlans.bulkGet(section.nutritionPlans.map((plan) => plan.id)),
+    db.nutritionPlans.toArray(),
   ]);
 
   for (const [index, current] of currentFoods.entries()) {
@@ -2954,24 +2954,11 @@ export async function assertNutritionMergeIdSafety(
   }
 
   if (mode === 'merge') {
-    for (const [index, current] of currentPlans.entries()) {
-      if (!current) continue;
-      const incoming = section.nutritionPlans[index];
-      const currentIdentity = canonicalize({
-        id: current.id,
-        effectiveFrom: current.effectiveFrom,
-        goals: current.goals,
-        safetyInputs: current.safetyInputs,
-        standardVersion: current.standardVersion,
-        equationInputs: current.equationInputs,
-        equationVersion: current.equationVersion,
-        targetRanges: current.targetRanges,
-        targetMode: current.targetMode,
-        sourceVersion: current.sourceVersion,
-        proteinPolicySource: current.proteinPolicySource,
-        proteinPolicyVersion: current.proteinPolicyVersion,
-      });
-      if (JSON.stringify(currentIdentity) !== JSON.stringify(canonicalize(incoming))) {
+    for (const incoming of section.nutritionPlans) {
+      const conflicts = currentPlans.some((current) =>
+        (current.id === incoming.id && current.effectiveFrom !== incoming.effectiveFrom)
+        || (current.effectiveFrom === incoming.effectiveFrom && current.id !== incoming.id));
+      if (conflicts) {
         invalid('备份营养计划 ID 与本机不同计划业务身份冲突');
       }
     }
@@ -3074,7 +3061,7 @@ test('merge 在写入前拒绝同 ID 但业务身份不同的自定义食物', a
   })).rejects.toThrow('备份自定义食物 ID 与本机不同食物业务身份冲突');
 });
 
-test('merge 在写入前拒绝同 ID 但业务身份不同的营养计划', async () => {
+test('merge 允许同生效日营养计划由备份整体替换', async () => {
   const section = nutritionBackupSectionFixture();
   await db.nutritionPlans.add({
     ...nutritionPlanRow(),
@@ -3083,7 +3070,7 @@ test('merge 在写入前拒绝同 ID 但业务身份不同的营养计划', asyn
 
   await expect(assertNutritionMergeIdSafety(section, 'merge', (message) => {
     throw new Error(message);
-  })).rejects.toThrow('备份营养计划 ID 与本机不同计划业务身份冲突');
+  })).resolves.toBeUndefined();
 });
 
 test('applyNutritionRestore 物理删除预览指定的照片和候选', async () => {

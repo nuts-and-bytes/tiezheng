@@ -824,29 +824,39 @@ describe('restoreBackup', () => {
     expect(await db.mealPhotos.count()).toBe(1);
   });
 
-  test.each(['custom-food', 'nutrition-plan'] as const)(
-    '%s 业务身份碰撞在首次写入前拒绝并完整保留数据库',
-    async (collision) => {
-      const candidate = await parseBackupFile(fileOf(v3Backup()));
-      if (collision === 'custom-food') {
-        await db.foods.add({ ...customFoodRow(), name: '本机另一种食物' });
-      } else {
-        await db.nutritionPlans.add({
-          ...nutritionPlanRow(),
-          goals: { muscleGain: false, fatLoss: true },
-        });
-      }
-      const preview = await previewRestore(candidate, 'merge');
-      const before = await tableSnapshot();
+  test('custom-food 业务身份碰撞在首次写入前拒绝并完整保留数据库', async () => {
+    const candidate = await parseBackupFile(fileOf(v3Backup()));
+    await db.foods.add({ ...customFoodRow(), name: '本机另一种食物' });
+    const preview = await previewRestore(candidate, 'merge');
+    const before = await tableSnapshot();
 
-      await expect(restoreBackup(candidate, 'merge', {
-        previewFingerprint: preview.fingerprint,
-        allowPhotoDeletion: true,
-        allowEstimateDiscard: true,
-      })).rejects.toMatchObject({ code: 'invalid-content' });
-      expect(await tableSnapshot()).toEqual(before);
-    },
-  );
+    await expect(restoreBackup(candidate, 'merge', {
+      previewFingerprint: preview.fingerprint,
+      allowPhotoDeletion: true,
+      allowEstimateDiscard: true,
+    })).rejects.toMatchObject({ code: 'invalid-content' });
+    expect(await tableSnapshot()).toEqual(before);
+  });
+
+  test('nutrition-plan 同生效日由备份整体替换本机计划', async () => {
+    const candidate = await parseBackupFile(fileOf(v3Backup()));
+    const incoming = candidate.data.nutritionPlans[0];
+    await db.nutritionPlans.add({
+      ...nutritionPlanRow(),
+      goals: { muscleGain: false, fatLoss: true },
+    });
+    const preview = await previewRestore(candidate, 'merge');
+
+    await expect(restoreBackup(candidate, 'merge', {
+      previewFingerprint: preview.fingerprint,
+      allowPhotoDeletion: true,
+      allowEstimateDiscard: true,
+    })).resolves.toEqual({ workoutDays: 1, nutritionDays: 1 });
+    expect(await db.nutritionPlans.get(incoming.id)).toMatchObject({
+      ...incoming,
+      deletedAt: null,
+    });
+  });
 
   test('非空 v3 营养备份重复 merge 幂等，第二次预览的删除计数归零', async () => {
     const candidate = await parseBackupFile(fileOf(v3Backup()));

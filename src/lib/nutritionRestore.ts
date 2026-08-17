@@ -298,13 +298,6 @@ function currentFoodIdentity(current: Food) {
   return identity;
 }
 
-function currentPlanIdentity(current: NutritionPlan) {
-  const { updatedAt: _updatedAt, deletedAt: _deletedAt, ...identity } = current;
-  void _updatedAt;
-  void _deletedAt;
-  return identity;
-}
-
 export async function assertNutritionMergeIdSafety(
   section: NutritionBackupSection,
   mode: NutritionRestoreMode,
@@ -331,19 +324,11 @@ export async function assertNutritionMergeIdSafety(
 
   if (mode === 'replace') return;
 
-  const plansById = new Map(currentPlans.map((plan) => [plan.id, plan]));
-  const plansByEffectiveDate = new Map(currentPlans.map((plan) => [plan.effectiveFrom, plan]));
   for (const incoming of section.nutritionPlans) {
-    const sameId = plansById.get(incoming.id);
-    const sameDate = plansByEffectiveDate.get(incoming.effectiveFrom);
-    const current = sameId ?? sameDate;
-    if (
-      current !== undefined
-      && (
-        current.id !== incoming.id
-        || stableJson(currentPlanIdentity(current)) !== stableJson(incoming)
-      )
-    ) {
+    const conflicts = currentPlans.some((current) =>
+      (current.id === incoming.id && current.effectiveFrom !== incoming.effectiveFrom)
+      || (current.effectiveFrom === incoming.effectiveFrom && current.id !== incoming.id));
+    if (conflicts) {
       invalid('备份营养计划 ID 与本机不同计划业务身份冲突');
     }
   }

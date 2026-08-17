@@ -436,7 +436,7 @@ test('merge 在写入前拒绝同 ID 但业务身份不同的自定义食物', a
     .rejects.toThrow('备份自定义食物 ID 与本机不同食物业务身份冲突');
 });
 
-test('merge 在写入前拒绝同 ID 但业务身份不同的营养计划', async () => {
+test('merge 允许同生效日营养计划由备份整体替换', async () => {
   const section = nutritionBackupSectionFixture();
   await db.nutritionPlans.add({
     ...nutritionPlanRow(),
@@ -444,8 +444,55 @@ test('merge 在写入前拒绝同 ID 但业务身份不同的营养计划', asyn
   });
 
   await expect(assertNutritionMergeIdSafety(section, 'merge', invalid))
+    .resolves.toBeUndefined();
+
+  const preview = await previewNutritionRestore(
+    section,
+    'merge',
+    await buildIncomingMealHashes(section),
+  );
+  await db.transaction(
+    'rw',
+    [db.nutritionPlans, db.foods, db.meals, db.mealItems, db.mealPhotos, db.mealEstimates],
+    () => applyNutritionRestore(section, 'merge', preview, 500),
+  );
+
+  expect(await db.nutritionPlans.get(section.nutritionPlans[0].id)).toMatchObject({
+    goals: section.nutritionPlans[0].goals,
+    updatedAt: 500,
+    deletedAt: null,
+  });
+});
+
+test('merge 拒绝同生效日却使用不同确定性 ID 的本机计划', async () => {
+  const section = nutritionBackupSectionFixture();
+  await db.nutritionPlans.add({ ...nutritionPlanRow(), id: 'nutrition-plan:legacy-id' });
+
+  await expect(assertNutritionMergeIdSafety(section, 'merge', invalid))
     .rejects.toThrow('备份营养计划 ID 与本机不同计划业务身份冲突');
 });
+
+test('merge 拒绝同 ID 却属于不同生效日的本机计划', async () => {
+  const section = nutritionBackupSectionFixture();
+  await db.nutritionPlans.add({ ...nutritionPlanRow(), effectiveFrom: '2026-08-13' });
+
+  await expect(assertNutritionMergeIdSafety(section, 'merge', invalid))
+    .rejects.toThrow('备份营养计划 ID 与本机不同计划业务身份冲突');
+});
+
+test.each(['nutrition-plan:0000-legacy', 'nutrition-plan:legacy-id'])(
+  'merge 检查同日全部本机计划，不受异常 ID 排序影响：%s',
+  async (duplicateId) => {
+    const section = nutritionBackupSectionFixture();
+    await db.nutritionPlans.bulkAdd([
+      nutritionPlanRow(),
+      { ...nutritionPlanRow(), id: duplicateId },
+    ]);
+
+    await expect(assertNutritionMergeIdSafety(section, 'merge', invalid))
+      .rejects.toThrow('备份营养计划 ID 与本机不同计划业务身份冲突');
+  },
+);
 
 test('恶意候选的命名空间和父子引用在任何写入前拒绝', async () => {
   const badFood = nutritionBackupSectionFixture();
