@@ -105,6 +105,12 @@ test('同一预览状态产生稳定指纹，本机候选状态变化后指纹�
       amountHigh: 180,
       unit: 'g',
       catalogFoodId: 'food:preset:rice-cooked',
+      nutrientSource: 'catalog',
+      energyKcalLow: null,
+      energyKcalHigh: null,
+      proteinGLow: null,
+      proteinGHigh: null,
+      assumptions: [],
     }],
   });
   const changed = await previewNutritionRestore(section, 'merge', hashes);

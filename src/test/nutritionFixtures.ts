@@ -201,6 +201,12 @@ export function mealEstimateRow(overrides: Partial<MealEstimate> = {}): MealEsti
         amountHigh: 180,
         unit: 'g',
         catalogFoodId: 'food:preset:usda:168878',
+        nutrientSource: 'catalog',
+        energyKcalLow: null,
+        energyKcalHigh: null,
+        proteinGLow: null,
+        proteinGHigh: null,
+        assumptions: [],
       },
     ],
     consent: {

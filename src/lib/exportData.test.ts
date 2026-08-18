@@ -109,6 +109,12 @@ test('buildJsonExport：含营养白名单但排除图片、候选、临时状�
         amountHigh: 2,
         unit: 'g' as const,
         catalogFoodId: null,
+        nutrientSource: 'none' as const,
+        energyKcalLow: null,
+        energyKcalHigh: null,
+        proteinGLow: null,
+        proteinGHigh: null,
+        assumptions: [],
       },
     ],
     consent: {

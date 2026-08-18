@@ -222,10 +222,15 @@ export type MealEstimateErrorCode =
   | 'auth-expired'
   | 'quota-exceeded'
   | 'rate-limited'
+  | 'service-disabled'
+  | 'budget-exceeded'
+  | 'consent-expired'
   | 'provider-timeout'
   | 'provider-unavailable'
   | 'invalid-estimate'
   | 'uncertain-food';
+
+export type EstimateNutrientSource = 'catalog' | 'model-range' | 'none';
 
 export interface MealEstimateCandidate {
   id: string;
@@ -235,6 +240,12 @@ export interface MealEstimateCandidate {
   amountHigh: number;
   unit: 'g' | 'mL';
   catalogFoodId: string | null;
+  nutrientSource: EstimateNutrientSource;
+  energyKcalLow: number | null;
+  energyKcalHigh: number | null;
+  proteinGLow: number | null;
+  proteinGHigh: number | null;
+  assumptions: string[];
 }
 
 export interface MealEstimateConsentBinding {
@@ -250,7 +261,7 @@ export interface MealEstimate {
   mealId: string;
   status: MealEstimateStatus;
   requestId: string;
-  requestFingerprint: string;
+  requestFingerprint: string | null;
   candidates: MealEstimateCandidate[];
   consent: MealEstimateConsentBinding | null;
   error: MealEstimateErrorCode | null;
