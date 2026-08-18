@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-18
 
-**状态：** 用户已批准，待实施计划
+**状态：** 用户已批准，实施计划已编写，待双模型 GREEN receipt
 
 **代码基线：** `99115a5c702f212d15ca07c1e3964f799f4e4181`
 
@@ -15,7 +15,7 @@
 本文在以下三点覆盖旧规范的待定或过时选择：
 
 1. Stage 2 身份采用 Cloudflare Access 邮箱一次性验证码，不引入独立密码系统。
-2. Stage 2 网关采用现有 Cloudflare Pages 项目的 Pages Functions、Images Binding 和 Durable Object，不迁移现有站点。
+2. Stage 2 保留现有 Cloudflare Pages；Pages Functions 只做 Access 与同源入口，并通过 Service Binding 调用承载 Images、Durable Object 和模型密钥的无公网路由 Worker，不迁移现有站点。
 3. 三账号内测不把 Turnstile 作为硬依赖；白名单身份、JWT 校验、原子配额、幂等和预算熔断构成主要防线。公开开放前必须重新评估 CAPTCHA、域名和中国大陆网络证据。
 
 ## 2. 目标与非目标
@@ -48,9 +48,10 @@
 | 登录 | Cloudflare Access 托管邮箱 OTP 页面 |
 | 登录边界 | 只保护 AI 照片接口；核心 App 继续无账号可用 |
 | 前端承载 | 保留现有 Cloudflare Pages |
-| 网关 | 同一项目的 Pages Functions |
-| 图片处理 | Cloudflare Images Binding 对原始字节解码、缩放、转 WebP |
-| 原子协调 | 单个 Stage 2 Durable Object 协调三账号和全局状态 |
+| 网关入口 | 同一项目的 Pages Functions |
+| 私有执行层 | 无公网路由的 Cloudflare Worker，由 Pages Function 通过 Service Binding 调用 |
+| 图片处理 | 私有 Worker 的 Cloudflare Images Binding 对原始字节解码、缩放、转 WebP |
+| 原子协调 | 私有 Worker 内单个 Stage 2 Durable Object 协调三账号和全局状态 |
 | 主模型 | 火山方舟 `doubao-seed-2-1-pro-260628` |
 | 备选模型 | `qwen3.7-plus-2026-05-26` 仅作离线对比，不自动回退 |
 | DeepSeek | 不进入图片识别链路 |
@@ -146,15 +147,18 @@ AI 最多返回 6 项。确认页至少允许：
 Cloudflare Pages 静态前端
   → Cloudflare Access 路径级 OTP
   → Pages Function 验证 Access JWT、Origin 和请求边界
-  → Images Binding 解码、检查、缩放、WebP 重编码
-  → Durable Object 原子预留幂等、额度、并发和预算
-  → Pages Function 内存中 Base64 调用火山方舟北京端点
+  → Service Binding 调用无公网路由的照片 AI Worker
+  → Worker 的 Images Binding 解码、检查、缩放、WebP 重编码
+  → Worker 内 Durable Object 原子预留幂等、额度、并发和预算
+  → Worker 内存中 Base64 调用火山方舟北京端点
   → 固定模型、提示和 JSON Schema
   → 服务端结构与语义校验
   → 加密临时结果缓存
   → 浏览器本机候选确认
   → Dexie 单事务写确认条目和缩略图
 ```
+
+Cloudflare 当前要求 Durable Object 由 Worker 创建，不能在 Pages 项目内创建和部署；Images 原始字节 Binding 也由 Worker 配置。因此 Pages Function 只承担同源入口、Access JWT 与浏览器请求边界，图片、模型密钥、结果缓存和协调状态全部留在无公网路由的私有 Worker。该实施校正不改变现有 Pages 域名或用户流程，并避免把模型密钥暴露给 Pages 构建环境。
 
 ### 5.1 Cloudflare Access
 
@@ -182,7 +186,9 @@ Stage 2 暴露以下同源接口：
 | `POST` | `/api/nutrition/photo/estimate` | 接收单张压缩图片并返回结构化候选 |
 | `POST` | `/api/nutrition/photo/logout` | 生成 Access 退出流程，不删除本地饮食数据 |
 
-所有 JSON 响应使用固定错误码，不返回供应商原始错误、堆栈、提示词或模型自由文本。接口仅接受 `https://tiezheng.pages.dev` 及批准的 Pages Preview Origin；其余 Origin 失败关闭。Preview Origin 必须是精确列表，不能使用任意 `*.pages.dev`。所有变更请求同时要求同源 `Origin`、预期的 `Sec-Fetch-Site` 和受 Access 保护的会话；不能只依赖 Cookie 的 SameSite 属性。
+为满足全局/单账号紧急开关与账号状态删除，Preview 放行阶段可增加无用户界面的 `/api/nutrition/photo-admin/account` 运维端点。它由单独的 Access Application 和单一管理员邮箱保护，只接受固定开关/删除动作与防重放 operation ID；目标邮箱只在 Pages Function 内存中转换为伪匿名账号键，不进入 Worker、Durable Object 或日志。该端点不属于普通用户 API，也不能用于查看照片、候选、饮食或训练数据。
+
+所有 JSON 响应使用固定错误码，不返回供应商原始错误、堆栈、提示词或模型自由文本。本阶段接口只接受精确的 `https://photo-ai-stage2.tiezheng.pages.dev`；`https://tiezheng.pages.dev` 与其他 Origin 均失败关闭，生产 Origin 只有在新的生产设计、计划和授权完成后才可加入。不能使用任意 `*.pages.dev`。所有变更请求同时要求同源 `Origin`、预期的 `Sec-Fetch-Site` 和受 Access 保护的会话；不能只依赖 Cookie 的 SameSite 属性。
 
 `POST /estimate` 使用单图 multipart 请求，元数据只包含：
 
@@ -234,6 +240,8 @@ accountKey
 + promptVersion
 + schemaVersion
 + catalogVersion
++ uncertaintyVersion
++ providerPolicyVersion
 ```
 
 同键同指纹合并到同一进行中任务或返回 10 分钟内的同一结果；同键不同指纹返回冲突。幂等状态为 `reserved | invoked | succeeded | failed`，保留 24 小时。
