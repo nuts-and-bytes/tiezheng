@@ -16,6 +16,8 @@ export interface MealSectionProps {
   slot: MealSlot;
   items: MealItem[];
   onAdd(slot: MealSlot): void;
+  photoAiEnabled?: boolean;
+  onPhoto?(slot: MealSlot): void;
   onUpdate(id: string, amount: number): Promise<void>;
   onRemove(id: string): Promise<void>;
 }
@@ -26,7 +28,15 @@ function amountText(low: number, high: number, unit: string): string {
     : `约 ${Math.round(low)}–${Math.round(high)} ${unit}`;
 }
 
-export function MealSection({ slot, items, onAdd, onUpdate, onRemove }: MealSectionProps) {
+export function MealSection({
+  slot,
+  items,
+  onAdd,
+  photoAiEnabled = false,
+  onPhoto,
+  onUpdate,
+  onRemove,
+}: MealSectionProps) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [confirming, setConfirming] = useState<string>();
   const [pendingById, setPendingById] = useState<Map<string, 'update' | 'remove'>>(
@@ -93,9 +103,16 @@ export function MealSection({ slot, items, onAdd, onUpdate, onRemove }: MealSect
             {MEAL_LABELS[slot]}
           </h2>
         </div>
-        <Button variant="secondary" onClick={() => onAdd(slot)}>
-          选择食物
-        </Button>
+        <div className="flex flex-wrap justify-end gap-2">
+          {photoAiEnabled && onPhoto ? (
+            <Button variant="tertiary" onClick={() => onPhoto(slot)}>
+              拍照识别
+            </Button>
+          ) : null}
+          <Button variant="secondary" onClick={() => onAdd(slot)}>
+            选择食物
+          </Button>
+        </div>
       </div>
 
       {items.length === 0 ? (

@@ -1,9 +1,18 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '../../components/Button';
 import { addDays, todayStr } from '../../lib/dates';
-import { autoNutritionTargetsEnabled } from '../../lib/nutritionFeatureFlags';
+import { createPhotoAiClient } from '../../lib/photoAiClient';
+import {
+  PHOTO_AI_LOGIN_PATH,
+  savePhotoAiIntent,
+  takePhotoAiIntent,
+} from '../../lib/photoAiIntent';
+import {
+  autoNutritionTargetsEnabled,
+  photoAiEnabled,
+} from '../../lib/nutritionFeatureFlags';
 import {
   evaluateNutritionDay,
   formatNutritionIntake,
@@ -12,6 +21,9 @@ import type { MealSlot } from '../../lib/nutritionTypes';
 import { listFoods, saveCustomFood } from '../../repos/foodRepo';
 import {
   listNutritionDay,
+  clearMealTemporaryState,
+  confirmPhotoEstimate,
+  putMealEstimate,
   removeMealItem,
   saveConfirmedFoodItem,
   updateMealItemAmount,
@@ -20,16 +32,22 @@ import { getEffectiveNutritionPlan } from '../../repos/nutritionPlanRepo';
 import { FoodPickerSheet } from './FoodPickerSheet';
 import { MealSection } from './MealSection';
 import { NutritionPlanDetails, NutritionPlanSetup } from './NutritionPlanSetup';
+import { PhotoEstimateSheet } from './PhotoEstimateSheet';
 
 const DATA_LOADING = Symbol('health-data-loading');
 
 export function HealthScreen() {
   const navigate = useNavigate();
+  const location = useLocation();
   const today = todayStr();
   const [date, setDate] = useState(today);
   const [pickerSlot, setPickerSlot] = useState<MealSlot>();
+  const [photoSlot, setPhotoSlot] = useState<MealSlot>();
   const [editingPlan, setEditingPlan] = useState(false);
   const targetsEnabled = autoNutritionTargetsEnabled();
+  const photosEnabled = photoAiEnabled();
+  const photoClient = useMemo(() => createPhotoAiClient(), []);
+  const handledResume = useRef<string | undefined>(undefined);
   const data = useLiveQuery(
     async () => {
       const [day, foods, plan] = await Promise.all([
@@ -53,8 +71,34 @@ export function HealthScreen() {
         .map((dimension) => dimension.message)
     : [];
 
+  useEffect(() => {
+    const search = new URLSearchParams(location.search);
+    if (search.get('photoAi') !== 'resume') return;
+    const resumeKey = `${location.pathname}${location.search}`;
+    if (handledResume.current === resumeKey) return;
+    handledResume.current = resumeKey;
+
+    const intent = takePhotoAiIntent();
+    search.delete('photoAi');
+    const nextSearch = search.toString();
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearch.length > 0 ? `?${nextSearch}` : '',
+        hash: location.hash,
+      },
+      { replace: true },
+    );
+    if (!photosEnabled || intent === undefined) return;
+    setPickerSlot(undefined);
+    setEditingPlan(false);
+    setDate(intent.date);
+    setPhotoSlot(intent.slot);
+  }, [location.hash, location.pathname, location.search, navigate, photosEnabled]);
+
   function changeDate(nextDate: string) {
     setPickerSlot(undefined);
+    setPhotoSlot(undefined);
     setEditingPlan(false);
     setDate(nextDate);
   }
@@ -159,6 +203,8 @@ export function HealthScreen() {
                 slot={slot}
                 items={items}
                 onAdd={setPickerSlot}
+                photoAiEnabled={photosEnabled}
+                onPhoto={setPhotoSlot}
                 onUpdate={async (id, amount) => {
                   await updateMealItemAmount(id, amount);
                 }}
@@ -183,6 +229,25 @@ export function HealthScreen() {
                 };
                 await saveConfirmedFoodItem(saveSnapshot);
               }}
+            />
+          )}
+
+          {photoSlot && (
+            <PhotoEstimateSheet
+              date={date}
+              slot={photoSlot}
+              foods={data.foods}
+              client={photoClient}
+              onLogin={() => {
+                savePhotoAiIntent(date, photoSlot);
+                globalThis.location.assign(PHOTO_AI_LOGIN_PATH);
+              }}
+              onPutEstimate={putMealEstimate}
+              onClearEstimate={clearMealTemporaryState}
+              onConfirm={async (input) => {
+                await confirmPhotoEstimate(input);
+              }}
+              onClose={() => setPhotoSlot(undefined)}
             />
           )}
         </>

@@ -1,9 +1,20 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { createMemoryRouter, RouterProvider, useLocation, useNavigationType } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { PRESET_FOODS } from '../../data/presetFoods';
 import { db } from '../../lib/db';
+import { PHOTO_AI_LIMITS } from '../../lib/photoAiContract';
+import {
+  preparePhoto,
+  type PreparedPhoto,
+} from '../../lib/photoAiImage';
+import {
+  PHOTO_AI_LOGIN_PATH,
+  savePhotoAiIntent,
+  takePhotoAiIntent,
+} from '../../lib/photoAiIntent';
 import { seedPresetFoods } from '../../repos/foodRepo';
 import {
   removeMealItem,
@@ -12,7 +23,52 @@ import {
 } from '../../repos/mealRepo';
 import { resetDb } from '../../test/dbTestUtils';
 import { mealItemRow, mealRow, nutritionPlanRow } from '../../test/nutritionFixtures';
+import {
+  photoAiCatalogCandidateFixture,
+  photoAiEstimateSuccessFixture,
+  photoAiSessionSuccessFixture,
+} from '../../test/photoAiFixtures';
 import { HealthScreen } from './HealthScreen';
+
+const photoClient = vi.hoisted(() => ({
+  session: vi.fn(),
+  estimate: vi.fn(),
+  logout: vi.fn(),
+}));
+
+vi.mock('../../lib/photoAiClient', () => ({
+  createPhotoAiClient: () => photoClient,
+}));
+
+vi.mock('../../lib/photoAiImage', async () => {
+  const actual = await vi.importActual<typeof import('../../lib/photoAiImage')>(
+    '../../lib/photoAiImage',
+  );
+  return { ...actual, preparePhoto: vi.fn() };
+});
+
+const mockedPreparePhoto = vi.mocked(preparePhoto);
+const PHOTO_FILE = new File(['food-photo'], '午餐.jpg', { type: 'image/jpeg' });
+
+function webp(bytes = 12): Blob {
+  const body = new Uint8Array(Math.max(bytes, 12));
+  body.set([82, 73, 70, 70], 0);
+  body.set([87, 69, 66, 80], 8);
+  return new Blob([body], { type: 'image/webp' });
+}
+
+function preparedPhoto(): PreparedPhoto {
+  return {
+    uploadBlob: webp(24),
+    uploadBlobSha256: 'c'.repeat(64),
+    uploadWidth: 800,
+    uploadHeight: 600,
+    thumbnailBlob: webp(),
+    thumbnailWidth: 160,
+    thumbnailHeight: 120,
+    dispose: vi.fn(),
+  };
+}
 
 class TestRequest {
   url: string;
@@ -39,6 +95,23 @@ beforeEach(async () => {
   vi.setSystemTime(new Date('2026-08-14T08:00:00+08:00'));
   vi.stubGlobal('Request', TestRequest);
   vi.unstubAllEnvs();
+  mockedPreparePhoto.mockReset();
+  photoClient.session.mockReset().mockResolvedValue(photoAiSessionSuccessFixture);
+  photoClient.estimate.mockReset().mockImplementation(async (input: { requestId: string }) => ({
+    ...photoAiEstimateSuccessFixture,
+    requestId: input.requestId,
+    versions: { ...photoAiEstimateSuccessFixture.versions },
+    candidates: photoAiEstimateSuccessFixture.candidates.map((candidate) => ({
+      ...candidate,
+      catalogFoodId:
+        candidate.nutrientSource === 'catalog' ? PRESET_FOODS[0].id : candidate.catalogFoodId,
+      assumptions: [...candidate.assumptions],
+    })),
+  }));
+  photoClient.logout
+    .mockReset()
+    .mockResolvedValue({ logoutUrl: '/cdn-cgi/access/logout' as const });
+  sessionStorage.clear();
   await resetDb();
 });
 
@@ -49,15 +122,33 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function renderHealth() {
+function renderHealth(initialEntry = '/health', strict = false) {
   const router = createMemoryRouter(
     [
       { path: '/health', element: <HealthScreen /> },
       { path: '/', element: <RouteProbe /> },
     ],
-    { initialEntries: ['/health'] },
+    { initialEntries: [initialEntry] },
   );
-  return { ...render(<RouterProvider router={router} />), router };
+  const app = <RouterProvider router={router} />;
+  return { ...render(strict ? <StrictMode>{app}</StrictMode> : app), router };
+}
+
+async function openLunchPhoto(user: ReturnType<typeof userEvent.setup>) {
+  const lunch = await screen.findByRole('region', { name: '午餐' });
+  await user.click(within(lunch).getByRole('button', { name: '拍照识别' }));
+  await screen.findByText(/清晰拍摄整份食物/);
+  return lunch;
+}
+
+async function chooseLunchPhoto(
+  user: ReturnType<typeof userEvent.setup>,
+  value = preparedPhoto(),
+) {
+  mockedPreparePhoto.mockResolvedValueOnce(value);
+  await user.upload(screen.getByLabelText('从相册选择食物照片'), PHOTO_FILE);
+  await screen.findByRole('heading', { name: '确认单次上传' });
+  return value;
 }
 
 test('健康计划位于全屏路由，保留 eyebrow/锻造表面且返回固定 replace 到今日页', async () => {
@@ -85,6 +176,175 @@ test('组合 live query 加载时不闪现新计划提交表单或伪造餐段',
   expect(screen.queryByRole('button', { name: '保存健康计划' })).not.toBeInTheDocument();
   expect(screen.queryByRole('region', { name: '午餐' })).not.toBeInTheDocument();
   expect(await screen.findByRole('heading', { name: '健康计划' })).toBeInTheDocument();
+});
+
+test('照片开关缺失时四餐不显示拍照入口，本地选食物保持可用', async () => {
+  await seedPresetFoods();
+  const user = userEvent.setup();
+  renderHealth();
+  const sections = await screen.findAllByRole('region', { name: /^(早餐|午餐|晚餐|加餐)$/ });
+  expect(sections).toHaveLength(4);
+  expect(screen.queryByRole('button', { name: '拍照识别' })).not.toBeInTheDocument();
+
+  await user.click(within(screen.getByRole('region', { name: '午餐' })).getByRole('button', {
+    name: '选择食物',
+  }));
+  expect(await screen.findByRole('dialog', { name: '选择食物' })).toBeInTheDocument();
+});
+
+test('仅 exact true 为四餐添加独立拍照动作，不打开本地 picker', async () => {
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  const user = userEvent.setup();
+  renderHealth();
+  expect(await screen.findAllByRole('button', { name: '拍照识别' })).toHaveLength(4);
+
+  const lunch = screen.getByRole('region', { name: '午餐' });
+  await user.click(within(lunch).getByRole('button', { name: '拍照识别' }));
+
+  expect(await screen.findByRole('dialog', { name: '拍照识别午餐' })).toBeInTheDocument();
+  expect(screen.queryByRole('dialog', { name: '选择食物' })).not.toBeInTheDocument();
+});
+
+test('未登录只保存日期与餐段意图，并导航到固定 session 路径', async () => {
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  photoClient.session.mockResolvedValue({
+    ok: false,
+    code: 'auth-required',
+    retryAt: null,
+    resetAt: null,
+  });
+  const assign = vi.fn();
+  vi.stubGlobal('location', { assign });
+  const user = userEvent.setup();
+  renderHealth();
+  const lunch = await screen.findByRole('region', { name: '午餐' });
+  await user.click(within(lunch).getByRole('button', { name: '拍照识别' }));
+  await user.click(await screen.findByRole('button', { name: '登录后识别' }));
+
+  expect(assign).toHaveBeenCalledWith(PHOTO_AI_LOGIN_PATH);
+  expect(takePhotoAiIntent()).toEqual(
+    expect.objectContaining({ date: '2026-08-14', slot: 'lunch', version: 1 }),
+  );
+});
+
+test('resume 一次性消费原日期/餐段意图，并 replace 移除查询参数', async () => {
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  savePhotoAiIntent('2026-08-13', 'dinner');
+  const { router } = renderHealth('/health?photoAi=resume', true);
+
+  expect(await screen.findByRole('dialog', { name: '拍照识别晚餐' })).toBeInTheDocument();
+  expect(screen.getByText('2026-08-13')).toBeInTheDocument();
+  expect(router.state.location.pathname).toBe('/health');
+  expect(router.state.location.search).toBe('');
+  expect(router.state.historyAction).toBe('REPLACE');
+  expect(takePhotoAiIntent()).toBeUndefined();
+  expect(photoClient.session).toHaveBeenCalledOnce();
+});
+
+test.each([
+  ['expired', () => savePhotoAiIntent('2026-08-13', 'dinner', Date.now() - PHOTO_AI_LIMITS.intentMs - 1)],
+  ['corrupt', () => sessionStorage.setItem('tiezheng:photo-ai:intent:v1', '{broken')],
+] as const)('%s resume 不打开照片面板且仍清除查询参数', async (_kind, arrange) => {
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  arrange();
+  const { router } = renderHealth('/health?photoAi=resume');
+
+  expect(await screen.findByRole('heading', { name: '健康计划' })).toBeInTheDocument();
+  expect(screen.queryByRole('dialog', { name: /拍照识别/ })).not.toBeInTheDocument();
+  expect(router.state.location.search).toBe('');
+  expect(router.state.historyAction).toBe('REPLACE');
+});
+
+test('换日会关闭照片面板、释放内存并清除临时估算', async () => {
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  const user = userEvent.setup();
+  renderHealth();
+  await openLunchPhoto(user);
+  const value = await chooseLunchPhoto(user);
+  expect(await db.mealEstimates.count()).toBe(1);
+
+  await user.click(screen.getByRole('button', { name: '前一天' }));
+
+  expect(await screen.findByText('2026-08-13')).toBeInTheDocument();
+  expect(screen.queryByRole('dialog', { name: /拍照识别/ })).not.toBeInTheDocument();
+  await waitFor(() => expect(value.dispose).toHaveBeenCalledOnce());
+  await waitFor(async () => expect(await db.mealEstimates.count()).toBe(0));
+});
+
+test('照片候选只经原子确认写入一次，并实时更新餐段与汇总', async () => {
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  await seedPresetFoods();
+  const user = userEvent.setup();
+  renderHealth();
+  const lunch = await openLunchPhoto(user);
+  await chooseLunchPhoto(user);
+  await user.click(screen.getByRole('button', { name: '同意并开始识别' }));
+  await screen.findByRole('heading', { name: '确认识别结果' });
+  await user.click(screen.getByRole('button', { name: '确认并加入午餐' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(async () => expect(await db.mealItems.count()).toBe(2));
+  expect(await within(lunch).findByText('米饭')).toBeInTheDocument();
+  expect(within(lunch).getByText('鸡胸肉')).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: '今日摄入' })).not.toHaveTextContent(
+    '今天还没有已确认食物',
+  );
+  expect(await db.meals.count()).toBe(1);
+});
+
+test('原子确认失败时保留编辑面板，不改变既有条目与汇总', async () => {
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  await seedPresetFoods();
+  await saveConfirmedFoodItem({
+    operationId: 'existing-rice-before-photo-failure',
+    date: '2026-08-14',
+    slot: 'lunch',
+    food: PRESET_FOODS[0],
+    amount: 150,
+  });
+  photoClient.estimate.mockImplementation(async (input: { requestId: string }) => ({
+    ...photoAiEstimateSuccessFixture,
+    requestId: input.requestId,
+    candidates: [{ ...photoAiCatalogCandidateFixture, catalogFoodId: 'food:missing' }],
+  }));
+  const user = userEvent.setup();
+  renderHealth();
+  await openLunchPhoto(user);
+  await chooseLunchPhoto(user);
+  await user.click(screen.getByRole('button', { name: '同意并开始识别' }));
+  await screen.findByRole('heading', { name: '确认识别结果' });
+  await user.click(screen.getByRole('button', { name: '确认并加入午餐' }));
+
+  expect(await screen.findByRole('alert')).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: '确认识别结果' })).toBeInTheDocument();
+  expect(await db.mealItems.count()).toBe(1);
+  expect(screen.getByRole('region', { name: '今日摄入' })).toHaveTextContent('195 kcal');
+});
+
+test('网关关闭仅影响拍照面板，预设食物仍可正常保存', async () => {
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  photoClient.session.mockResolvedValue({
+    ok: false,
+    code: 'service-disabled',
+    retryAt: null,
+    resetAt: null,
+  });
+  await seedPresetFoods();
+  const user = userEvent.setup();
+  renderHealth();
+  const lunch = await screen.findByRole('region', { name: '午餐' });
+  await user.click(within(lunch).getByRole('button', { name: '拍照识别' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('图片识别服务当前未开启');
+  await user.click(screen.getByRole('button', { name: '改用手动记录' }));
+
+  await user.click(within(lunch).getByRole('button', { name: '选择食物' }));
+  await user.click(await screen.findByRole('button', { name: '熟米饭' }));
+  await user.clear(screen.getByLabelText('实际克数'));
+  await user.type(screen.getByLabelText('实际克数'), '150');
+  await user.click(screen.getByRole('button', { name: '加入午餐' }));
+
+  expect(await within(lunch).findByText(/195 kcal/)).toBeInTheDocument();
+  expect(await db.mealItems.count()).toBe(1);
 });
 
 test('四餐按 repo 固定顺序渲染，通过真实 repo 记录 150 g 米饭并刷新汇总', async () => {

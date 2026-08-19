@@ -16,6 +16,16 @@ import { TodayScreen } from './screens/today/TodayScreen';
 import { Onboarding } from './screens/Onboarding';
 import { getProfile } from './repos/profileRepo';
 
+function bridgePhotoAiResumeIntoHashRouter(): void {
+  if (
+    window.location.hash === '' &&
+    window.location.pathname === '/health' &&
+    new URLSearchParams(window.location.search).get('photoAi') === 'resume'
+  ) {
+    window.history.replaceState(window.history.state, '', '/#/health?photoAi=resume');
+  }
+}
+
 function TabLayout() {
   return (
     <div className="mx-auto min-h-dvh max-w-md pb-24 pt-[env(safe-area-inset-top)]">
@@ -58,6 +68,8 @@ function OnboardingGate() {
 }
 
 export default function App() {
+  bridgePhotoAiResumeIntoHashRouter();
+
   return (
     <ErrorBoundary>
       {/* 全屏噪点：锻造质感的来源，pointer-events:none 不挡交互 */}

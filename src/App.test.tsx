@@ -1,10 +1,11 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
 import { db } from './lib/db';
 import { seedPresets } from './repos/exerciseRepo';
 import { resetDb } from './test/dbTestUtils';
 import { completeOnboarding, reachOnboardingGoal } from './test/helpers';
+import { savePhotoAiIntent, takePhotoAiIntent } from './lib/photoAiIntent';
 
 /**
  * 这个文件只管**引导门与路由**：没引导过的人能不能绕过引导。
@@ -88,6 +89,25 @@ test('已引导用户直连 #/health 显示全屏健康页，没有底栏', asyn
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
   } finally {
     window.location.hash = '';
+  }
+});
+
+test('登录服务回到无 hash 的固定健康地址时，桥接 HashRouter 并恢复照片识别', async () => {
+  await db.profile.put({ id: 'me', weeklyGoal: 4, onboarded: true, updatedAt: Date.now() });
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  savePhotoAiIntent('2026-08-13', 'dinner');
+  window.history.replaceState(null, '', '/health?photoAi=resume');
+
+  try {
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: '健康' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: '拍照识别晚餐' })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe('#/health'));
+    expect(takePhotoAiIntent()).toBeUndefined();
+  } finally {
+    vi.unstubAllEnvs();
+    window.history.replaceState(null, '', '/');
   }
 });
 

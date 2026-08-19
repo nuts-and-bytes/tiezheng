@@ -5,6 +5,30 @@ import { expect, test, vi } from 'vitest';
 import { mealItemRow } from '../../test/nutritionFixtures';
 import { MealSection } from './MealSection';
 
+test('照片动作默认关闭，开启后与本地选食物完全独立', async () => {
+  const user = userEvent.setup();
+  const onAdd = vi.fn();
+  const onPhoto = vi.fn();
+  const base = {
+    slot: 'lunch' as const,
+    items: [],
+    onAdd,
+    onUpdate: vi.fn().mockResolvedValue(undefined),
+    onRemove: vi.fn().mockResolvedValue(undefined),
+  };
+  const first = render(<MealSection {...base} onPhoto={onPhoto} />);
+  expect(screen.queryByRole('button', { name: '拍照识别' })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '选择食物' }));
+  expect(onAdd).toHaveBeenCalledWith('lunch');
+  expect(onPhoto).not.toHaveBeenCalled();
+  first.unmount();
+
+  render(<MealSection {...base} photoAiEnabled onPhoto={onPhoto} />);
+  await user.click(screen.getByRole('button', { name: '拍照识别' }));
+  expect(onPhoto).toHaveBeenCalledWith('lunch');
+  expect(onAdd).toHaveBeenCalledOnce();
+});
+
 test('餐段显示不可变快照营养，只改实际数量并二次确认删除', async () => {
   const user = userEvent.setup();
   const onUpdate = vi.fn().mockResolvedValue(undefined);
