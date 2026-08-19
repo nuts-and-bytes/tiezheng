@@ -5,6 +5,7 @@ import {
   mealPhotoId,
   nutritionPlanId,
   operationKey,
+  parseMealId,
 } from './nutritionIds';
 
 test('nutrition plan id uses the validated date key', () => {
@@ -13,6 +14,28 @@ test('nutrition plan id uses the validated date key', () => {
 
 test('meal id includes date and slot', () => {
   expect(mealId('2026-08-14', 'lunch')).toBe('meal:2026-08-14:lunch');
+});
+
+test.each(['breakfast', 'lunch', 'dinner', 'snack'] as const)(
+  'parses a canonical %s meal id',
+  (slot) => {
+    expect(parseMealId(`meal:2026-08-14:${slot}`)).toEqual({
+      date: '2026-08-14',
+      slot,
+    });
+  },
+);
+
+test.each([
+  '',
+  'meal:2026-02-30:lunch',
+  'meal:2026-8-14:lunch',
+  'meal:2026-08-14:lunch:extra',
+  'meal:2026-08-14:midnight',
+  '__proto__',
+  'constructor',
+])('rejects a non-canonical meal id %j', (value) => {
+  expect(() => parseMealId(value)).toThrow('meal id');
 });
 
 test('photo and estimate ids prefix the meal id', () => {

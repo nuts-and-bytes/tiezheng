@@ -2,7 +2,8 @@ import Dexie from 'dexie';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { DB_V4_STORES, db, type NutritionDb } from '../lib/db';
 import { buildMealSnapshotHash } from '../lib/mealSnapshot';
-import { mealEstimateId, mealPhotoId } from '../lib/nutritionIds';
+import { mealEstimateId, mealId, mealPhotoId } from '../lib/nutritionIds';
+import type { ConfirmedPhotoCandidate } from '../lib/photoAiCandidate';
 import type { MealEstimate, MealEstimateCandidate, MealPhoto } from '../lib/nutritionTypes';
 import {
   foodRow,
@@ -13,7 +14,9 @@ import {
 } from '../test/nutritionFixtures';
 import { resetDb } from '../test/dbTestUtils';
 import {
+  clearMealEstimate,
   clearMealTemporaryState,
+  confirmPhotoEstimate,
   createMealRepo,
   listNutritionDay,
   putMealEstimate,
@@ -22,6 +25,7 @@ import {
   removeMealItem,
   saveConfirmedFoodItem,
   updateMealItemAmount,
+  type ConfirmPhotoEstimateInput,
   type SaveConfirmedFoodItemInput,
 } from './mealRepo';
 
@@ -70,15 +74,122 @@ function estimateState(
 ): MealEstimate {
   const base = mealEstimateRow();
   const byStatus: Record<MealEstimate['status'], Partial<MealEstimate>> = {
-    preprocessing: { candidates: [], consent: null, error: null },
-    'awaiting-consent': { candidates: [], consent: null, error: null },
-    uploading: { candidates: [], consent: base.consent, error: null },
-    estimating: { candidates: [], consent: base.consent, error: null },
-    'needs-confirmation': { candidates: base.candidates, consent: base.consent, error: null },
-    confirmed: { candidates: base.candidates, consent: base.consent, error: null },
-    failed: { candidates: [], consent: base.consent, error: 'offline' },
+    preprocessing: {
+      requestFingerprint: null,
+      candidates: [],
+      consent: null,
+      error: null,
+    },
+    'awaiting-consent': {
+      requestFingerprint: null,
+      candidates: [],
+      consent: null,
+      error: null,
+    },
+    uploading: {
+      requestFingerprint: null,
+      candidates: [],
+      consent: base.consent,
+      error: null,
+    },
+    estimating: {
+      requestFingerprint: null,
+      candidates: [],
+      consent: base.consent,
+      error: null,
+    },
+    'needs-confirmation': {
+      requestFingerprint: base.requestFingerprint,
+      candidates: base.candidates,
+      consent: base.consent,
+      error: null,
+    },
+    confirmed: {
+      requestFingerprint: base.requestFingerprint,
+      candidates: [],
+      consent: null,
+      error: null,
+    },
+    failed: { candidates: [], error: 'offline' },
   };
   return { ...base, status, ...byStatus[status], ...overrides };
+}
+
+function confirmedCandidate(
+  overrides: Partial<ConfirmedPhotoCandidate> = {},
+): ConfirmedPhotoCandidate {
+  return {
+    candidate: structuredClone(mealEstimateRow().candidates[0]!),
+    confirmedAmount: 150,
+    confirmedUnit: 'g',
+    confirmedName: '熟米饭',
+    confirmedPreparation: '蒸煮',
+    confirmedAssumptions: ['用户确认份量'],
+    ...overrides,
+  };
+}
+
+function modelConfirmedCandidate(
+  overrides: Partial<ConfirmedPhotoCandidate> = {},
+): ConfirmedPhotoCandidate {
+  return confirmedCandidate({
+    candidate: {
+      id: 'candidate-model-1',
+      name: '番茄炒蛋',
+      preparation: '家常炒制',
+      amountLow: 180,
+      amountHigh: 220,
+      unit: 'g',
+      catalogFoodId: null,
+      nutrientSource: 'model-range',
+      energyKcalLow: 240,
+      energyKcalHigh: 360,
+      proteinGLow: 14,
+      proteinGHigh: 24,
+      assumptions: ['按常见家常做法估算'],
+    },
+    confirmedAmount: 200,
+    confirmedName: '番茄炒蛋',
+    confirmedPreparation: '少油炒制',
+    ...overrides,
+  });
+}
+
+function confirmPhotoInput(
+  overrides: Partial<ConfirmPhotoEstimateInput> = {},
+): ConfirmPhotoEstimateInput {
+  const photo = mealPhotoRow();
+  return {
+    operationId: 'photo-confirm-1',
+    date: '2026-08-14',
+    slot: 'lunch',
+    requestId: 'request-fixture-1',
+    uploadBlobSha256: 'c'.repeat(64),
+    candidates: [confirmedCandidate(), modelConfirmedCandidate()],
+    thumbnail: {
+      blob: photo.thumbnail,
+      width: photo.width,
+      height: photo.height,
+    },
+    ...overrides,
+  };
+}
+
+async function seedConfirmableEstimate(
+  overrides: Partial<MealEstimate> = {},
+): Promise<MealEstimate> {
+  const base = mealEstimateRow();
+  const estimate = estimateState('needs-confirmation', {
+    candidates: [
+      structuredClone(confirmedCandidate().candidate),
+      structuredClone(modelConfirmedCandidate().candidate),
+    ],
+    ...overrides,
+  });
+  await putMealEstimate(estimate);
+  await db.foods.put(preset);
+  vi.spyOn(Date, 'now').mockReturnValue(base.consent!.consentedAt + 1);
+  return estimate;
 }
 
 test('并发重试只创建一个餐次和一个确认项', async () => {
@@ -534,9 +645,17 @@ test.each([
   await expect(listNutritionDay('2026-08-14')).rejects.toThrow(expected);
 });
 
-test('图片和估算只能绑定有效确定餐次，且 id 必须可重建', async () => {
-  await saveConfirmedFoodItem(confirmed());
+test('图片需要 active 餐次；临时估算可在建餐前存在，且 id 必须可重建', async () => {
   const mealId = 'meal:2026-08-14:lunch';
+  await expect(
+    putMealEstimate(mealEstimateRow({ id: mealEstimateId(mealId), mealId })),
+  ).resolves.toBeUndefined();
+  expect(await listNutritionDay('2026-08-14')).toMatchObject({
+    summary: { recordedMeals: 0 },
+  });
+  await clearMealEstimate(mealId);
+
+  await saveConfirmedFoodItem(confirmed());
   await expect(putMealPhoto(mealPhotoRow({ id: 'random-photo', mealId }))).rejects.toThrow(
     'deterministic',
   );
@@ -590,9 +709,6 @@ test('图片和估算只能绑定有效确定餐次，且 id 必须可重建', a
   await removeMealItem('meal-item:tap-1');
   await expect(
     putMealPhoto(mealPhotoRow({ id: mealPhotoId(mealId), mealId })),
-  ).rejects.toThrow('active meal');
-  await expect(
-    putMealEstimate(mealEstimateRow({ id: mealEstimateId(mealId), mealId })),
   ).rejects.toThrow('active meal');
 });
 
@@ -813,16 +929,21 @@ test('估算状态只能前进，confirmed 与 failed 均为终态', async () =>
     putMealEstimate(estimateState('awaiting-consent', { updatedAt: 101 })),
   ).rejects.toThrow('transition');
   await putMealEstimate(estimateState('estimating', { updatedAt: 102 }));
-  await putMealEstimate(estimateState('confirmed', { updatedAt: 103 }));
-  await expect(
-    putMealEstimate(estimateState('failed', { updatedAt: 104 })),
-  ).rejects.toThrow('transition');
+  await putMealEstimate(estimateState('needs-confirmation', { updatedAt: 103 }));
+  await expect(putMealEstimate(estimateState('confirmed', { updatedAt: 104 }))).rejects.toThrow(
+    'atomic',
+  );
 
   await clearMealTemporaryState('meal:2026-08-14:lunch');
   await putMealEstimate(estimateState('failed', { updatedAt: 200 }));
   await expect(
     putMealEstimate(estimateState('estimating', { updatedAt: 201 })),
   ).rejects.toThrow('transition');
+});
+
+test('putMealEstimate 不能绕过原子确认 API 直接制造 confirmed 状态', async () => {
+  await expect(putMealEstimate(estimateState('confirmed'))).rejects.toThrow('atomic');
+  expect(await db.mealEstimates.count()).toBe(0);
 });
 
 test.each([
@@ -833,7 +954,8 @@ test.each([
   ['estimating 无 consent', estimateState('estimating', { consent: null })],
   ['needs-confirmation 无候选', estimateState('needs-confirmation', { candidates: [] })],
   ['needs-confirmation 无 consent', estimateState('needs-confirmation', { consent: null })],
-  ['confirmed 无候选', estimateState('confirmed', { candidates: [] })],
+  ['confirmed 有候选', estimateState('confirmed', { candidates: mealEstimateRow().candidates })],
+  ['confirmed 有 consent', estimateState('confirmed', { consent: mealEstimateRow().consent })],
   ['failed 有候选', estimateState('failed', { candidates: mealEstimateRow().candidates })],
 ])('拒绝非法估算状态组合：%s', async (_label, estimate) => {
   await saveConfirmedFoodItem(confirmed());
@@ -1143,4 +1265,257 @@ test('保存和改量都拒绝溢出或负数营养值，不写入不可备份�
 
   await db.mealItems.put({ ...saved, proteinGLow: -1 });
   await expect(updateMealItemAmount(saved.id, 200)).rejects.toThrow('stored proteinGLow');
+});
+
+describe('照片估算原子确认', () => {
+  test('确认前不进入日汇总；确认后一次写入餐次、两项、WebP 与脱敏状态', async () => {
+    await seedConfirmableEstimate();
+    expect((await listNutritionDay('2026-08-14')).summary.recordedMeals).toBe(0);
+    const photoPut = vi.spyOn(db.mealPhotos, 'put');
+
+    const rows = await confirmPhotoEstimate(confirmPhotoInput());
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => [row.order, row.quality, row.method])).toEqual([
+      [0, 'B', 'ai-confirmed'],
+      [1, 'B', 'ai-confirmed'],
+    ]);
+    expect(new Set(rows.map((row) => row.updatedAt)).size).toBe(1);
+    const parentId = mealId('2026-08-14', 'lunch');
+    const meal = await db.meals.get(parentId);
+    const storedItems = await db.mealItems.where('mealId').equals(parentId).toArray();
+    const photo = await db.mealPhotos.get(mealPhotoId(parentId));
+    const estimate = await db.mealEstimates.get(mealEstimateId(parentId));
+    expect(meal).toMatchObject({ id: parentId, deletedAt: null, updatedAt: rows[0]!.updatedAt });
+    expect(storedItems).toHaveLength(2);
+    expect(photo).toMatchObject({
+      id: mealPhotoId(parentId),
+      mealId: parentId,
+      size: confirmPhotoInput().thumbnail.blob.size,
+      updatedAt: rows[0]!.updatedAt,
+    });
+    expect(photoPut.mock.calls[0]?.[0].thumbnail.type).toBe('image/webp');
+    expect(photo?.mealSnapshotHash).toBe(
+      await buildMealSnapshotHash(meal!, storedItems),
+    );
+    expect(estimate).toMatchObject({
+      status: 'confirmed',
+      requestId: 'request-fixture-1',
+      candidates: [],
+      consent: null,
+      error: null,
+      updatedAt: rows[0]!.updatedAt,
+    });
+    expect((await listNutritionDay('2026-08-14')).summary.recordedMeals).toBe(1);
+  });
+
+  test('目录食物在事务内从 Dexie 重载，调用方不能供应伪造 Food', async () => {
+    await seedConfirmableEstimate();
+    const input = confirmPhotoInput({ candidates: [confirmedCandidate()] });
+    await db.foods.put(
+      foodRow({
+        id: preset.id,
+        originalEnergyValue: 200,
+        originalProteinG: 3,
+        energyKcal: 200,
+        proteinG: 3,
+      }),
+    );
+    (input as ConfirmPhotoEstimateInput & { food?: unknown }).food = foodRow({
+      energyKcal: 99_999,
+      proteinG: 99_999,
+    });
+    const get = vi.spyOn(db.foods, 'get');
+
+    const [row] = await confirmPhotoEstimate(input);
+
+    expect(get).toHaveBeenCalledWith(preset.id);
+    expect(row).toMatchObject({ energyKcalLow: 300, energyKcalHigh: 300 });
+  });
+
+  test('同 operation 同语义幂等；改数量、名称、缩略图或请求均冲突', async () => {
+    await seedConfirmableEstimate();
+    const input = confirmPhotoInput();
+    const first = await confirmPhotoEstimate(input);
+    await expect(confirmPhotoEstimate(confirmPhotoInput())).resolves.toEqual(first);
+
+    await expect(
+      confirmPhotoEstimate(
+        confirmPhotoInput({ candidates: [confirmedCandidate()] }),
+      ),
+    ).rejects.toThrow('conflict');
+
+    const changedAmount = confirmPhotoInput();
+    changedAmount.candidates[0]!.confirmedAmount = 151;
+    await expect(confirmPhotoEstimate(changedAmount)).rejects.toThrow('conflict');
+
+    const changedName = confirmPhotoInput();
+    changedName.candidates[0]!.confirmedName = '另一份米饭';
+    await expect(confirmPhotoEstimate(changedName)).rejects.toThrow('conflict');
+
+    const changedBytes = new Blob(
+      [new Uint8Array([82, 73, 70, 70, 5, 0, 0, 0, 87, 69, 66, 80, 1])],
+      { type: 'image/webp' },
+    );
+    await expect(
+      confirmPhotoEstimate(
+        confirmPhotoInput({
+          thumbnail: { blob: changedBytes, width: 1, height: 1 },
+        }),
+      ),
+    ).rejects.toThrow('conflict');
+
+    await expect(
+      confirmPhotoEstimate(confirmPhotoInput({ requestId: 'different-request' })),
+    ).rejects.toThrow('request');
+  });
+
+  test('独立 operation 恰好带同名前缀数字时不破坏确认重试幂等', async () => {
+    await saveConfirmedFoodItem(
+      confirmed({ operationId: 'photo-confirm-1_99', amount: 100 }),
+    );
+    await seedConfirmableEstimate();
+    const input = confirmPhotoInput();
+    const first = await confirmPhotoEstimate(input);
+
+    await expect(confirmPhotoEstimate(confirmPhotoInput())).resolves.toEqual(first);
+    expect((await db.mealItems.toArray()).map((row) => row.id).sort()).toEqual([
+      'meal-item:photo-confirm-1_0',
+      'meal-item:photo-confirm-1_1',
+      'meal-item:photo-confirm-1_99',
+    ]);
+  });
+
+  test('同一 operation 跨餐次确认在全局主键覆盖前冲突关闭', async () => {
+    await seedConfirmableEstimate();
+    await confirmPhotoEstimate(confirmPhotoInput({ operationId: 'shared-photo' }));
+    const lunchBefore = await db.mealItems
+      .where('mealId')
+      .equals(mealId('2026-08-14', 'lunch'))
+      .toArray();
+    const dinnerId = mealId('2026-08-14', 'dinner');
+    const dinnerEstimate = estimateState('needs-confirmation', {
+      id: mealEstimateId(dinnerId),
+      mealId: dinnerId,
+      requestId: 'request-dinner',
+      consent: {
+        ...mealEstimateRow().consent!,
+        requestId: 'request-dinner',
+      },
+      candidates: [
+        structuredClone(confirmedCandidate().candidate),
+        structuredClone(modelConfirmedCandidate().candidate),
+      ],
+    });
+    await putMealEstimate(dinnerEstimate);
+
+    await expect(
+      confirmPhotoEstimate(
+        confirmPhotoInput({
+          operationId: 'shared-photo',
+          slot: 'dinner',
+          requestId: 'request-dinner',
+        }),
+      ),
+    ).rejects.toThrow('conflict');
+    expect(
+      await db.mealItems.where('mealId').equals(mealId('2026-08-14', 'lunch')).toArray(),
+    ).toEqual(lunchBefore);
+    expect(await db.meals.get(dinnerId)).toBeUndefined();
+  });
+
+  test.each([
+    ['请求过期', { requestId: 'stale-request' }],
+    ['上传哈希变化', { uploadBlobSha256: 'd'.repeat(64) }],
+  ])('%s 时拒绝确认且不写营养记录', async (_label, overrides) => {
+    await seedConfirmableEstimate();
+    await expect(confirmPhotoEstimate(confirmPhotoInput(overrides))).rejects.toThrow();
+    expect(await db.meals.count()).toBe(0);
+    expect(await db.mealItems.count()).toBe(0);
+    expect(await db.mealPhotos.count()).toBe(0);
+  });
+
+  test('同意已过期或状态不是 needs-confirmation 时拒绝确认', async () => {
+    const estimate = await seedConfirmableEstimate();
+    vi.mocked(Date.now).mockReturnValue(estimate.consent!.expiresAt);
+    await expect(confirmPhotoEstimate(confirmPhotoInput())).rejects.toThrow('expired');
+
+    await db.mealEstimates.put(estimateState('estimating', { updatedAt: estimate.updatedAt }));
+    vi.mocked(Date.now).mockReturnValue(estimate.consent!.consentedAt + 1);
+    await expect(confirmPhotoEstimate(confirmPhotoInput())).rejects.toThrow(
+      'needs-confirmation',
+    );
+    expect(await db.meals.count()).toBe(0);
+  });
+
+  test('确认输入在第一个 await 前完成快照，调用方后续突变不会入库', async () => {
+    await seedConfirmableEstimate();
+    const input = confirmPhotoInput({ candidates: [confirmedCandidate()] });
+    const pending = confirmPhotoEstimate(input);
+    input.operationId = 'mutated-operation';
+    input.date = '2026-08-15';
+    input.slot = 'dinner';
+    input.candidates[0]!.confirmedName = '突变名称';
+    input.candidates[0]!.confirmedAmount = 999;
+    input.thumbnail.width = 999;
+
+    await expect(pending).resolves.toMatchObject([
+      {
+        id: 'meal-item:photo-confirm-1_0',
+        mealId: 'meal:2026-08-14:lunch',
+        name: '熟米饭',
+        amount: 150,
+      },
+    ]);
+    expect((await db.mealPhotos.toArray())[0]?.width).toBe(1);
+  });
+
+  test.each(['meals', 'mealItems', 'mealPhotos', 'mealEstimates'] as const)(
+    '%s 写入失败会回滚全部五表事务写入',
+    async (table) => {
+      const original = await seedConfirmableEstimate();
+      const method = table === 'mealItems' ? 'bulkPut' : 'put';
+      vi.spyOn(db[table], method).mockRejectedValueOnce(new Error(`forced ${table} failure`));
+
+      await expect(confirmPhotoEstimate(confirmPhotoInput())).rejects.toThrow(
+        `forced ${table} failure`,
+      );
+      expect(await db.meals.count()).toBe(0);
+      expect(await db.mealItems.count()).toBe(0);
+      expect(await db.mealPhotos.count()).toBe(0);
+      expect(await db.mealEstimates.get(original.id)).toEqual(original);
+    },
+  );
+
+  test('两个 Dexie 连接竞态确认不会创建重复 order', async () => {
+    await seedConfirmableEstimate();
+    const second = new Dexie('tiezheng') as NutritionDb;
+    second.version(4).stores(DB_V4_STORES);
+    await second.open();
+    try {
+      const secondRepo = createMealRepo(second);
+      const [left, right] = await Promise.all([
+        confirmPhotoEstimate(confirmPhotoInput()),
+        secondRepo.confirmPhotoEstimate(confirmPhotoInput()),
+      ]);
+      expect(left).toEqual(right);
+      const active = (await db.mealItems.toArray()).filter((row) => row.deletedAt === null);
+      expect(active.map((row) => row.order)).toEqual([0, 1]);
+      expect(new Set(active.map((row) => row.order)).size).toBe(2);
+    } finally {
+      second.close();
+    }
+  });
+
+  test('取消只删除估算，不删除已确认的本地缩略图', async () => {
+    await seedConfirmableEstimate();
+    await confirmPhotoEstimate(confirmPhotoInput());
+    const parentId = mealId('2026-08-14', 'lunch');
+
+    await clearMealEstimate(parentId);
+
+    expect(await db.mealEstimates.get(mealEstimateId(parentId))).toBeUndefined();
+    expect(await db.mealPhotos.get(mealPhotoId(parentId))).toBeDefined();
+    expect((await listNutritionDay('2026-08-14')).summary.recordedMeals).toBe(1);
+  });
 });

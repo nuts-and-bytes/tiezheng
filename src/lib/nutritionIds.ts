@@ -2,6 +2,7 @@ import type { MealSlot } from './nutritionTypes';
 
 const DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const OPERATION_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const MEAL_ID_PATTERN = /^meal:(\d{4}-\d{2}-\d{2}):(breakfast|lunch|dinner|snack)$/;
 
 function assertDateKey(dateKey: string): void {
   const match = DATE_KEY_PATTERN.exec(dateKey);
@@ -29,6 +30,19 @@ export function nutritionPlanId(dateKey: string): string {
 export function mealId(dateKey: string, slot: MealSlot): string {
   assertDateKey(dateKey);
   return `meal:${dateKey}:${slot}`;
+}
+
+export function parseMealId(value: unknown): { date: string; slot: MealSlot } {
+  if (typeof value !== 'string') throw new Error('meal id must be canonical');
+  const match = MEAL_ID_PATTERN.exec(value);
+  if (match === null) throw new Error('meal id must be canonical');
+  const [, date, slot] = match;
+  try {
+    assertDateKey(date);
+  } catch {
+    throw new Error('meal id must contain a real canonical date');
+  }
+  return { date, slot: slot as MealSlot };
 }
 
 export function operationKey(value: string): string {

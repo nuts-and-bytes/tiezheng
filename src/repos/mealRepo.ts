@@ -16,7 +16,12 @@ import {
   mealItemId,
   mealPhotoId,
   operationKey,
+  parseMealId,
 } from '../lib/nutritionIds';
+import {
+  buildPhotoMealItem,
+  type ConfirmedPhotoCandidate,
+} from '../lib/photoAiCandidate';
 import { buildMealSnapshotHash } from '../lib/mealSnapshot';
 import {
   scaleFood,
@@ -51,6 +56,16 @@ export interface NutritionDay {
   summary: NutritionDaySummary;
 }
 
+export interface ConfirmPhotoEstimateInput {
+  operationId: string;
+  date: string;
+  slot: MealSlot;
+  requestId: string;
+  uploadBlobSha256: string;
+  candidates: ConfirmedPhotoCandidate[];
+  thumbnail: { blob: Blob; width: number; height: number };
+}
+
 export interface MealRepository {
   saveConfirmedFoodItem(input: SaveConfirmedFoodItemInput): Promise<MealItem>;
   updateMealItemAmount(id: string, amount: number): Promise<MealItem>;
@@ -60,6 +75,8 @@ export interface MealRepository {
   putMealPhoto(photo: MealPhoto): Promise<void>;
   putMealEstimate(estimate: MealEstimate): Promise<void>;
   clearMealTemporaryState(mealId: string): Promise<void>;
+  confirmPhotoEstimate(input: ConfirmPhotoEstimateInput): Promise<MealItem[]>;
+  clearMealEstimate(mealId: string): Promise<void>;
 }
 
 const ESTIMATE_STATUSES = new Set<MealEstimateStatus>([
@@ -81,6 +98,9 @@ const ESTIMATE_ERRORS = new Set<MealEstimateErrorCode>([
   'auth-expired',
   'quota-exceeded',
   'rate-limited',
+  'service-disabled',
+  'budget-exceeded',
+  'consent-expired',
   'provider-timeout',
   'provider-unavailable',
   'invalid-estimate',
@@ -380,6 +400,60 @@ async function samePhoto(left: MealPhoto, right: MealPhoto): Promise<boolean> {
   return leftView.every((byte, index) => byte === rightView[index]);
 }
 
+function snapshotConfirmInput(input: ConfirmPhotoEstimateInput): ConfirmPhotoEstimateInput {
+  try {
+    const sourceBlob = input.thumbnail.blob;
+    if (!(sourceBlob instanceof Blob)) throw new Error('thumbnail must be a Blob');
+    const snapshot = structuredClone(input);
+    snapshot.thumbnail.blob = sourceBlob.slice(0, sourceBlob.size, sourceBlob.type);
+    return snapshot;
+  } catch {
+    throw new Error('photo confirmation input is invalid');
+  }
+}
+
+function validateConfirmInput(input: ConfirmPhotoEstimateInput): string {
+  const parentId = checkedMealId(input.date, input.slot);
+  operationKey(input.operationId);
+  assertBoundedText(input.requestId, 'photo confirmation request id', 200);
+  if (!/^[a-f0-9]{64}$/.test(input.uploadBlobSha256)) {
+    throw new Error('photo confirmation upload hash is invalid');
+  }
+  if (!Array.isArray(input.candidates) || input.candidates.length < 1 || input.candidates.length > 6) {
+    throw new Error('photo confirmation requires 1-6 candidates');
+  }
+  input.candidates.forEach((_candidate, index) => {
+    operationKey(`${input.operationId}_${index}`);
+  });
+  if (
+    typeof input.thumbnail !== 'object' ||
+    input.thumbnail === null ||
+    !(input.thumbnail.blob instanceof Blob)
+  ) {
+    throw new Error('photo confirmation thumbnail is invalid');
+  }
+  return parentId;
+}
+
+function assertSelectedCandidates(
+  selected: ConfirmedPhotoCandidate[],
+  estimate: MealEstimate,
+): void {
+  const storedById = new Map(estimate.candidates.map((candidate) => [candidate.id, candidate]));
+  const selectedIds = new Set<string>();
+  for (const confirmed of selected) {
+    const id = confirmed?.candidate?.id;
+    if (typeof id !== 'string' || selectedIds.has(id)) {
+      throw new Error('photo confirmation candidate conflict');
+    }
+    const stored = storedById.get(id);
+    if (stored === undefined || stableJson(stored) !== stableJson(confirmed.candidate)) {
+      throw new Error('photo confirmation candidate conflict');
+    }
+    selectedIds.add(id);
+  }
+}
+
 function validateCandidate(
   candidate: MealEstimate['candidates'][number],
   candidateIds: Set<string>,
@@ -428,8 +502,9 @@ function validateEstimate(estimate: MealEstimate): void {
     throw new Error('estimate request id must not be blank');
   }
   if (
-    typeof estimate.requestFingerprint !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(estimate.requestFingerprint)
+    estimate.requestFingerprint !== null &&
+    (typeof estimate.requestFingerprint !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(estimate.requestFingerprint))
   ) {
     throw new Error('estimate request fingerprint is invalid');
   }
@@ -477,16 +552,24 @@ function validateEstimate(estimate: MealEstimate): void {
 
   const hasConsent = estimate.consent !== null;
   const hasCandidates = estimate.candidates.length > 0;
+  const hasFingerprint = estimate.requestFingerprint !== null;
   const stateIsValid =
     ((estimate.status === 'preprocessing' || estimate.status === 'awaiting-consent') &&
       !hasConsent &&
-      !hasCandidates) ||
+      !hasCandidates &&
+      !hasFingerprint) ||
     ((estimate.status === 'uploading' || estimate.status === 'estimating') &&
       hasConsent &&
-      !hasCandidates) ||
-    ((estimate.status === 'needs-confirmation' || estimate.status === 'confirmed') &&
+      !hasCandidates &&
+      !hasFingerprint) ||
+    (estimate.status === 'needs-confirmation' &&
       hasConsent &&
-      hasCandidates) ||
+      hasCandidates &&
+      hasFingerprint) ||
+    (estimate.status === 'confirmed' &&
+      !hasConsent &&
+      !hasCandidates &&
+      hasFingerprint) ||
     (estimate.status === 'failed' && !hasCandidates);
   if (!stateIsValid) throw new Error('estimate state fields are inconsistent');
 }
@@ -834,21 +917,18 @@ export function createMealRepo(database: NutritionDb): MealRepository {
   }
 
   async function putEstimate(estimate: MealEstimate): Promise<void> {
-    validateEstimate(estimate);
     const row = structuredClone(estimate);
-    await database.transaction('rw', [database.meals, database.mealEstimates], async () => {
-      const meal = await database.meals.get(row.mealId);
-      if (meal === undefined || meal.deletedAt !== null) {
-        throw new Error('estimate requires an active meal');
-      }
+    validateEstimate(row);
+    parseMealId(row.mealId);
+    if (row.status === 'confirmed') {
+      throw new Error('confirmed estimates require atomic photo confirmation');
+    }
+    await database.transaction('rw', [database.mealEstimates], async () => {
       const existing = await database.mealEstimates.get(row.id);
       if (existing !== undefined) {
         validateEstimate(existing);
         if (row.updatedAt < existing.updatedAt) throw new Error('stale estimate update');
-        if (
-          row.requestId !== existing.requestId ||
-          row.requestFingerprint !== existing.requestFingerprint
-        ) {
+        if (row.requestId !== existing.requestId) {
           throw new Error('estimate request changed; clear temporary state before a new request');
         }
         if (row.updatedAt === existing.updatedAt) {
@@ -856,6 +936,17 @@ export function createMealRepo(database: NutritionDb): MealRepository {
           throw new Error('estimate timestamp conflict');
         }
         assertEstimateTransition(existing.status, row.status);
+        if (
+          row.requestFingerprint !== existing.requestFingerprint &&
+          !(
+            existing.status === 'estimating' &&
+            row.status === 'needs-confirmation' &&
+            existing.requestFingerprint === null &&
+            row.requestFingerprint !== null
+          )
+        ) {
+          throw new Error('estimate fingerprint transition is invalid');
+        }
       }
       await database.mealEstimates.put(row);
     });
@@ -872,6 +963,210 @@ export function createMealRepo(database: NutritionDb): MealRepository {
     );
   }
 
+  async function confirmPhoto(
+    input: ConfirmPhotoEstimateInput,
+  ): Promise<MealItem[]> {
+    const snapshot = snapshotConfirmInput(input);
+    const parentId = validateConfirmInput(snapshot);
+    const estimateId = mealEstimateId(parentId);
+    const itemIds = snapshot.candidates.map((_candidate, index) =>
+      mealItemId(operationKey(`${snapshot.operationId}_${index}`)),
+    );
+
+    const committed = await database.transaction(
+      'rw',
+      [
+        database.foods,
+        database.meals,
+        database.mealItems,
+        database.mealPhotos,
+        database.mealEstimates,
+      ],
+      async () => {
+        const estimate = await database.mealEstimates.get(estimateId);
+        if (estimate === undefined) throw new Error('photo estimate not found');
+        validateEstimate(estimate);
+        if (estimate.requestId !== snapshot.requestId) {
+          throw new Error('photo estimate request conflict');
+        }
+
+        const meal = await database.meals.get(parentId);
+        if (meal !== undefined) assertMealSnapshot(meal);
+        const allItems = await database.mealItems.where('mealId').equals(parentId).toArray();
+        allItems.forEach(assertMealItemSnapshot);
+        const globallyExistingItems = await database.mealItems.bulkGet(itemIds);
+        globallyExistingItems
+          .filter((item): item is MealItem => item !== undefined)
+          .forEach(assertMealItemSnapshot);
+
+        async function buildRows(orders: number[], now: number): Promise<MealItem[]> {
+          const rows: MealItem[] = [];
+          for (let index = 0; index < snapshot.candidates.length; index += 1) {
+            const confirmed = snapshot.candidates[index]!;
+            const catalogFoodId = confirmed.candidate.catalogFoodId;
+            const food =
+              catalogFoodId === null
+                ? undefined
+                : await database.foods.get(catalogFoodId);
+            const row = buildPhotoMealItem(confirmed, food, {
+              id: itemIds[index]!,
+              mealId: parentId,
+              order: orders[index]!,
+              now,
+            });
+            assertMealItemSnapshot(row);
+            rows.push(row);
+          }
+          return rows;
+        }
+
+        if (estimate.status === 'confirmed') {
+          if (meal === undefined || meal.deletedAt !== null) {
+            throw new Error('confirmed photo estimate is missing its active meal');
+          }
+          const operationPrefix = `meal-item:${snapshot.operationId}_`;
+          const operationRows = allItems.filter((item) => {
+            if (item.method !== 'ai-confirmed' || !item.id.startsWith(operationPrefix)) {
+              return false;
+            }
+            return /^\d+$/.test(item.id.slice(operationPrefix.length));
+          });
+          if (
+            operationRows.length !== itemIds.length ||
+            operationRows.some((item) => !itemIds.includes(item.id))
+          ) {
+            throw new Error('photo confirmation operation conflict');
+          }
+          const existingRows = globallyExistingItems;
+          if (existingRows.some((row) => row === undefined || row.deletedAt !== null)) {
+            throw new Error('photo confirmation operation conflict');
+          }
+          const rows = existingRows as MealItem[];
+          if (rows.some((row) => row.mealId !== parentId)) {
+            throw new Error('photo confirmation operation conflict');
+          }
+          const desired = await buildRows(
+            rows.map((row) => row.order),
+            rows[0]!.confirmedAt,
+          );
+          if (
+            rows.some((row, index) => itemSemantic(row) !== itemSemantic(desired[index]!))
+          ) {
+            throw new Error('photo confirmation operation conflict');
+          }
+          const photo = await database.mealPhotos.get(mealPhotoId(parentId));
+          if (photo === undefined) throw new Error('confirmed photo estimate is missing its photo');
+          const comparison: MealPhoto = {
+            ...photo,
+            thumbnail: snapshot.thumbnail.blob,
+            size: snapshot.thumbnail.blob.size,
+            width: snapshot.thumbnail.width,
+            height: snapshot.thumbnail.height,
+          };
+          await Dexie.waitFor(validatePhoto(comparison));
+          const same = await Dexie.waitFor(
+            samePhoto(photo, comparison),
+          );
+          if (!same) throw new Error('photo confirmation thumbnail conflict');
+          return rows;
+        }
+
+        if (estimate.status !== 'needs-confirmation') {
+          throw new Error('photo estimate must be in needs-confirmation state');
+        }
+        if (estimate.consent === null) throw new Error('photo estimate consent is missing');
+        if (estimate.consent.uploadBlobSha256 !== snapshot.uploadBlobSha256) {
+          throw new Error('photo estimate upload hash conflict');
+        }
+        const wallNow = Date.now();
+        requireSafeTimestamp(wallNow, 'Date.now()');
+        if (wallNow >= estimate.consent.expiresAt) {
+          throw new Error('photo estimate consent expired');
+        }
+        assertSelectedCandidates(snapshot.candidates, estimate);
+
+        const activeSiblings = allItems.filter((item) => item.deletedAt === null);
+        const activeOrders = activeSiblings.map((item) => item.order);
+        if (new Set(activeOrders).size !== activeOrders.length) {
+          throw new Error('active meal item orders must be unique');
+        }
+        if (globallyExistingItems.some((item) => item !== undefined)) {
+          throw new Error('photo confirmation operation conflict');
+        }
+        const firstOrder =
+          activeSiblings.reduce((maximum, item) => Math.max(maximum, item.order), -1) + 1;
+        const orders = snapshot.candidates.map((_candidate, index) => firstOrder + index);
+        if (orders.some((order) => !Number.isInteger(order) || order > 10_000)) {
+          throw new Error('meal item order must be an integer between 0 and 10000');
+        }
+
+        const existingPhoto = await database.mealPhotos.get(mealPhotoId(parentId));
+        if (existingPhoto !== undefined) await validatePhoto(existingPhoto);
+        const floors = [
+          estimate.updatedAt,
+          meal?.updatedAt,
+          meal?.deletedAt,
+          existingPhoto?.updatedAt,
+          ...allItems.flatMap((item) => [item.updatedAt, item.confirmedAt, item.deletedAt]),
+        ];
+        let now = wallNow;
+        for (const floor of floors) {
+          if (floor === null || floor === undefined) continue;
+          requireSafeTimestamp(floor, 'stored timestamp');
+          now = Math.max(now, floor);
+        }
+
+        const rows = await buildRows(orders, now);
+        const parent: Meal = {
+          id: parentId,
+          date: snapshot.date,
+          slot: snapshot.slot,
+          updatedAt: now,
+          deletedAt: null,
+        };
+        assertMealSnapshot(parent);
+        await database.meals.put(parent);
+        await database.mealItems.bulkPut(rows);
+
+        const mealSnapshotHash = await Dexie.waitFor(
+          buildMealSnapshotHash(parent, [...allItems, ...rows]),
+        );
+        const photo: MealPhoto = {
+          id: mealPhotoId(parentId),
+          mealId: parentId,
+          thumbnail: snapshot.thumbnail.blob,
+          size: snapshot.thumbnail.blob.size,
+          width: snapshot.thumbnail.width,
+          height: snapshot.thumbnail.height,
+          mealSnapshotHash,
+          updatedAt: now,
+        };
+        await Dexie.waitFor(validatePhoto(photo));
+        await database.mealPhotos.put(photo);
+
+        const confirmedEstimate: MealEstimate = {
+          ...estimate,
+          status: 'confirmed',
+          candidates: [],
+          consent: null,
+          error: null,
+          updatedAt: now,
+        };
+        validateEstimate(confirmedEstimate);
+        await database.mealEstimates.put(confirmedEstimate);
+        return rows;
+      },
+    );
+    return structuredClone(committed);
+  }
+
+  async function clearEstimate(mealId: string): Promise<void> {
+    parseMealId(mealId);
+    await database.transaction('rw', [database.mealEstimates], async () => {
+      await database.mealEstimates.delete(mealEstimateId(mealId));
+    });
+  }
+
   return {
     saveConfirmedFoodItem: save,
     updateMealItemAmount: updateAmount,
@@ -881,6 +1176,8 @@ export function createMealRepo(database: NutritionDb): MealRepository {
     putMealPhoto: putPhoto,
     putMealEstimate: putEstimate,
     clearMealTemporaryState: clearTemporary,
+    confirmPhotoEstimate: confirmPhoto,
+    clearMealEstimate: clearEstimate,
   };
 }
 
@@ -902,3 +1199,8 @@ export const putMealEstimate = (estimate: MealEstimate): Promise<void> =>
   defaultRepo.putMealEstimate(estimate);
 export const clearMealTemporaryState = (mealId: string): Promise<void> =>
   defaultRepo.clearMealTemporaryState(mealId);
+export const confirmPhotoEstimate = (
+  input: ConfirmPhotoEstimateInput,
+): Promise<MealItem[]> => defaultRepo.confirmPhotoEstimate(input);
+export const clearMealEstimate = (mealId: string): Promise<void> =>
+  defaultRepo.clearMealEstimate(mealId);
