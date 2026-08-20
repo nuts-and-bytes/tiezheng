@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "WebWorker"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["@cloudflare/workers-types", "vitest/globals"]
+  },
+  "include": [
+    "edge/**/*.ts",
+    "functions/**/*.ts",
+    "workers/**/*.ts",
+    "src/lib/photoAiContract.ts",
+    "src/lib/photoAiCandidate.ts",
+    "vitest.edge.config.ts"
+  ]
+}

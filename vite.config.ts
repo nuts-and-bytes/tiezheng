@@ -1,6 +1,6 @@
 /// <reference types="vitest/config" />
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vite';
+import { configDefaults, defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
@@ -39,6 +39,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    exclude: [...configDefaults.exclude, 'workers/**/*.worker.test.ts'],
     setupFiles: './src/test/setup.ts',
     alias: {
       'virtual:pwa-register/react': fileURLToPath(
