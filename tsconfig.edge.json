@@ -9,7 +9,7 @@
     "noUnusedParameters": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["@cloudflare/workers-types", "vitest/globals"]
+    "types": ["@cloudflare/vitest-pool-workers", "@cloudflare/workers-types", "vitest/globals"]
   },
   "include": [
     "edge/**/*.ts",
