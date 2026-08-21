@@ -155,6 +155,14 @@ function safeMicros(value: unknown): number {
   return value as number;
 }
 
+export function arkCostMicros(inputTokens: number, outputTokens: number): number {
+  if (!Number.isSafeInteger(inputTokens) || inputTokens < 0
+    || !Number.isSafeInteger(outputTokens) || outputTokens < 0) return invalid();
+  const result = inputTokens * 6 + outputTokens * 30;
+  if (!Number.isSafeInteger(result)) return invalid();
+  return result;
+}
+
 function accountKey(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) return invalid();
   return value;
@@ -628,6 +636,26 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       this.exec('UPDATE active_leases SET invoked = 1 WHERE lease_id = ?', lease.lease_id);
       this.exec(
         `UPDATE idempotency SET state = 'invoked'
+         WHERE account_key = ? AND idempotency_key = ? AND lease_id = ?`,
+        lease.account_key,
+        lease.idempotency_key,
+        lease.lease_id,
+      );
+    });
+  }
+
+  async abortAfterMarkBeforeProvider(input: LeaseInput): Promise<void> {
+    const value = leaseInput(input);
+    this.ctx.storage.transactionSync(() => {
+      this.cleanup(value.now);
+      const lease = this.getLease(value);
+      if (lease.invoked !== 1 || lease.retry_reserve_micros !== 0) return rejectedOperation();
+      this.changeDaily(lease.account_key, lease.day_bucket, 0, -1);
+      this.changeDaily(GLOBAL_SCOPE, lease.day_bucket, 0, -1);
+      this.changeCost(lease.month_bucket, 0, -lease.initial_reserve_micros);
+      this.exec('DELETE FROM active_leases WHERE lease_id = ?', lease.lease_id);
+      this.exec(
+        `DELETE FROM idempotency
          WHERE account_key = ? AND idempotency_key = ? AND lease_id = ?`,
         lease.account_key,
         lease.idempotency_key,

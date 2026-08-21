@@ -7,10 +7,12 @@ import { describe, expect, test } from 'vitest';
 import {
   GATEWAY_LIMITS,
   PhotoAiCoordinator,
+  arkCostMicros,
   type LeaseInput,
   type ReserveInput,
 } from './coordinator';
 import type { GatewayEnv } from './env';
+import worker from './index';
 
 const ACCOUNT_A = 'a'.repeat(64);
 const ACCOUNT_B = 'b'.repeat(64);
@@ -69,6 +71,38 @@ async function consumeWithoutCost(input: ReserveInput): Promise<void> {
   await stub.markInvoked(lease);
   await stub.settleFailure({ ...lease, actualCostMicros: 0, errorCode: 'invalid-estimate' });
 }
+
+describe('arkCostMicros', () => {
+  test('uses the exact approved integer micro-yuan formula', () => {
+    expect(arkCostMicros(100, 20)).toBe(1_200);
+    expect(arkCostMicros(256_000, 1_500)).toBe(1_581_000);
+  });
+
+  test.each([
+    [-1, 0],
+    [0, -1],
+    [0.5, 0],
+    [0, Number.NaN],
+    [Number.POSITIVE_INFINITY, 0],
+    [Number.MAX_SAFE_INTEGER, 0],
+  ])('rejects unsafe token counts or an unsafe result', (inputTokens, outputTokens) => {
+    expect(() => arkCostMicros(inputTokens, outputTokens)).toThrow('Invalid coordinator input');
+  });
+});
+
+describe('private gateway entrypoint', () => {
+  test('routes the default fetch through the fail-closed handler', async () => {
+    const response = await worker.fetch(
+      new Request('https://gateway.invalid/', { method: 'POST', body: 'private-image' }),
+      env as GatewayEnv,
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+});
 
 describe('PhotoAiCoordinator', () => {
   test('starts closed for an unseen account', async () => {
@@ -258,6 +292,66 @@ describe('PhotoAiCoordinator', () => {
     await stub.markInvoked(invoked);
     await stub.settleFailure({ ...invoked, actualCostMicros: 0, errorCode: 'invalid-estimate' });
     expect((await stub.status({ accountKey: ACCOUNT_A, now: BASE_NOW })).accountRemaining).toBe(9);
+  });
+
+  test('atomically compensates an invocation aborted before provider work', async () => {
+    const stub = await enable();
+    const input = reserveInput(ACCOUNT_A, 1);
+    const result = await stub.reserve(input);
+    if (result.kind !== 'reserved') throw new Error('expected reserved lease');
+    const lease = leaseInput(input, result.leaseId);
+    await stub.markInvoked(lease);
+    expect(await stub.status({ accountKey: ACCOUNT_A, now: BASE_NOW })).toMatchObject({
+      accountRemaining: 9,
+      globalRemaining: 29,
+      accountConcurrent: 1,
+      globalConcurrent: 1,
+      budgetSpentMicros: 0,
+      budgetReservedMicros: GATEWAY_LIMITS.initialAttemptReserveMicros,
+    });
+
+    await stub.abortAfterMarkBeforeProvider(lease);
+
+    expect(await stub.status({ accountKey: ACCOUNT_A, now: BASE_NOW })).toMatchObject({
+      accountRemaining: 10,
+      globalRemaining: 30,
+      accountConcurrent: 0,
+      globalConcurrent: 0,
+      budgetSpentMicros: 0,
+      budgetReservedMicros: 0,
+    });
+    expect((await stub.reserve(input)).kind).toBe('reserved');
+  });
+
+  test('rejects post-mark compensation for a pending lease or after retry cost is reserved', async () => {
+    const stub = await enable();
+    const pendingInput = reserveInput(ACCOUNT_A, 1);
+    const pendingResult = await stub.reserve(pendingInput);
+    if (pendingResult.kind !== 'reserved') throw new Error('expected pending lease');
+    const pendingLease = leaseInput(pendingInput, pendingResult.leaseId);
+    await runInDurableObject(stub, async (instance) => {
+      await expect(instance.abortAfterMarkBeforeProvider(pendingLease)).rejects.toThrow(
+        'Coordinator operation rejected',
+      );
+    });
+    await stub.abortBeforeInvoke(pendingLease);
+
+    const retryInput = reserveInput(ACCOUNT_A, 2);
+    const retryResult = await stub.reserve(retryInput);
+    if (retryResult.kind !== 'reserved') throw new Error('expected retry lease');
+    const retryLease = leaseInput(retryInput, retryResult.leaseId);
+    await stub.markInvoked(retryLease);
+    await stub.reserveRetryCost(retryLease);
+    await runInDurableObject(stub, async (instance) => {
+      await expect(instance.abortAfterMarkBeforeProvider(retryLease)).rejects.toThrow(
+        'Coordinator operation rejected',
+      );
+    });
+    await stub.settleFailure({
+      ...retryLease,
+      actualCostMicros: 0,
+      errorCode: 'provider-unavailable',
+    });
   });
 
   test('settles known cost exactly and unknown usage at the full reserved amount', async () => {
