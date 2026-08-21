@@ -40,6 +40,42 @@ type ReplacePresetFoodOutputDirectory = (options: {
 
 const OUTPUT_NAMES = ['rice.webp', 'chicken-breast.webp', 'lean-beef.webp'];
 
+const EXPECTED_CATALOG = [
+  [168878, 'SR Legacy', '熟米饭', 130, 2.69],
+  [171477, 'SR Legacy', '熟鸡胸肉', 165, 31],
+  [170236, 'SR Legacy', '熟瘦牛肉', 190, 36.1],
+  [173905, 'SR Legacy', '熟燕麦粥', 71, 2.54],
+  [172688, 'SR Legacy', '全麦面包', 252, 12.4],
+  [168483, 'SR Legacy', '熟红薯', 90, 2.01],
+  [169999, 'SR Legacy', '熟玉米', 96, 3.41],
+  [170440, 'SR Legacy', '熟土豆', 86, 1.71],
+  [172388, 'SR Legacy', '熟鸡腿肉', 179, 24.8],
+  [168250, 'SR Legacy', '熟猪里脊', 143, 26.2],
+  [175168, 'SR Legacy', '熟三文鱼', 206, 22.1],
+  [171971, 'SR Legacy', '熟虾仁', 119, 22.8],
+  [173424, 'SR Legacy', '水煮蛋', 155, 12.6],
+  [172475, 'SR Legacy', '北豆腐', 144, 17.3],
+  [171265, 'SR Legacy', '纯牛奶', 61, 3.15],
+  [171284, 'SR Legacy', '原味酸奶', 61, 3.47],
+  [169967, 'SR Legacy', '西兰花', 35, 2.38],
+  [168463, 'SR Legacy', '菠菜', 23, 2.97],
+  [170457, 'SR Legacy', '番茄', 18, 0.88],
+  [168409, 'SR Legacy', '黄瓜', 15, 0.65],
+  [170393, 'SR Legacy', '胡萝卜', 41, 0.93],
+  [171688, 'SR Legacy', '苹果', 52, 0.26],
+  [173944, 'SR Legacy', '香蕉', 89, 1.09],
+  [169097, 'SR Legacy', '橙子', 47, 0.94],
+  [2708352, 'Survey (FNDDS)', '熟面条', 137, 4.51],
+  [null, null, '馒头', 223.333333333333, 6.666666666667],
+  [171986, 'SR Legacy', '金枪鱼', 116, 25.5],
+  [171956, 'SR Legacy', '鳕鱼', 105, 22.8],
+  [175215, 'SR Legacy', '无糖豆浆', 33, 2.86],
+  [169249, 'SR Legacy', '生菜', 15, 1.36],
+  [169975, 'SR Legacy', '卷心菜', 25, 1.28],
+  [168437, 'SR Legacy', '香菇', 56, 1.56],
+  [167762, 'SR Legacy', '草莓', 32, 0.67],
+] as const;
+
 async function loadAssetPreparationModule() {
   const prepareUrl = pathToFileURL(
     resolve(REPOSITORY_ROOT, 'scripts/prepare-preset-food-images.mjs'),
@@ -74,6 +110,43 @@ async function transactionArtifacts(parentDirectory: string) {
     )
     .sort();
 }
+
+test('目录固定为 33 种基础食物并保留馒头', () => {
+  expect(
+    PRESET_FOODS.map((food) => [
+      food.fdcId,
+      food.fdcDataType,
+      food.name,
+      food.energyKcal,
+      food.proteinG,
+    ]),
+  ).toEqual(EXPECTED_CATALOG);
+  expect(new Set(PRESET_FOODS.map((food) => food.id)).size).toBe(33);
+  expect(new Set(PRESET_FOODS.map((food) => food.name)).size).toBe(33);
+});
+
+test('馒头保留国家卫健委 150 g 原始基准并可无损复算', () => {
+  const mantou = PRESET_FOODS.find((food) => food.name === '馒头');
+  expect(mantou).toMatchObject({
+    id: 'food:preset:nhc:adult-sarcopenia-2026:mantou',
+    fdcId: null,
+    fdcDataType: null,
+    originalEnergyValue: 335,
+    originalEnergyUnit: 'kcal',
+    originalProteinG: 10,
+    originalBasisAmount: 150,
+    originalBasisUnit: 'g',
+    basisAmount: 100,
+    basisUnit: 'g',
+    energyKcal: 223.333333333333,
+    proteinG: 6.666666666667,
+    sourceVersion: 'NHC-Adult-Sarcopenia-Diet-Guide-2026-Table-2.9',
+    license: '国家卫生健康委公开指南（国卫办食品函〔2026〕114号）',
+  });
+  expect(mantou?.conversionAssumptions).toContain(
+    '按指南表 2.9 的 150 g 原始份量线性换算到 100 g',
+  );
+});
 
 test('首批目录锁定官方 USDA 身份、快照和标准化值', () => {
   expect(
