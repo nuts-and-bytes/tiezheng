@@ -23,6 +23,36 @@ export interface SaveCustomFoodInput extends FoodNormalizationInput {
 }
 
 const PRESET_ORDER = new Map(PRESET_FOODS.map((food, index) => [food.id, index]));
+const LEGACY_V1_PRESET_OVERRIDES: Readonly<
+  Record<string, Pick<Food, 'preparation' | 'conversionAssumptions'>>
+> = {
+  'food:preset:usda:168878': {
+    preparation: '蒸煮',
+    conversionAssumptions: ['USDA cooked edible portion already reported per 100 g'],
+  },
+  'food:preset:usda:171477': {
+    preparation: '去皮熟制',
+    conversionAssumptions: ['USDA cooked edible portion already reported per 100 g'],
+  },
+  'food:preset:usda:170236': {
+    preparation: '瘦肉熟制',
+    conversionAssumptions: ['USDA cooked edible portion already reported per 100 g'],
+  },
+};
+const LEGACY_V1_PRESET_BY_ID = new Map(
+  PRESET_FOODS.slice(0, 3).map((food) => {
+    const override = LEGACY_V1_PRESET_OVERRIDES[food.id];
+    if (override === undefined) throw new Error(`missing v1 preset override for ${food.id}`);
+    return [
+      food.id,
+      {
+        ...food,
+        ...override,
+        conversionAssumptions: [...override.conversionAssumptions],
+      },
+    ] as const;
+  }),
+);
 const MAX_TEXT_LENGTH = 500;
 const MAX_FOOD_LABEL_LENGTH = 120;
 const MAX_STRING_ARRAY_ITEMS = 30;
@@ -192,8 +222,20 @@ export async function seedPresetFoods(): Promise<void> {
   await db.transaction('rw', db.foods, async () => {
     const existing = await db.foods.bulkGet(PRESET_FOODS.map((food) => food.id));
     const missing = PRESET_FOODS.filter((_food, index) => existing[index] === undefined);
+    const upgrades = PRESET_FOODS.filter((food, index) => {
+      const existingFood = existing[index];
+      const legacy = LEGACY_V1_PRESET_BY_ID.get(food.id);
+      return (
+        existingFood !== undefined &&
+        legacy !== undefined &&
+        stableJson(existingFood) === stableJson(legacy)
+      );
+    });
     if (missing.length > 0) {
       await db.foods.bulkAdd(missing.map((food) => structuredClone(food)));
+    }
+    if (upgrades.length > 0) {
+      await db.foods.bulkPut(upgrades.map((food) => structuredClone(food)));
     }
   });
 }

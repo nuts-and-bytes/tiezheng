@@ -16,6 +16,7 @@ import sharp from 'sharp';
 import { expect, test } from 'vitest';
 import { PRESET_FOOD_IMAGE_MANIFEST } from './presetFoodImageManifest.generated';
 import { PRESET_FOODS } from './presetFoods';
+import { normalizeFoodNutrients } from '../lib/foodNormalization';
 import type { Food } from '../lib/nutritionTypes';
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, '../..');
@@ -76,6 +77,62 @@ const EXPECTED_CATALOG = [
   [167762, 'SR Legacy', '草莓', 32, 0.67],
 ] as const;
 
+type ExpectedPresetFoodMetadata = readonly [
+  id: string,
+  fdcId: number | null,
+  fdcDataType: Food['fdcDataType'],
+  name: string,
+  aliases: readonly string[],
+  rawOrCooked: Food['rawOrCooked'],
+  preparation: string,
+  originalEnergyValue: number,
+  originalProteinG: number,
+  originalBasisAmount: number,
+  energyKcal: number,
+  proteinG: number,
+  sourceRetrievedAt: string,
+  source: string,
+  sourceVersion: string,
+  license: string,
+  conversionAssumptions: readonly string[],
+];
+
+const EXPECTED_PRESET_FOOD_METADATA = [
+  ['food:preset:usda:168878', 168878, 'SR Legacy', '熟米饭', ['米饭'], 'cooked', '清水蒸煮', 130, 2.69, 100, 130, 2.69, '2026-08-14', 'USDA FoodData Central FDC 168878', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:171477', 171477, 'SR Legacy', '熟鸡胸肉', ['鸡胸肉'], 'cooked', '去皮熟制', 165, 31, 100, 165, 31, '2026-08-14', 'USDA FoodData Central FDC 171477', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:170236', 170236, 'SR Legacy', '熟瘦牛肉', ['牛肉'], 'cooked', '瘦肉熟制', 190, 36.1, 100, 190, 36.1, '2026-08-14', 'USDA FoodData Central FDC 170236', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:173905', 173905, 'SR Legacy', '熟燕麦粥', ['燕麦粥', '燕麦'], 'cooked', '清水煮熟', 71, 2.54, 100, 71, 2.54, '2026-08-21', 'USDA FoodData Central FDC 173905', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:172688', 172688, 'SR Legacy', '全麦面包', ['全麦吐司'], 'not-applicable', '原味即食', 252, 12.4, 100, 252, 12.4, '2026-08-21', 'USDA FoodData Central FDC 172688', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:168483', 168483, 'SR Legacy', '熟红薯', ['红薯', '地瓜'], 'cooked', '烘烤熟制，无添加', 90, 2.01, 100, 90, 2.01, '2026-08-21', 'USDA FoodData Central FDC 168483', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:169999', 169999, 'SR Legacy', '熟玉米', ['玉米'], 'cooked', '水煮沥干，无盐', 96, 3.41, 100, 96, 3.41, '2026-08-21', 'USDA FoodData Central FDC 169999', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:170440', 170440, 'SR Legacy', '熟土豆', ['土豆', '马铃薯'], 'cooked', '去皮水煮，无盐', 86, 1.71, 100, 86, 1.71, '2026-08-21', 'USDA FoodData Central FDC 170440', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:172388', 172388, 'SR Legacy', '熟鸡腿肉', ['鸡腿肉'], 'cooked', '去皮烤制', 179, 24.8, 100, 179, 24.8, '2026-08-21', 'USDA FoodData Central FDC 172388', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:168250', 168250, 'SR Legacy', '熟猪里脊', ['猪里脊', '里脊肉'], 'cooked', '瘦肉烤制', 143, 26.2, 100, 143, 26.2, '2026-08-21', 'USDA FoodData Central FDC 168250', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:175168', 175168, 'SR Legacy', '熟三文鱼', ['三文鱼', '鲑鱼'], 'cooked', '大西洋养殖三文鱼干热熟制', 206, 22.1, 100, 206, 22.1, '2026-08-21', 'USDA FoodData Central FDC 175168', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:171971', 171971, 'SR Legacy', '熟虾仁', ['虾仁'], 'cooked', '湿热熟制', 119, 22.8, 100, 119, 22.8, '2026-08-21', 'USDA FoodData Central FDC 171971', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:173424', 173424, 'SR Legacy', '水煮蛋', ['鸡蛋', '煮鸡蛋'], 'cooked', '全蛋水煮', 155, 12.6, 100, 155, 12.6, '2026-08-21', 'USDA FoodData Central FDC 173424', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:172475', 172475, 'SR Legacy', '北豆腐', ['老豆腐'], 'not-applicable', '硫酸钙凝固硬豆腐', 144, 17.3, 100, 144, 17.3, '2026-08-21', 'USDA FoodData Central FDC 172475', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:171265', 171265, 'SR Legacy', '纯牛奶', ['牛奶'], 'not-applicable', '全脂 3.25%，无糖', 61, 3.15, 100, 61, 3.15, '2026-08-21', 'USDA FoodData Central FDC 171265', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:171284', 171284, 'SR Legacy', '原味酸奶', ['酸奶'], 'not-applicable', '全脂原味，无糖', 61, 3.47, 100, 61, 3.47, '2026-08-21', 'USDA FoodData Central FDC 171284', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:169967', 169967, 'SR Legacy', '西兰花', ['绿花椰菜'], 'cooked', '水煮沥干，无盐', 35, 2.38, 100, 35, 2.38, '2026-08-21', 'USDA FoodData Central FDC 169967', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:168463', 168463, 'SR Legacy', '菠菜', [], 'cooked', '水煮沥干，无盐', 23, 2.97, 100, 23, 2.97, '2026-08-21', 'USDA FoodData Central FDC 168463', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:170457', 170457, 'SR Legacy', '番茄', ['西红柿'], 'raw', '生食，可食部分', 18, 0.88, 100, 18, 0.88, '2026-08-21', 'USDA FoodData Central FDC 170457', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:168409', 168409, 'SR Legacy', '黄瓜', [], 'raw', '带皮生食，可食部分', 15, 0.65, 100, 15, 0.65, '2026-08-21', 'USDA FoodData Central FDC 168409', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:170393', 170393, 'SR Legacy', '胡萝卜', [], 'raw', '生食，可食部分', 41, 0.93, 100, 41, 0.93, '2026-08-21', 'USDA FoodData Central FDC 170393', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:171688', 171688, 'SR Legacy', '苹果', [], 'raw', '带皮生食，可食部分', 52, 0.26, 100, 52, 0.26, '2026-08-21', 'USDA FoodData Central FDC 171688', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:173944', 173944, 'SR Legacy', '香蕉', [], 'raw', '去皮生食，可食部分', 89, 1.09, 100, 89, 1.09, '2026-08-21', 'USDA FoodData Central FDC 173944', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:169097', 169097, 'SR Legacy', '橙子', [], 'raw', '去皮生食，可食部分', 47, 0.94, 100, 47, 0.94, '2026-08-21', 'USDA FoodData Central FDC 169097', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:2708352', 2708352, 'Survey (FNDDS)', '熟面条', ['面条'], 'cooked', '清水煮熟，沥干', 137, 4.51, 100, 137, 4.51, '2026-08-21', 'USDA FoodData Central FDC 2708352', 'USDA-FDC-FNDDS-2021-2023-2024-10-31', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:nhc:adult-sarcopenia-2026:mantou', null, null, '馒头', ['白馒头'], 'cooked', '原味无馅蒸制', 335, 10, 150, 223.333333333333, 6.666666666667, '2026-08-21', '国家卫生健康委《成人肌少症食养指南（2026年版）》表 2.9', 'NHC-Adult-Sarcopenia-Diet-Guide-2026-Table-2.9', '国家卫生健康委公开指南（国卫办食品函〔2026〕114号）', ['按指南表 2.9 的 150 g 原始份量线性换算到 100 g']],
+  ['food:preset:usda:171986', 171986, 'SR Legacy', '金枪鱼', ['吞拿鱼'], 'not-applicable', '水浸罐头、沥干、无盐', 116, 25.5, 100, 116, 25.5, '2026-08-21', 'USDA FoodData Central FDC 171986', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:171956', 171956, 'SR Legacy', '鳕鱼', [], 'cooked', '大西洋鳕鱼干热熟制', 105, 22.8, 100, 105, 22.8, '2026-08-21', 'USDA FoodData Central FDC 171956', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:175215', 175215, 'SR Legacy', '无糖豆浆', ['豆浆'], 'not-applicable', '无糖强化豆浆', 33, 2.86, 100, 33, 2.86, '2026-08-21', 'USDA FoodData Central FDC 175215', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:169249', 169249, 'SR Legacy', '生菜', ['绿叶生菜'], 'raw', '绿叶生菜生食', 15, 1.36, 100, 15, 1.36, '2026-08-21', 'USDA FoodData Central FDC 169249', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:169975', 169975, 'SR Legacy', '卷心菜', ['包菜', '圆白菜'], 'raw', '生食，可食部分', 25, 1.28, 100, 25, 1.28, '2026-08-21', 'USDA FoodData Central FDC 169975', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:168437', 168437, 'SR Legacy', '香菇', [], 'cooked', '熟制，无盐', 56, 1.56, 100, 56, 1.56, '2026-08-21', 'USDA FoodData Central FDC 168437', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+  ['food:preset:usda:167762', 167762, 'SR Legacy', '草莓', [], 'raw', '生食，可食部分', 32, 0.67, 100, 32, 0.67, '2026-08-21', 'USDA FoodData Central FDC 167762', 'USDA-FDC-SR-Legacy-2019-04-01', 'CC0 1.0', ['USDA edible portion reported per 100 g']],
+] as const satisfies readonly ExpectedPresetFoodMetadata[];
+
 async function loadAssetPreparationModule() {
   const prepareUrl = pathToFileURL(
     resolve(REPOSITORY_ROOT, 'scripts/prepare-preset-food-images.mjs'),
@@ -125,6 +182,45 @@ test('目录固定为 33 种基础食物并保留馒头', () => {
   expect(new Set(PRESET_FOODS.map((food) => food.name)).size).toBe(33);
 });
 
+test('33 项目录保留完整独立元数据快照', () => {
+  expect(PRESET_FOODS).toHaveLength(EXPECTED_PRESET_FOOD_METADATA.length);
+  expect(
+    PRESET_FOODS.map((food) => [
+      food.id,
+      food.fdcId,
+      food.fdcDataType,
+      food.name,
+      food.aliases,
+      food.rawOrCooked,
+      food.preparation,
+      food.originalEnergyValue,
+      food.originalProteinG,
+      food.originalBasisAmount,
+      food.energyKcal,
+      food.proteinG,
+      food.sourceRetrievedAt,
+      food.source,
+      food.sourceVersion,
+      food.license,
+      food.conversionAssumptions,
+    ]),
+  ).toEqual(EXPECTED_PRESET_FOOD_METADATA);
+
+  for (const food of PRESET_FOODS) {
+    expect(food).toMatchObject({
+      originalEnergyUnit: 'kcal',
+      originalBasisUnit: 'g',
+      basisAmount: 100,
+      basisUnit: 'g',
+      ediblePortionRatio: 1,
+      densityGPerMl: null,
+      preset: true,
+      updatedAt: 0,
+      deletedAt: null,
+    });
+  }
+});
+
 test('馒头保留国家卫健委 150 g 原始基准并可无损复算', () => {
   const mantou = PRESET_FOODS.find((food) => food.name === '馒头');
   expect(mantou).toMatchObject({
@@ -148,9 +244,30 @@ test('馒头保留国家卫健委 150 g 原始基准并可无损复算', () => {
   );
 });
 
+test('每项保存原始基准且可由归一化函数复算', () => {
+  for (const food of PRESET_FOODS) {
+    const normalized = normalizeFoodNutrients({
+      originalEnergyValue: food.originalEnergyValue,
+      originalEnergyUnit: food.originalEnergyUnit,
+      originalProteinG: food.originalProteinG,
+      originalBasisAmount: food.originalBasisAmount,
+      originalBasisUnit: food.originalBasisUnit,
+      normalizedBasisAmount: food.basisAmount,
+      normalizedBasisUnit: food.basisUnit,
+      ediblePortionRatio: food.ediblePortionRatio,
+      densityGPerMl: food.densityGPerMl,
+      conversionAssumptions: food.conversionAssumptions.slice(0, 1),
+    });
+    expect(normalized.energyKcal).toBe(food.energyKcal);
+    expect(normalized.proteinG).toBe(food.proteinG);
+    expect(Number.isFinite(food.energyKcal)).toBe(true);
+    expect(Number.isFinite(food.proteinG)).toBe(true);
+  }
+});
+
 test('首批目录锁定官方 USDA 身份、快照和标准化值', () => {
   expect(
-    PRESET_FOODS.map(
+    PRESET_FOODS.slice(0, 3).map(
       ({ fdcId, fdcDataType, sourceVersion, energyKcal, proteinG, license }) => ({
         fdcId,
         fdcDataType,
@@ -187,7 +304,7 @@ test('首批目录锁定官方 USDA 身份、快照和标准化值', () => {
     },
   ]);
   expect(
-    PRESET_FOODS.every(
+    PRESET_FOODS.slice(0, 3).every(
       (food) =>
         food.originalBasisAmount === 100 &&
         food.basisAmount === 100 &&
@@ -205,15 +322,15 @@ test('预设目录在运行时深冻结，不共享可变嵌套数组', () => {
     expect(Object.isFrozen(food.conversionAssumptions)).toBe(true);
   }
 
-  expect(new Set(PRESET_FOODS.map((food) => food.aliases)).size).toBe(3);
-  expect(new Set(PRESET_FOODS.map((food) => food.conversionAssumptions)).size).toBe(3);
+  expect(new Set(PRESET_FOODS.map((food) => food.aliases)).size).toBe(33);
+  expect(new Set(PRESET_FOODS.map((food) => food.conversionAssumptions)).size).toBe(33);
 });
 
 test('预设目录保持 Food[] 和 Food 的对外类型兼容', () => {
   const acceptFoodArray = (foods: Food[]) => foods.length;
   const acceptFood = (food: Food) => food.id;
 
-  expect(acceptFoodArray(PRESET_FOODS)).toBe(3);
+  expect(acceptFoodArray(PRESET_FOODS)).toBe(33);
   expect(acceptFood(PRESET_FOODS[0])).toBe('food:preset:usda:168878');
   expect(Object.isFrozen(PRESET_FOODS)).toBe(true);
   expect(Object.isFrozen(PRESET_FOODS[0].aliases)).toBe(true);

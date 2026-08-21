@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { PRESET_FOODS } from '../data/presetFoods';
 import { db } from '../lib/db';
+import type { Food } from '../lib/nutritionTypes';
 import { resetDb } from '../test/dbTestUtils';
 import {
   getFood,
@@ -37,13 +38,115 @@ const customInput: SaveCustomFoodInput = {
   license: 'user-provided',
 };
 
-test('预置 seed 并发幂等，数据库只有三条预置且列表保持目录顺序', async () => {
+const LEGACY_V1_PRESET_FOODS: Food[] = [
+  {
+    id: 'food:preset:usda:168878',
+    name: '熟米饭',
+    aliases: ['米饭'],
+    rawOrCooked: 'cooked',
+    preparation: '蒸煮',
+    originalEnergyValue: 130,
+    originalEnergyUnit: 'kcal',
+    originalProteinG: 2.69,
+    originalBasisAmount: 100,
+    originalBasisUnit: 'g',
+    basisAmount: 100,
+    basisUnit: 'g',
+    energyKcal: 130,
+    proteinG: 2.69,
+    ediblePortionRatio: 1,
+    densityGPerMl: null,
+    conversionAssumptions: ['USDA cooked edible portion already reported per 100 g'],
+    fdcId: 168878,
+    fdcDataType: 'SR Legacy',
+    sourceRetrievedAt: '2026-08-14',
+    source: 'USDA FoodData Central FDC 168878',
+    sourceVersion: 'USDA-FDC-SR-Legacy-2019-04-01',
+    license: 'CC0 1.0',
+    preset: true,
+    updatedAt: 0,
+    deletedAt: null,
+  },
+  {
+    id: 'food:preset:usda:171477',
+    name: '熟鸡胸肉',
+    aliases: ['鸡胸肉'],
+    rawOrCooked: 'cooked',
+    preparation: '去皮熟制',
+    originalEnergyValue: 165,
+    originalEnergyUnit: 'kcal',
+    originalProteinG: 31,
+    originalBasisAmount: 100,
+    originalBasisUnit: 'g',
+    basisAmount: 100,
+    basisUnit: 'g',
+    energyKcal: 165,
+    proteinG: 31,
+    ediblePortionRatio: 1,
+    densityGPerMl: null,
+    conversionAssumptions: ['USDA cooked edible portion already reported per 100 g'],
+    fdcId: 171477,
+    fdcDataType: 'SR Legacy',
+    sourceRetrievedAt: '2026-08-14',
+    source: 'USDA FoodData Central FDC 171477',
+    sourceVersion: 'USDA-FDC-SR-Legacy-2019-04-01',
+    license: 'CC0 1.0',
+    preset: true,
+    updatedAt: 0,
+    deletedAt: null,
+  },
+  {
+    id: 'food:preset:usda:170236',
+    name: '熟瘦牛肉',
+    aliases: ['牛肉'],
+    rawOrCooked: 'cooked',
+    preparation: '瘦肉熟制',
+    originalEnergyValue: 190,
+    originalEnergyUnit: 'kcal',
+    originalProteinG: 36.1,
+    originalBasisAmount: 100,
+    originalBasisUnit: 'g',
+    basisAmount: 100,
+    basisUnit: 'g',
+    energyKcal: 190,
+    proteinG: 36.1,
+    ediblePortionRatio: 1,
+    densityGPerMl: null,
+    conversionAssumptions: ['USDA cooked edible portion already reported per 100 g'],
+    fdcId: 170236,
+    fdcDataType: 'SR Legacy',
+    sourceRetrievedAt: '2026-08-14',
+    source: 'USDA FoodData Central FDC 170236',
+    sourceVersion: 'USDA-FDC-SR-Legacy-2019-04-01',
+    license: 'CC0 1.0',
+    preset: true,
+    updatedAt: 0,
+    deletedAt: null,
+  },
+];
+
+test('预置 seed 并发幂等，数据库包含完整预置目录且列表保持目录顺序', async () => {
   await Promise.all([seedPresetFoods(), seedPresetFoods(), seedPresetFoods()]);
 
-  expect((await db.foods.toArray()).filter((food) => food.preset)).toHaveLength(3);
+  expect((await db.foods.toArray()).filter((food) => food.preset)).toHaveLength(
+    PRESET_FOODS.length,
+  );
   expect((await listFoods()).map((food) => food.id)).toEqual(
     PRESET_FOODS.map((food) => food.id),
   );
+});
+
+test('预置 seed 仅升级完整匹配旧 v1 快照的首批预置', async () => {
+  await db.foods.bulkAdd(structuredClone(LEGACY_V1_PRESET_FOODS));
+
+  await seedPresetFoods();
+
+  expect(await db.foods.count()).toBe(PRESET_FOODS.length);
+  await expect(
+    Promise.all(
+      PRESET_FOODS.slice(0, 3).map((food) => db.foods.get(food.id)),
+    ),
+  ).resolves.toEqual(PRESET_FOODS.slice(0, 3));
 });
 
 test('预置 seed 只补缺失项，不覆盖数据库中的已有同 id 行', async () => {
@@ -52,7 +155,7 @@ test('预置 seed 只补缺失项，不覆盖数据库中的已有同 id 行', a
 
   await seedPresetFoods();
 
-  expect(await db.foods.count()).toBe(3);
+  expect(await db.foods.count()).toBe(PRESET_FOODS.length);
   expect((await db.foods.get(existing.id))?.name).toBe('用户保留名称');
 });
 

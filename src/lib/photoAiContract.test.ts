@@ -124,7 +124,7 @@ describe('photo AI public contract', () => {
       model: 'doubao-seed-2-1-pro-260628',
       prompt: 'tiezheng-food-photo-zh-v1',
       schema: 'tiezheng-photo-estimate-v1',
-      catalog: 'tiezheng-food-catalog-v1',
+      catalog: 'tiezheng-food-catalog-v2',
       transform: 'tiezheng-photo-webp-v1',
       uncertainty: 'tiezheng-photo-uncertainty-v1',
       providerPolicy: 'volcengine-ark-policy-2026-08-18',
@@ -229,7 +229,7 @@ describe('photo AI public contract', () => {
       modelVersion: 'doubao-seed-2-1-pro-260628';
       promptVersion: 'tiezheng-food-photo-zh-v1';
       schemaVersion: 'tiezheng-photo-estimate-v1';
-      catalogVersion: 'tiezheng-food-catalog-v1';
+      catalogVersion: 'tiezheng-food-catalog-v2';
       transformVersion: 'tiezheng-photo-webp-v1';
       uncertaintyVersion: 'tiezheng-photo-uncertainty-v1';
       providerPolicyVersion: 'volcengine-ark-policy-2026-08-18';
@@ -436,6 +436,18 @@ describe('parsePhotoAiEstimateResponse variants', () => {
 });
 
 describe('complete estimate closed-world parsing', () => {
+  test('rejects the previous catalog version in an otherwise valid success fixture', () => {
+    expectGenericPhotoAiError(() =>
+      parsePhotoAiEstimateResponse({
+        ...photoAiEstimateSuccessFixture,
+        versions: {
+          ...photoAiEstimateSuccessFixture.versions,
+          catalog: 'tiezheng-food-catalog-v1',
+        },
+      }),
+    );
+  });
+
   test.each(Object.keys(PHOTO_AI_VERSIONS) as Array<keyof typeof PHOTO_AI_VERSIONS>)(
     'rejects a mismatched %s version',
     (key) => {

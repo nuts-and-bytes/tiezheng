@@ -127,10 +127,53 @@ describe('createDoubaoAdapter', () => {
     expect(JSON.stringify(body)).toContain(PHOTO_AI_VERSIONS.prompt);
     expect(JSON.stringify(body)).toContain(PHOTO_AI_VERSIONS.schema);
     expect(JSON.stringify(body)).toContain(PHOTO_AI_VERSIONS.catalog);
-    for (const food of PRESET_FOODS) {
-      expect(JSON.stringify(body)).toContain(food.id);
-      expect(JSON.stringify(body)).toContain(food.name);
-      expect(JSON.stringify(body)).not.toContain(String(food.energyKcal));
+    if (body === undefined || !Array.isArray(body.input)) {
+      throw new Error('expected request input');
+    }
+    const firstInput = body.input[0];
+    if (
+      typeof firstInput !== 'object' ||
+      firstInput === null ||
+      Array.isArray(firstInput) ||
+      !Array.isArray((firstInput as Record<string, unknown>).content)
+    ) {
+      throw new Error('expected request input content');
+    }
+    const inputText = (firstInput as { content: unknown[] }).content.find(
+      (content) =>
+        typeof content === 'object' &&
+        content !== null &&
+        !Array.isArray(content) &&
+        (content as Record<string, unknown>).type === 'input_text',
+    );
+    if (
+      typeof inputText !== 'object' ||
+      inputText === null ||
+      Array.isArray(inputText) ||
+      typeof (inputText as Record<string, unknown>).text !== 'string'
+    ) {
+      throw new Error('expected input_text catalog payload');
+    }
+    const catalogPayload = JSON.parse((inputText as { text: string }).text) as {
+      catalogHints: unknown[];
+    };
+    expect(catalogPayload).toEqual({
+      schemaVersion: PHOTO_AI_VERSIONS.schema,
+      catalogVersion: PHOTO_AI_VERSIONS.catalog,
+      catalogHints: PRESET_FOODS.map(({ id, name, aliases, preparation }) => ({
+        id,
+        name,
+        aliases,
+        preparation,
+      })),
+    });
+    for (const hint of catalogPayload.catalogHints) {
+      expect(Object.keys(hint as object).sort()).toEqual([
+        'aliases',
+        'id',
+        'name',
+        'preparation',
+      ]);
     }
     expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 40 });
     expect(result.raw).toEqual({ candidates: [rawCandidate()] });

@@ -7,7 +7,7 @@ export const PHOTO_AI_VERSIONS = Object.freeze({
   model: 'doubao-seed-2-1-pro-260628',
   prompt: 'tiezheng-food-photo-zh-v1',
   schema: 'tiezheng-photo-estimate-v1',
-  catalog: 'tiezheng-food-catalog-v1',
+  catalog: 'tiezheng-food-catalog-v2',
   transform: 'tiezheng-photo-webp-v1',
   uncertainty: 'tiezheng-photo-uncertainty-v1',
   providerPolicy: 'volcengine-ark-policy-2026-08-18',
