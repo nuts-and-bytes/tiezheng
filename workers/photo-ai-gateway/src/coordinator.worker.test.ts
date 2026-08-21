@@ -2,7 +2,7 @@ import {
   env,
   runInDurableObject,
 } from 'cloudflare:test';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import {
   GATEWAY_LIMITS,
@@ -91,6 +91,61 @@ describe('arkCostMicros', () => {
 });
 
 describe('private gateway entrypoint', () => {
+  test('serves the exact coordinator session through the private route', async () => {
+    const stub = await enable();
+    const gatewayEnv = {
+      ...env,
+      PHOTO_AI_GATEWAY_ENABLED: 'true',
+      ARK_API_KEY: 'test-ark-key',
+      PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    } as GatewayEnv;
+
+    const response = await worker.fetch(
+      new Request('https://photo-ai-gateway.internal/session', {
+        headers: { 'x-tiezheng-account-key': ACCOUNT_A },
+      }),
+      gatewayEnv,
+    );
+    const expected = await stub.status({ accountKey: ACCOUNT_A, now: Date.now() });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await response.json()).toEqual({
+      ok: true,
+      enabled: true,
+      accountRemaining: expected.accountRemaining,
+      globalRemaining: expected.globalRemaining,
+      resetAt: expected.resetAt,
+    });
+  });
+
+  test('rejects an incomplete estimate configuration before touching the coordinator', async () => {
+    const getByName = vi.fn();
+    const response = await worker.fetch(
+      new Request('https://photo-ai-gateway.internal/session', {
+        headers: { 'x-tiezheng-account-key': ACCOUNT_A },
+      }),
+      {
+        ...env,
+        PHOTO_AI_GATEWAY_ENABLED: 'true',
+        ARK_API_KEY: 'test-ark-key',
+        PHOTO_AI_CACHE_AES_KEY: 'not-a-canonical-key',
+        PHOTO_AI_COORDINATOR: { getByName } as unknown as GatewayEnv['PHOTO_AI_COORDINATOR'],
+      } as GatewayEnv,
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      ok: false,
+      code: 'service-disabled',
+      retryAt: null,
+      resetAt: null,
+    });
+    expect(getByName).not.toHaveBeenCalled();
+  });
+
   test('routes the default fetch through the fail-closed handler', async () => {
     const response = await worker.fetch(
       new Request('https://gateway.invalid/', { method: 'POST', body: 'private-image' }),

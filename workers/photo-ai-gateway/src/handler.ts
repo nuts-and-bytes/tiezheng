@@ -77,7 +77,10 @@ async function requestFingerprint(accountKey: string, uploadBlobSha256: string):
   }));
 }
 
-function configured(env: GatewayEnv, monthlyBudgetMicros: number): boolean {
+export function isPhotoAiGatewayConfigured(
+  env: GatewayEnv,
+  monthlyBudgetMicros: number,
+): boolean {
   const configuredMonthlyBudgetMicros = Number(env.PHOTO_AI_MONTHLY_BUDGET_MICROS);
   return env.PHOTO_AI_GATEWAY_ENABLED === 'true'
     && env.PHOTO_AI_MODEL === PHOTO_AI_VERSIONS.model
@@ -117,7 +120,9 @@ export async function handlePhotoAiRequest(
     now: Date.now,
     ...overrides,
   };
-  if (!configured(env, dependencies.monthlyBudgetMicros)) return failure('service-disabled', 503);
+  if (!isPhotoAiGatewayConfigured(env, dependencies.monthlyBudgetMicros)) {
+    return failure('service-disabled', 503);
+  }
   const accountKey = request.headers.get('x-tiezheng-account-key');
   if (accountKey === null || !/^[a-f0-9]{64}$/.test(accountKey)) {
     return failure('service-disabled', 503);
