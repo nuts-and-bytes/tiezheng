@@ -14,22 +14,67 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import sharp from 'sharp';
 import { expect, test } from 'vitest';
+// The production asset script is an ESM-only Node module outside tsconfig's include set.
+// @ts-expect-error TypeScript has no declaration file for this intentionally plain .mjs module.
+import { PRESET_FOOD_IMAGE_OUTPUT_NAMES as UNTYPED_OUTPUT_NAMES } from '../../scripts/preset-food-image-output-names.mjs';
 import { PRESET_FOOD_IMAGE_MANIFEST } from './presetFoodImageManifest.generated';
 import { PRESET_FOODS } from './presetFoods';
 import { normalizeFoodNutrients } from '../lib/foodNormalization';
 import type { Food } from '../lib/nutritionTypes';
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, '../..');
+const OUTPUT_NAMES = UNTYPED_OUTPUT_NAMES as readonly string[];
+const EXPECTED_IMAGE_OUTPUT_NAMES = [
+  'rice.webp',
+  'chicken-breast.webp',
+  'lean-beef.webp',
+  'oatmeal-porridge.webp',
+  'whole-wheat-bread.webp',
+  'sweet-potato.webp',
+  'sweet-corn.webp',
+  'boiled-potato.webp',
+  'chicken-thigh.webp',
+  'pork-tenderloin.webp',
+  'salmon.webp',
+  'shrimp.webp',
+  'boiled-egg.webp',
+  'firm-tofu.webp',
+  'whole-milk.webp',
+  'plain-yogurt.webp',
+  'broccoli.webp',
+  'spinach.webp',
+  'tomato.webp',
+  'cucumber.webp',
+  'carrot.webp',
+  'apple.webp',
+  'banana.webp',
+  'orange.webp',
+  'cooked-noodles.webp',
+  'mantou.webp',
+  'tuna.webp',
+  'cod.webp',
+  'unsweetened-soy-milk.webp',
+  'leaf-lettuce.webp',
+  'cabbage.webp',
+  'shiitake.webp',
+  'strawberry.webp',
+] as const;
 
 type PreparePresetFoodImages = (options: {
   sourcePaths: string[];
   outputDirectory: string;
 }) => Promise<void>;
 
+type EncodedPresetFoodFile = Readonly<{
+  name: string;
+  bytes: Uint8Array;
+}>;
+
 type ReplacePresetFoodOutputDirectory = (options: {
   outputDirectory: string;
-  encodedFiles: Uint8Array[];
-  operationId: string;
+  encodedFiles: readonly EncodedPresetFoodFile[];
+  expectedOutputNames: readonly string[];
+  operationId?: string;
   fileOps?: {
     rename?: (oldPath: string, newPath: string) => Promise<void>;
     remove?: (
@@ -38,8 +83,6 @@ type ReplacePresetFoodOutputDirectory = (options: {
     ) => Promise<void>;
   };
 }) => Promise<void>;
-
-const OUTPUT_NAMES = ['rice.webp', 'chicken-breast.webp', 'lean-beef.webp'];
 
 const EXPECTED_CATALOG = [
   [168878, 'SR Legacy', '熟米饭', 130, 2.69],
@@ -143,19 +186,94 @@ async function loadAssetPreparationModule() {
   };
 }
 
-async function writeBatch(directory: string, values: readonly Uint8Array[]) {
+function byteBatch(prefix: string): Buffer[] {
+  return OUTPUT_NAMES.map((name) => Buffer.from(`${prefix}-${name}`));
+}
+
+function encodedBatch(values: readonly Uint8Array[]): EncodedPresetFoodFile[] {
+  if (values.length !== OUTPUT_NAMES.length) {
+    throw new Error('test fixture must contain exactly 33 encoded files');
+  }
+  return OUTPUT_NAMES.map((name, index) => ({ name, bytes: values[index] }));
+}
+
+async function writeBatch(
+  directory: string,
+  values: readonly Uint8Array[],
+  names: readonly string[] = OUTPUT_NAMES,
+) {
+  if (values.length !== names.length) {
+    throw new Error('fixture length mismatch');
+  }
   await mkdir(directory, { recursive: true });
   await Promise.all(
-    OUTPUT_NAMES.map((name, index) =>
+    names.map((name, index) =>
       writeFile(resolve(directory, name), values[index]),
     ),
   );
 }
 
-async function readBatch(directory: string) {
+async function readBatch(
+  directory: string,
+  names: readonly string[] = OUTPUT_NAMES,
+) {
   return Promise.all(
-    OUTPUT_NAMES.map((name) => readFile(resolve(directory, name))),
+    names.map((name) => readFile(resolve(directory, name))),
   );
+}
+
+async function coloredImage(
+  index: number,
+  format: 'png' | 'webp',
+): Promise<Buffer> {
+  const image = sharp({
+    create: {
+      width: 256,
+      height: 256,
+      channels: 4,
+      background: {
+        r: (index * 47) % 256,
+        g: (index * 83) % 256,
+        b: (index * 131) % 256,
+        alpha: 1,
+      },
+    },
+  });
+  return format === 'png' ? image.png().toBuffer() : image.webp().toBuffer();
+}
+
+async function assetFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'tiezheng-food-assets-v2-'));
+  const sourceDirectory = resolve(root, 'sources');
+  const outputDirectory = resolve(root, 'food-presets');
+  await mkdir(sourceDirectory, { recursive: true });
+  await mkdir(outputDirectory, { recursive: true });
+  await Promise.all(
+    OUTPUT_NAMES.map(async (name, index) =>
+      writeFile(
+        resolve(outputDirectory, name),
+        await coloredImage(index + 1, 'webp'),
+      ),
+    ),
+  );
+  await writeFile(
+    resolve(sourceDirectory, 'mantou.png'),
+    await coloredImage(80, 'png'),
+  );
+  await writeFile(
+    resolve(sourceDirectory, 'bao-bun.png'),
+    await coloredImage(81, 'png'),
+  );
+  await writeFile(
+    resolve(sourceDirectory, 'tuna.png'),
+    await coloredImage(82, 'png'),
+  );
+  return {
+    root,
+    sourceDirectory,
+    outputDirectory,
+    before: await readBatch(outputDirectory),
+  };
 }
 
 async function transactionArtifacts(parentDirectory: string) {
@@ -163,7 +281,8 @@ async function transactionArtifacts(parentDirectory: string) {
     .filter(
       (name) =>
         name.startsWith('.food-presets.staging-') ||
-        name.startsWith('.food-presets.backup-'),
+        name.startsWith('.food-presets.backup-') ||
+        name === '.food-presets.lock',
     )
     .sort();
 }
@@ -180,6 +299,11 @@ test('目录固定为 33 种基础食物并保留馒头', () => {
   ).toEqual(EXPECTED_CATALOG);
   expect(new Set(PRESET_FOODS.map((food) => food.id)).size).toBe(33);
   expect(new Set(PRESET_FOODS.map((food) => food.name)).size).toBe(33);
+});
+
+test('图片输出名冻结为与 33 项目录对齐的固定顺序', () => {
+  expect(OUTPUT_NAMES).toEqual(EXPECTED_IMAGE_OUTPUT_NAMES);
+  expect(Object.isFrozen(OUTPUT_NAMES)).toBe(true);
 });
 
 test('33 项目录保留完整独立元数据快照', () => {
@@ -434,67 +558,433 @@ test('每个食物使用独立真实 WebP，manifest hash 与文件一致', asyn
   }
 });
 
-test('第二个源图无法解码时，三个正式输出全部保持不变', async () => {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tiezheng-food-assets-'));
-  const sourceDirectory = resolve(temporaryRoot, 'sources');
-  const outputDirectory = resolve(temporaryRoot, 'food-presets');
+test('第二个命名源图无法解码时，正式 33 项全部保持不变', async () => {
+  const fixture = await assetFixture();
   const sourcePaths = [
-    resolve(sourceDirectory, 'rice.png'),
-    resolve(sourceDirectory, 'invalid-chicken.png'),
-    resolve(sourceDirectory, 'beef.png'),
-  ];
-  const outputPaths = [
-    resolve(outputDirectory, 'rice.webp'),
-    resolve(outputDirectory, 'chicken-breast.webp'),
-    resolve(outputDirectory, 'lean-beef.webp'),
-  ];
-  const sentinels = [
-    Buffer.from('sentinel-rice'),
-    Buffer.from('sentinel-chicken'),
-    Buffer.from('sentinel-beef'),
+    resolve(fixture.sourceDirectory, 'rice.png'),
+    resolve(fixture.sourceDirectory, 'chicken-breast.png'),
   ];
 
   try {
-    await mkdir(sourceDirectory, { recursive: true });
-    await mkdir(outputDirectory, { recursive: true });
-    const riceSource = await sharp({
-      create: { width: 8, height: 8, channels: 3, background: '#f4f4f0' },
-    })
-      .png()
-      .toBuffer();
-    const beefSource = await sharp({
-      create: { width: 8, height: 8, channels: 3, background: '#7d4438' },
-    })
-      .png()
-      .toBuffer();
     await Promise.all([
-      writeFile(sourcePaths[0], riceSource),
+      writeFile(sourcePaths[0], await coloredImage(82, 'png')),
       writeFile(sourcePaths[1], Buffer.from('not-an-image')),
-      writeFile(sourcePaths[2], beefSource),
-      ...outputPaths.map((path, index) => writeFile(path, sentinels[index])),
     ]);
-
-    const prepareUrl = pathToFileURL(
-      resolve(REPOSITORY_ROOT, 'scripts/prepare-preset-food-images.mjs'),
-    ).href;
-    const { preparePresetFoodImages } = (await import(
-      /* @vite-ignore */ prepareUrl
-    )) as {
-      preparePresetFoodImages: PreparePresetFoodImages;
-    };
+    const { preparePresetFoodImages } = await loadAssetPreparationModule();
 
     await expect(
-      preparePresetFoodImages({ sourcePaths, outputDirectory }),
+      preparePresetFoodImages({
+        sourcePaths,
+        outputDirectory: fixture.outputDirectory,
+      }),
     ).rejects.toThrow();
-    await expect(Promise.all(outputPaths.map((path) => readFile(path)))).resolves.toEqual(
-      sentinels,
+    await expect(readBatch(fixture.outputDirectory)).resolves.toEqual(
+      fixture.before,
     );
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([]);
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
+    await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test('staging 提交失败时从 backup 恢复原三文件并清理事务目录', async () => {
+test('命名增量批次只替换指定 slug 并保留其他 32 项字节', async () => {
+  const fixture = await assetFixture();
+
+  try {
+    const { preparePresetFoodImages } = await loadAssetPreparationModule();
+    await preparePresetFoodImages({
+      sourcePaths: [resolve(fixture.sourceDirectory, 'mantou.png')],
+      outputDirectory: fixture.outputDirectory,
+    });
+
+    const after = await readBatch(fixture.outputDirectory);
+    const mantouIndex = OUTPUT_NAMES.indexOf('mantou.webp');
+    expect(after[mantouIndex]).not.toEqual(fixture.before[mantouIndex]);
+    for (const name of OUTPUT_NAMES.filter((value) => value !== 'mantou.webp')) {
+      const index = OUTPUT_NAMES.indexOf(name);
+      expect(after[index]).toEqual(fixture.before[index]);
+    }
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('并发非重叠增量只能一个持锁成功，顺序重试后两项更新可组合', async () => {
+  const fixture = await assetFixture();
+  const requests = [
+    { name: 'mantou.webp', source: 'mantou.png' },
+    { name: 'tuna.webp', source: 'tuna.png' },
+  ] as const;
+
+  try {
+    const { preparePresetFoodImages } = await loadAssetPreparationModule();
+    const results = await Promise.allSettled(
+      requests.map((request) =>
+        preparePresetFoodImages({
+          sourcePaths: [resolve(fixture.sourceDirectory, request.source)],
+          outputDirectory: fixture.outputDirectory,
+        }),
+      ),
+    );
+    const fulfilledIndexes = results.flatMap((result, index) =>
+      result.status === 'fulfilled' ? [index] : [],
+    );
+    const rejectedIndexes = results.flatMap((result, index) =>
+      result.status === 'rejected' ? [index] : [],
+    );
+
+    expect(fulfilledIndexes).toHaveLength(1);
+    expect(rejectedIndexes).toHaveLength(1);
+    const rejectedResult = results[rejectedIndexes[0]];
+    expect(rejectedResult).toMatchObject({ status: 'rejected' });
+    expect(
+      rejectedResult.status === 'rejected'
+        ? String(rejectedResult.reason)
+        : '',
+    ).toContain('already in progress');
+
+    const afterFirst = await readBatch(fixture.outputDirectory);
+    const fulfilledName = requests[fulfilledIndexes[0]].name;
+    const rejectedName = requests[rejectedIndexes[0]].name;
+    expect(afterFirst[OUTPUT_NAMES.indexOf(fulfilledName)]).not.toEqual(
+      fixture.before[OUTPUT_NAMES.indexOf(fulfilledName)],
+    );
+    expect(afterFirst[OUTPUT_NAMES.indexOf(rejectedName)]).toEqual(
+      fixture.before[OUTPUT_NAMES.indexOf(rejectedName)],
+    );
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([]);
+
+    await preparePresetFoodImages({
+      sourcePaths: [
+        resolve(
+          fixture.sourceDirectory,
+          requests[rejectedIndexes[0]].source,
+        ),
+      ],
+      outputDirectory: fixture.outputDirectory,
+    });
+
+    const afterRetry = await readBatch(fixture.outputDirectory);
+    for (const request of requests) {
+      const index = OUTPUT_NAMES.indexOf(request.name);
+      expect(afterRetry[index]).not.toEqual(fixture.before[index]);
+    }
+    for (const name of OUTPUT_NAMES.filter(
+      (value) => !requests.some((request) => request.name === value),
+    )) {
+      const index = OUTPUT_NAMES.indexOf(name);
+      expect(afterRetry[index]).toEqual(fixture.before[index]);
+    }
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('预建 stale lock 时 fail closed 并返回人工恢复路径', async () => {
+  const fixture = await assetFixture();
+  const lockDirectory = resolve(fixture.root, '.food-presets.lock');
+
+  try {
+    await mkdir(lockDirectory);
+    const { preparePresetFoodImages } = await loadAssetPreparationModule();
+    let caught: unknown;
+
+    try {
+      await preparePresetFoodImages({
+        sourcePaths: [resolve(fixture.sourceDirectory, 'mantou.png')],
+        outputDirectory: fixture.outputDirectory,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('already in progress');
+    expect((caught as Error).message).toContain(lockDirectory);
+    await expect(readBatch(fixture.outputDirectory)).resolves.toEqual(
+      fixture.before,
+    );
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([
+      '.food-presets.lock',
+    ]);
+
+    await rm(lockDirectory, { recursive: true, force: false });
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('完整 33 图可初始化尚不存在的嵌套 output parent 并清理 lock', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tiezheng-food-assets-new-parent-'));
+  const sourceDirectory = resolve(root, 'sources');
+  const outputParent = resolve(root, 'nested/assets');
+  const outputDirectory = resolve(outputParent, 'food-presets');
+
+  try {
+    await mkdir(sourceDirectory, { recursive: true });
+    const sourcePaths = await Promise.all(
+      OUTPUT_NAMES.map(async (name, index) => {
+        const sourcePath = resolve(
+          sourceDirectory,
+          `${name.slice(0, -'.webp'.length)}.png`,
+        );
+        await writeFile(sourcePath, await coloredImage(index + 160, 'png'));
+        return sourcePath;
+      }),
+    );
+    const { preparePresetFoodImages } = await loadAssetPreparationModule();
+
+    await preparePresetFoodImages({ sourcePaths, outputDirectory });
+
+    const encoded = await readBatch(outputDirectory);
+    expect(encoded).toHaveLength(33);
+    expect(
+      new Set(
+        encoded.map((bytes) =>
+          createHash('sha256').update(bytes).digest('hex'),
+        ),
+      ).size,
+    ).toBe(33);
+    await expect(transactionArtifacts(outputParent)).resolves.toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('未知源图 slug 在目录交换前失败且原 33 项保持不变', async () => {
+  const fixture = await assetFixture();
+
+  try {
+    const { preparePresetFoodImages } = await loadAssetPreparationModule();
+    await expect(
+      preparePresetFoodImages({
+        sourcePaths: [resolve(fixture.sourceDirectory, 'bao-bun.png')],
+        outputDirectory: fixture.outputDirectory,
+      }),
+    ).rejects.toThrow('unknown preset image slug: bao-bun');
+    await expect(readBatch(fixture.outputDirectory)).resolves.toEqual(
+      fixture.before,
+    );
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('增量更新在 omitted 旧资产不是 WebP 时 fail closed 并保持不变', async () => {
+  const fixture = await assetFixture();
+  const invalidName = 'rice.webp';
+
+  try {
+    await writeFile(
+      resolve(fixture.outputDirectory, invalidName),
+      Buffer.from('not-webp'),
+    );
+    const before = await readBatch(fixture.outputDirectory);
+    const { preparePresetFoodImages } = await loadAssetPreparationModule();
+
+    await expect(
+      preparePresetFoodImages({
+        sourcePaths: [resolve(fixture.sourceDirectory, 'mantou.png')],
+        outputDirectory: fixture.outputDirectory,
+      }),
+    ).rejects.toThrow(`invalid existing preset image: ${invalidName}`);
+    await expect(readBatch(fixture.outputDirectory)).resolves.toEqual(before);
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('增量更新在 omitted 旧资产不是 256×256 WebP 时 fail closed 并保持不变', async () => {
+  const fixture = await assetFixture();
+  const invalidName = 'rice.webp';
+
+  try {
+    const wrongSizeWebp = await sharp({
+      create: {
+        width: 128,
+        height: 256,
+        channels: 4,
+        background: { r: 22, g: 44, b: 66, alpha: 1 },
+      },
+    })
+      .webp()
+      .toBuffer();
+    await writeFile(resolve(fixture.outputDirectory, invalidName), wrongSizeWebp);
+    const before = await readBatch(fixture.outputDirectory);
+    const { preparePresetFoodImages } = await loadAssetPreparationModule();
+
+    await expect(
+      preparePresetFoodImages({
+        sourcePaths: [resolve(fixture.sourceDirectory, 'mantou.png')],
+        outputDirectory: fixture.outputDirectory,
+      }),
+    ).rejects.toThrow(`invalid existing preset image: ${invalidName}`);
+    await expect(readBatch(fixture.outputDirectory)).resolves.toEqual(before);
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('增量批次提交第二次 rename 失败时恢复原 33 项目录', async () => {
+  const fixture = await assetFixture();
+  let renameCalls = 0;
+  const failSecondRename = async (from: string, to: string) => {
+    renameCalls += 1;
+    if (renameCalls === 2) {
+      throw new Error('simulated commit rename failure');
+    }
+    await renamePath(from, to);
+  };
+  const encodedFiles = await Promise.all(
+    OUTPUT_NAMES.map(async (name, index) => ({
+      name,
+      bytes: await coloredImage(index + 100, 'webp'),
+    })),
+  );
+
+  try {
+    const { replacePresetFoodOutputDirectory } = await loadAssetPreparationModule();
+    await expect(
+      replacePresetFoodOutputDirectory({
+        outputDirectory: fixture.outputDirectory,
+        encodedFiles,
+        expectedOutputNames: OUTPUT_NAMES,
+        operationId: 'rollback-check',
+        fileOps: { rename: failSecondRename },
+      }),
+    ).rejects.toThrow('simulated commit rename failure');
+    await expect(readBatch(fixture.outputDirectory)).resolves.toEqual(
+      fixture.before,
+    );
+    await expect(transactionArtifacts(fixture.root)).resolves.toEqual([]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  {
+    label: '数量不等',
+    encodedFiles: encodedBatch(byteBatch('replacement')).slice(0, -1),
+    expectedMessage: 'encoded preset file count must match expected output names',
+  },
+  {
+    label: '包含未知名称并缺失正式名称',
+    encodedFiles: encodedBatch(byteBatch('replacement')).map((row, index) =>
+      index === OUTPUT_NAMES.length - 1
+        ? { ...row, name: 'bao-bun.webp' }
+        : row,
+    ),
+    expectedMessage: 'unknown encoded preset image name: bao-bun.webp',
+  },
+  {
+    label: '包含重复名称并缺失正式名称',
+    encodedFiles: encodedBatch(byteBatch('replacement')).map((row, index) =>
+      index === OUTPUT_NAMES.length - 1
+        ? { ...row, name: OUTPUT_NAMES[0] }
+        : row,
+    ),
+    expectedMessage: `duplicate encoded preset image name: ${OUTPUT_NAMES[0]}`,
+  },
+])('encodedFiles $label时在创建 staging 前 fail closed', async ({
+  encodedFiles,
+  expectedMessage,
+}) => {
+  const parentDirectory = await mkdtemp(join(tmpdir(), 'tiezheng-swap-validation-'));
+  const outputDirectory = resolve(parentDirectory, 'food-presets');
+  const sentinels = byteBatch('sentinel');
+  let renameCalls = 0;
+
+  try {
+    await writeBatch(outputDirectory, sentinels);
+    const { replacePresetFoodOutputDirectory } = await loadAssetPreparationModule();
+
+    await expect(
+      replacePresetFoodOutputDirectory({
+        outputDirectory,
+        encodedFiles,
+        expectedOutputNames: OUTPUT_NAMES,
+        operationId: 'validation-fails-closed',
+        fileOps: {
+          rename: async (oldPath, newPath) => {
+            renameCalls += 1;
+            await renamePath(oldPath, newPath);
+          },
+        },
+      }),
+    ).rejects.toThrow(expectedMessage);
+
+    expect(renameCalls).toBe(0);
+    await expect(readBatch(outputDirectory)).resolves.toEqual(sentinels);
+    await expect(transactionArtifacts(parentDirectory)).resolves.toEqual([]);
+  } finally {
+    await rm(parentDirectory, { recursive: true, force: true });
+  }
+});
+
+test('expectedOutputNames 拒绝路径穿越、绝对路径和非 canonical 名称', async () => {
+  const parentDirectory = await mkdtemp(join(tmpdir(), 'tiezheng-swap-path-safety-'));
+  const outputDirectory = resolve(parentDirectory, 'food-presets');
+  const sentinels = byteBatch('sentinel');
+  const invalidNames = [
+    '../escape.webp',
+    resolve(parentDirectory, 'absolute-escape.webp'),
+    'bao-bun.webp',
+  ];
+
+  try {
+    await writeBatch(outputDirectory, sentinels);
+    const { replacePresetFoodOutputDirectory } = await loadAssetPreparationModule();
+
+    for (const [index, invalidName] of invalidNames.entries()) {
+      const expectedOutputNames = OUTPUT_NAMES.map((name, nameIndex) =>
+        nameIndex === OUTPUT_NAMES.length - 1 ? invalidName : name,
+      );
+      const encodedFiles = encodedBatch(byteBatch(`replacement-${index}`)).map(
+        (row, rowIndex) =>
+          rowIndex === OUTPUT_NAMES.length - 1
+            ? { ...row, name: invalidName }
+            : row,
+      );
+      let renameCalls = 0;
+
+      await expect(
+        replacePresetFoodOutputDirectory({
+          outputDirectory,
+          encodedFiles,
+          expectedOutputNames,
+          operationId: `path-safety-${index}`,
+          fileOps: {
+            rename: async () => {
+              renameCalls += 1;
+              throw new Error('rename must not run for invalid expected names');
+            },
+          },
+        }),
+      ).rejects.toThrow(`unknown expected preset output name: ${invalidName}`);
+      expect(renameCalls).toBe(0);
+      await expect(readBatch(outputDirectory)).resolves.toEqual(sentinels);
+      await expect(transactionArtifacts(parentDirectory)).resolves.toEqual([]);
+    }
+
+    await expect(stat(resolve(parentDirectory, 'escape.webp'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(
+      stat(resolve(parentDirectory, 'absolute-escape.webp')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    await rm(parentDirectory, { recursive: true, force: true });
+  }
+});
+
+test('staging 提交失败时从 backup 恢复原 33 项并清理事务目录', async () => {
   const parentDirectory = await mkdtemp(join(tmpdir(), 'tiezheng-swap-rollback-'));
   const outputDirectory = resolve(parentDirectory, 'food-presets');
   const operationId = 'rollback-restores-original';
@@ -502,16 +992,8 @@ test('staging 提交失败时从 backup 恢复原三文件并清理事务目录'
     parentDirectory,
     `.food-presets.staging-${operationId}`,
   );
-  const sentinels = [
-    Buffer.from('sentinel-rice'),
-    Buffer.from('sentinel-chicken'),
-    Buffer.from('sentinel-beef'),
-  ];
-  const replacements = [
-    Buffer.from('replacement-rice'),
-    Buffer.from('replacement-chicken'),
-    Buffer.from('replacement-beef'),
-  ];
+  const sentinels = byteBatch('sentinel');
+  const replacements = byteBatch('replacement');
   const commitError = new Error('injected staging commit failure');
 
   try {
@@ -521,7 +1003,8 @@ test('staging 提交失败时从 backup 恢复原三文件并清理事务目录'
     await expect(
       replacePresetFoodOutputDirectory({
         outputDirectory,
-        encodedFiles: replacements,
+        encodedFiles: encodedBatch(replacements),
+        expectedOutputNames: OUTPUT_NAMES,
         operationId,
         fileOps: {
           rename: async (oldPath, newPath) => {
@@ -556,16 +1039,8 @@ test('staging 提交和 backup 恢复均失败时保留完整 backup 并抛出�
     parentDirectory,
     `.food-presets.backup-${operationId}`,
   );
-  const sentinels = [
-    Buffer.from('sentinel-rice'),
-    Buffer.from('sentinel-chicken'),
-    Buffer.from('sentinel-beef'),
-  ];
-  const replacements = [
-    Buffer.from('replacement-rice'),
-    Buffer.from('replacement-chicken'),
-    Buffer.from('replacement-beef'),
-  ];
+  const sentinels = byteBatch('sentinel');
+  const replacements = byteBatch('replacement');
   const commitError = new Error('injected staging commit failure');
   const rollbackError = new Error('injected backup restore failure');
 
@@ -577,7 +1052,8 @@ test('staging 提交和 backup 恢复均失败时保留完整 backup 并抛出�
     try {
       await replacePresetFoodOutputDirectory({
         outputDirectory,
-        encodedFiles: replacements,
+        encodedFiles: encodedBatch(replacements),
+        expectedOutputNames: OUTPUT_NAMES,
         operationId,
         fileOps: {
           rename: async (oldPath, newPath) => {
@@ -613,19 +1089,11 @@ test('staging 提交和 backup 恢复均失败时保留完整 backup 并抛出�
   }
 });
 
-test('成功 swap 整批替换三文件且不留 staging 或 backup', async () => {
+test('成功 swap 整批替换 33 项且不留 staging 或 backup', async () => {
   const parentDirectory = await mkdtemp(join(tmpdir(), 'tiezheng-swap-success-'));
   const outputDirectory = resolve(parentDirectory, 'food-presets');
-  const sentinels = [
-    Buffer.from('sentinel-rice'),
-    Buffer.from('sentinel-chicken'),
-    Buffer.from('sentinel-beef'),
-  ];
-  const replacements = [
-    Buffer.from('replacement-rice'),
-    Buffer.from('replacement-chicken'),
-    Buffer.from('replacement-beef'),
-  ];
+  const sentinels = byteBatch('sentinel');
+  const replacements = byteBatch('replacement');
 
   try {
     await writeBatch(outputDirectory, sentinels);
@@ -633,7 +1101,8 @@ test('成功 swap 整批替换三文件且不留 staging 或 backup', async () =
 
     await replacePresetFoodOutputDirectory({
       outputDirectory,
-      encodedFiles: replacements,
+      encodedFiles: encodedBatch(replacements).reverse(),
+      expectedOutputNames: OUTPUT_NAMES,
       operationId: 'successful-swap',
     });
 
@@ -652,16 +1121,8 @@ test('backup 清理失败时明确报告新批次已提交并保留原 backup', 
     parentDirectory,
     `.food-presets.backup-${operationId}`,
   );
-  const sentinels = [
-    Buffer.from('sentinel-rice'),
-    Buffer.from('sentinel-chicken'),
-    Buffer.from('sentinel-beef'),
-  ];
-  const replacements = [
-    Buffer.from('replacement-rice'),
-    Buffer.from('replacement-chicken'),
-    Buffer.from('replacement-beef'),
-  ];
+  const sentinels = byteBatch('sentinel');
+  const replacements = byteBatch('replacement');
   const cleanupError = new Error('injected backup cleanup failure');
 
   try {
@@ -672,7 +1133,8 @@ test('backup 清理失败时明确报告新批次已提交并保留原 backup', 
     try {
       await replacePresetFoodOutputDirectory({
         outputDirectory,
-        encodedFiles: replacements,
+        encodedFiles: encodedBatch(replacements),
+        expectedOutputNames: OUTPUT_NAMES,
         operationId,
         fileOps: {
           remove: async (path, options) => {
