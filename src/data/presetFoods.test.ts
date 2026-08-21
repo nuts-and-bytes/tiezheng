@@ -60,6 +60,59 @@ const EXPECTED_IMAGE_OUTPUT_NAMES = [
   'strawberry.webp',
 ] as const;
 
+const EXPECTED_IMAGE_PROMPT_PREFIX =
+  'Single isolated realistic food photograph for a mobile nutrition catalog:';
+const EXPECTED_IMAGE_PROMPT_SUFFIX =
+  'Edible form matching the label; extreme close crop with food filling about 78-88 percent of the frame; top-down to 45-degree camera; shallow white or light ceramic dish, or a plain clear glass for liquids; soft neutral light-gray background; natural texture; no garnish that changes nutrition; no text; no logo; no packaging; no hands; one food only; square production catalog photo.';
+const EXPECTED_NEW_IMAGE_ROWS = [
+  ['food:preset:usda:173905', 'oatmeal-porridge', '熟燕麦粥', '清水煮熟', 'cooked oatmeal porridge with visible oat texture, plain with no toppings'],
+  ['food:preset:usda:172688', 'whole-wheat-bread', '全麦面包', '原味即食', 'two plain slices of whole-wheat bread'],
+  ['food:preset:usda:168483', 'sweet-potato', '熟红薯', '烘烤熟制，无添加', 'cooked sweet potato split open, no toppings'],
+  ['food:preset:usda:169999', 'sweet-corn', '熟玉米', '水煮沥干，无盐', 'cooked yellow sweet corn kernels'],
+  ['food:preset:usda:170440', 'boiled-potato', '熟土豆', '去皮水煮，无盐', 'cooked peeled potato pieces'],
+  ['food:preset:usda:172388', 'chicken-thigh', '熟鸡腿肉', '去皮烤制', 'skinless roasted chicken thigh meat, plainly sliced'],
+  ['food:preset:usda:168250', 'pork-tenderloin', '熟猪里脊', '瘦肉烤制', 'roasted lean pork tenderloin, plainly sliced'],
+  ['food:preset:usda:175168', 'salmon', '熟三文鱼', '大西洋养殖三文鱼干热熟制', 'cooked farmed Atlantic salmon fillet with no sauce'],
+  ['food:preset:usda:171971', 'shrimp', '熟虾仁', '湿热熟制', 'cooked peeled shrimp with no sauce'],
+  ['food:preset:usda:173424', 'boiled-egg', '水煮蛋', '全蛋水煮', 'hard-boiled egg halves with no seasoning'],
+  ['food:preset:usda:172475', 'firm-tofu', '北豆腐', '硫酸钙凝固硬豆腐', 'plain firm tofu cubes'],
+  ['food:preset:usda:171265', 'whole-milk', '纯牛奶', '全脂 3.25%，无糖', 'whole milk in a plain clear glass'],
+  ['food:preset:usda:171284', 'plain-yogurt', '原味酸奶', '全脂原味，无糖', 'plain unsweetened yogurt in a shallow bowl'],
+  ['food:preset:usda:169967', 'broccoli', '西兰花', '水煮沥干，无盐', 'cooked broccoli florets'],
+  ['food:preset:usda:168463', 'spinach', '菠菜', '水煮沥干，无盐', 'cooked drained spinach'],
+  ['food:preset:usda:170457', 'tomato', '番茄', '生食，可食部分', 'raw ripe red tomato'],
+  ['food:preset:usda:168409', 'cucumber', '黄瓜', '带皮生食，可食部分', 'raw cucumber with peel'],
+  ['food:preset:usda:170393', 'carrot', '胡萝卜', '生食，可食部分', 'raw carrot'],
+  ['food:preset:usda:171688', 'apple', '苹果', '带皮生食，可食部分', 'raw red apple with skin'],
+  ['food:preset:usda:173944', 'banana', '香蕉', '去皮生食，可食部分', 'peeled banana'],
+  ['food:preset:usda:169097', 'orange', '橙子', '去皮生食，可食部分', 'peeled orange segments'],
+  ['food:preset:usda:2708352', 'cooked-noodles', '熟面条', '清水煮熟，沥干', 'plain cooked noodles, drained, with no sauce and no broth'],
+  ['food:preset:nhc:adult-sarcopenia-2026:mantou', 'mantou', '馒头', '原味无馅蒸制', 'one plain unfilled white steamed mantou bun, not baozi and not flower roll'],
+  ['food:preset:usda:171986', 'tuna', '金枪鱼', '水浸罐头、沥干、无盐', 'drained water-packed light tuna flakes'],
+  ['food:preset:usda:171956', 'cod', '鳕鱼', '大西洋鳕鱼干热熟制', 'cooked Atlantic cod fillet with no sauce'],
+  ['food:preset:usda:175215', 'unsweetened-soy-milk', '无糖豆浆', '无糖强化豆浆', 'unsweetened soy milk in a plain clear glass'],
+  ['food:preset:usda:169249', 'leaf-lettuce', '生菜', '绿叶生菜生食', 'raw green leaf lettuce'],
+  ['food:preset:usda:169975', 'cabbage', '卷心菜', '生食，可食部分', 'raw green cabbage wedge and loose leaves'],
+  ['food:preset:usda:168437', 'shiitake', '香菇', '熟制，无盐', 'cooked shiitake mushrooms'],
+  ['food:preset:usda:167762', 'strawberry', '草莓', '生食，可食部分', 'raw strawberries'],
+] as const;
+
+type PresetFoodImageProvenanceRow = Readonly<{
+  foodId: string;
+  path: string;
+  name: string;
+  preparation: string;
+  width: number;
+  height: number;
+  cropVersion: string;
+  generator: string;
+  generationDate: string;
+  reviewed: boolean;
+  prompt: string;
+  conversionRecipe: string;
+  contentReview: string;
+}>;
+
 type PreparePresetFoodImages = (options: {
   sourcePaths: string[];
   outputDirectory: string;
@@ -460,46 +513,165 @@ test('预设目录保持 Food[] 和 Food 的对外类型兼容', () => {
   expect(Object.isFrozen(PRESET_FOODS[0].aliases)).toBe(true);
 });
 
-test('manifest 逐字段保留人工审查 provenance 与食物映射', async () => {
+test('33 项目录、输出名与 provenance 双向一一对应', async () => {
   const provenanceUrl = pathToFileURL(
     resolve(REPOSITORY_ROOT, 'scripts/preset-food-image-provenance.mjs'),
   ).href;
   const { PRESET_FOOD_IMAGE_PROVENANCE } = (await import(provenanceUrl)) as {
     PRESET_FOOD_IMAGE_PROVENANCE: readonly Record<string, unknown>[];
   };
+  const provenanceFoodIds = PRESET_FOOD_IMAGE_PROVENANCE.map(
+    (row) => row.foodId,
+  );
+  const provenancePaths = PRESET_FOOD_IMAGE_PROVENANCE.map((row) => row.path);
+  const reviewed = PRESET_FOOD_IMAGE_PROVENANCE.filter(
+    (row) => row.reviewed === true,
+  );
   const generatedWithoutHashes = PRESET_FOOD_IMAGE_MANIFEST.map(
     ({ sha256: _sha256, ...row }) => row,
   );
 
-  expect(PRESET_FOOD_IMAGE_PROVENANCE).toEqual(generatedWithoutHashes);
+  expect(PRESET_FOODS).toHaveLength(33);
+  expect(PRESET_FOOD_IMAGE_PROVENANCE).toHaveLength(33);
+  expect(new Set(provenanceFoodIds)).toEqual(
+    new Set(PRESET_FOODS.map((food) => food.id)),
+  );
   expect(
-    PRESET_FOOD_IMAGE_PROVENANCE.map(
-      ({ foodId, path, name, preparation }) => ({ foodId, path, name, preparation }),
+    provenancePaths.map((path) =>
+      String(path).replace('/food-presets/', ''),
     ),
-  ).toEqual([
-    {
-      foodId: 'food:preset:usda:168878',
-      path: '/food-presets/rice.webp',
-      name: '熟米饭',
-      preparation: '蒸煮',
-    },
-    {
-      foodId: 'food:preset:usda:171477',
-      path: '/food-presets/chicken-breast.webp',
-      name: '熟鸡胸肉',
-      preparation: '去皮熟制',
-    },
-    {
-      foodId: 'food:preset:usda:170236',
-      path: '/food-presets/lean-beef.webp',
-      name: '熟瘦牛肉',
-      preparation: '瘦肉熟制',
-    },
-  ]);
+  ).toEqual(OUTPUT_NAMES);
+  expect(new Set(provenanceFoodIds).size).toBe(33);
+  expect(new Set(provenancePaths).size).toBe(33);
+  expect(generatedWithoutHashes).toEqual(reviewed);
+  expect(reviewed).toHaveLength(3);
 });
 
-test('manifest builder 拒绝未经人工审查的 provenance', async () => {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tiezheng-manifest-review-'));
+test('provenance 冻结外层数组与每个独立 row', async () => {
+  const provenanceUrl = pathToFileURL(
+    resolve(REPOSITORY_ROOT, 'scripts/preset-food-image-provenance.mjs'),
+  );
+  provenanceUrl.searchParams.set('freeze-regression', 'isolated');
+  const { PRESET_FOOD_IMAGE_PROVENANCE } = (await import(
+    /* @vite-ignore */ provenanceUrl.href
+  )) as {
+    PRESET_FOOD_IMAGE_PROVENANCE: readonly PresetFoodImageProvenanceRow[];
+  };
+  const newRow = PRESET_FOOD_IMAGE_PROVENANCE.find(
+    ({ reviewed }) => reviewed === false,
+  );
+
+  expect(newRow).toBeDefined();
+  const setResult = Reflect.set(newRow!, 'reviewed', true);
+  const reviewedCount = PRESET_FOOD_IMAGE_PROVENANCE.filter(
+    ({ reviewed }) => reviewed === true,
+  ).length;
+
+  expect.soft(Object.isFrozen(PRESET_FOOD_IMAGE_PROVENANCE)).toBe(true);
+  expect.soft(PRESET_FOOD_IMAGE_PROVENANCE.every(Object.isFrozen)).toBe(true);
+  expect.soft(setResult).toBe(false);
+  expect(reviewedCount).toBe(3);
+});
+
+test('30 项新 provenance 锁定食物身份、熟制状态与特写 prompt', async () => {
+  const provenanceUrl = pathToFileURL(
+    resolve(REPOSITORY_ROOT, 'scripts/preset-food-image-provenance.mjs'),
+  ).href;
+  const { PRESET_FOOD_IMAGE_PROVENANCE } = (await import(provenanceUrl)) as {
+    PRESET_FOOD_IMAGE_PROVENANCE: readonly PresetFoodImageProvenanceRow[];
+  };
+  const newRows = PRESET_FOOD_IMAGE_PROVENANCE.slice(3);
+  const requiredKeys = [
+    'contentReview',
+    'conversionRecipe',
+    'cropVersion',
+    'foodId',
+    'generationDate',
+    'generator',
+    'height',
+    'name',
+    'path',
+    'preparation',
+    'prompt',
+    'reviewed',
+    'width',
+  ];
+
+  expect(newRows).toHaveLength(EXPECTED_NEW_IMAGE_ROWS.length);
+  expect(
+    newRows.map((row) => ({
+      foodId: row.foodId,
+      path: row.path,
+      name: row.name,
+      preparation: row.preparation,
+      width: row.width,
+      height: row.height,
+      cropVersion: row.cropVersion,
+      generator: row.generator,
+      generationDate: row.generationDate,
+      reviewed: row.reviewed,
+      prompt: row.prompt,
+      conversionRecipe: row.conversionRecipe,
+      contentReview: row.contentReview,
+    })),
+  ).toEqual(
+    EXPECTED_NEW_IMAGE_ROWS.map(
+      ([foodId, slug, name, preparation, subject]) => ({
+        foodId,
+        path: `/food-presets/${slug}.webp`,
+        name,
+        preparation,
+        width: 256,
+        height: 256,
+        cropVersion: 'center-cover-256-v2',
+        generator: 'OpenAI imagegen',
+        generationDate: '2026-08-21',
+        reviewed: false,
+        prompt: `${EXPECTED_IMAGE_PROMPT_PREFIX} ${subject}. ${EXPECTED_IMAGE_PROMPT_SUFFIX}`,
+        conversionRecipe: 'sharp@0.33.5/webp-effort6-quality-loop-v1',
+        contentReview: `${name}与“${preparation}”状态一致；单一食物特写，无文字、包装、手部、第二种食物或改变营养含义的装饰`,
+      }),
+    ),
+  );
+
+  for (const [index, row] of PRESET_FOOD_IMAGE_PROVENANCE.entries()) {
+    expect(Object.keys(row).sort()).toEqual(requiredKeys);
+    expect(row.width).toBe(256);
+    expect(row.height).toBe(256);
+    for (const value of [
+      row.foodId,
+      row.path,
+      row.name,
+      row.preparation,
+      row.cropVersion,
+      row.generator,
+      row.generationDate,
+      row.prompt,
+      row.conversionRecipe,
+      row.contentReview,
+    ]) {
+      expect(typeof value).toBe('string');
+      expect(value.trim()).not.toBe('');
+    }
+
+    if (index < 3) {
+      expect(row.reviewed).toBe(true);
+      continue;
+    }
+
+    expect(row.reviewed).toBe(false);
+    expect(row.cropVersion).toBe('center-cover-256-v2');
+    const food = PRESET_FOODS.find(({ id }) => id === row.foodId);
+    expect(food).toMatchObject({
+      name: row.name,
+      preparation: row.preparation,
+    });
+    expect(row.path).toBe(`/food-presets/${OUTPUT_NAMES[index]}`);
+  }
+});
+
+test('manifest builder 固定全局 33 项并拒绝数量或标识重复', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tiezheng-manifest-count-'));
 
   try {
     const provenanceUrl = pathToFileURL(
@@ -509,7 +681,7 @@ test('manifest builder 拒绝未经人工审查的 provenance', async () => {
       resolve(REPOSITORY_ROOT, 'scripts/build-preset-food-image-manifest.mjs'),
     ).href;
     const { PRESET_FOOD_IMAGE_PROVENANCE } = (await import(provenanceUrl)) as {
-      PRESET_FOOD_IMAGE_PROVENANCE: readonly Record<string, unknown>[];
+      PRESET_FOOD_IMAGE_PROVENANCE: readonly PresetFoodImageProvenanceRow[];
     };
     const { buildPresetFoodImageManifest } = (await import(
       /* @vite-ignore */ builderUrl
@@ -517,18 +689,127 @@ test('manifest builder 拒绝未经人工审查的 provenance', async () => {
       buildPresetFoodImageManifest: (options: {
         repositoryRoot: string;
         output: string;
-        provenance: readonly Record<string, unknown>[];
+        provenance: readonly PresetFoodImageProvenanceRow[];
       }) => Promise<void>;
     };
-    const unreviewed = PRESET_FOOD_IMAGE_PROVENANCE.map((row, index) =>
-      index === 0 ? { ...row, reviewed: false } : row,
+    const options = {
+      repositoryRoot: REPOSITORY_ROOT,
+      output: resolve(temporaryRoot, 'manifest.ts'),
+    };
+
+    await expect(
+      buildPresetFoodImageManifest({
+        ...options,
+        provenance: PRESET_FOOD_IMAGE_PROVENANCE.slice(0, 32),
+      }),
+    ).rejects.toThrow(/exactly 33 rows/);
+
+    const duplicateFoodId = PRESET_FOOD_IMAGE_PROVENANCE.map((row, index) =>
+      index === 32
+        ? { ...row, foodId: PRESET_FOOD_IMAGE_PROVENANCE[0].foodId }
+        : row,
     );
+    await expect(
+      buildPresetFoodImageManifest({
+        ...options,
+        provenance: duplicateFoodId,
+      }),
+    ).rejects.toThrow(/IDs and asset paths must be unique/);
+
+    const duplicatePath = PRESET_FOOD_IMAGE_PROVENANCE.map((row, index) =>
+      index === 32
+        ? { ...row, path: PRESET_FOOD_IMAGE_PROVENANCE[0].path }
+        : row,
+    );
+    await expect(
+      buildPresetFoodImageManifest({
+        ...options,
+        provenance: duplicatePath,
+      }),
+    ).rejects.toThrow(/IDs and asset paths must be unique/);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('manifest builder 在首个 await 前快照 caller provenance', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tiezheng-manifest-snapshot-'));
+
+  try {
+    const provenanceUrl = pathToFileURL(
+      resolve(REPOSITORY_ROOT, 'scripts/preset-food-image-provenance.mjs'),
+    ).href;
+    const builderUrl = pathToFileURL(
+      resolve(REPOSITORY_ROOT, 'scripts/build-preset-food-image-manifest.mjs'),
+    ).href;
+    const { PRESET_FOOD_IMAGE_PROVENANCE } = (await import(provenanceUrl)) as {
+      PRESET_FOOD_IMAGE_PROVENANCE: readonly PresetFoodImageProvenanceRow[];
+    };
+    const { buildPresetFoodImageManifest } = (await import(
+      /* @vite-ignore */ builderUrl
+    )) as {
+      buildPresetFoodImageManifest: (options: {
+        repositoryRoot: string;
+        output: string;
+        provenance: readonly PresetFoodImageProvenanceRow[];
+      }) => Promise<void>;
+    };
+    const callerRows = PRESET_FOOD_IMAGE_PROVENANCE.map((row) => ({
+      ...row,
+      reviewed: true,
+    }));
+    const firstRelativePath = callerRows[0].path.replace(/^\//, '');
+    await mkdir(resolve(temporaryRoot, 'public', 'food-presets'), {
+      recursive: true,
+    });
+    await writeFile(
+      resolve(temporaryRoot, 'public', firstRelativePath),
+      await coloredImage(93, 'webp'),
+    );
+
+    const buildPromise = buildPresetFoodImageManifest({
+      repositoryRoot: temporaryRoot,
+      output: resolve(temporaryRoot, 'manifest.ts'),
+      provenance: callerRows,
+    });
+    expect(Reflect.set(callerRows[1], 'path', '../escape.webp')).toBe(true);
+
+    let rejection: unknown;
+    try {
+      await buildPromise;
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error).message).not.toContain('unsafe preset path');
+    expect((rejection as NodeJS.ErrnoException).code).toBe('ENOENT');
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('manifest builder 拒绝未经人工审查的 provenance', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'tiezheng-manifest-review-'));
+
+  try {
+    const builderUrl = pathToFileURL(
+      resolve(REPOSITORY_ROOT, 'scripts/build-preset-food-image-manifest.mjs'),
+    ).href;
+    const { buildPresetFoodImageManifest } = (await import(
+      /* @vite-ignore */ builderUrl
+    )) as {
+      buildPresetFoodImageManifest: (options: {
+        repositoryRoot: string;
+        output: string;
+        provenance?: readonly Record<string, unknown>[];
+      }) => Promise<void>;
+    };
 
     await expect(
       buildPresetFoodImageManifest({
         repositoryRoot: REPOSITORY_ROOT,
         output: resolve(temporaryRoot, 'manifest.ts'),
-        provenance: unreviewed,
       }),
     ).rejects.toThrow(/reviewed/);
   } finally {

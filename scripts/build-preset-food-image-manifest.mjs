@@ -24,24 +24,30 @@ export async function buildPresetFoodImageManifest({
   output = resolve(repositoryRoot, 'src/data/presetFoodImageManifest.generated.ts'),
   provenance = PRESET_FOOD_IMAGE_PROVENANCE,
 } = {}) {
-  if (provenance.length !== 3) {
-    throw new Error('preset provenance must contain exactly three rows');
+  const provenanceRows = provenance.map((row) => Object.freeze({ ...row }));
+  const expectedCount = PRESET_FOOD_IMAGE_PROVENANCE.length;
+  if (expectedCount !== 33) {
+    throw new Error('preset provenance must contain exactly 33 rows');
+  }
+
+  if (provenanceRows.length !== expectedCount) {
+    throw new Error(`preset provenance must contain exactly ${expectedCount} rows`);
   }
 
   if (
-    new Set(provenance.map((row) => row.foodId)).size !== 3 ||
-    new Set(provenance.map((row) => row.path)).size !== 3
+    new Set(provenanceRows.map((row) => row.foodId)).size !== expectedCount ||
+    new Set(provenanceRows.map((row) => row.path)).size !== expectedCount
   ) {
     throw new Error('preset food IDs and asset paths must be unique');
   }
 
-  if (provenance.some((row) => row.reviewed !== true)) {
+  if (provenanceRows.some((row) => row.reviewed !== true)) {
     throw new Error('every preset provenance row must be explicitly reviewed');
   }
 
   const rows = [];
 
-  for (const provenanceRow of provenance) {
+  for (const provenanceRow of provenanceRows) {
     if (typeof provenanceRow.path !== 'string') {
       throw new Error('preset asset path must be a string');
     }
