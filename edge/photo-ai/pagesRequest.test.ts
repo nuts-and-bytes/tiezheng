@@ -22,7 +22,8 @@ describe('parsePagesRequestConfig', () => {
 });
 
 describe('validatePagesRequest', () => {
-  test('accepts only the exact same-origin session GET', () => {
+  test('accepts a same-origin session GET when browsers omit Origin', () => {
+    expect(validatePagesRequest(request(sessionUrl, { headers: { 'Sec-Fetch-Site': 'same-origin' } }), config)).toEqual({ route: 'session' });
     expect(validatePagesRequest(request(sessionUrl, { headers: { Origin: config.origin, 'Sec-Fetch-Site': 'same-origin' } }), config)).toEqual({ route: 'session' });
   });
 
@@ -37,8 +38,9 @@ describe('validatePagesRequest', () => {
     expect(() => validatePagesRequest(request(url, { headers: headers ?? { Origin: config.origin } }), config)).toThrow(PagesRequestError);
   });
 
-  test('rejects missing Origin and cross-site fetch metadata', () => {
+  test('rejects missing or cross-site fetch metadata', () => {
     expect(() => validatePagesRequest(request(sessionUrl), config)).toThrow(PagesRequestError);
+    expect(() => validatePagesRequest(request(sessionUrl, { headers: { 'Sec-Fetch-Site': 'cross-site' } }), config)).toThrow(PagesRequestError);
     expect(() => validatePagesRequest(request(sessionUrl, { headers: { Origin: config.origin, 'Sec-Fetch-Site': 'cross-site' } }), config)).toThrow(PagesRequestError);
     expect(() => validatePagesRequest(request(sessionUrl, { headers: { Origin: config.origin, 'Sec-Fetch-Site': 'same-site' } }), config)).toThrow(PagesRequestError);
   });

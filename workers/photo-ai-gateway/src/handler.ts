@@ -12,6 +12,7 @@ import {
   isValidCacheEncryptionKey,
 } from './cryptoCache';
 import { readPhotoUpload, sanitizeImage } from './imageFirewall';
+import { GATEWAY_LIMITS, arkCostMicros } from './gatewayPolicy';
 import {
   parsePhotoAiEstimateResponse,
   PHOTO_AI_VERSIONS,
@@ -29,9 +30,16 @@ export interface HandlerDependencies {
   initialAttemptReserveMicros: number;
   retryAttemptReserveMicros: number;
   resultCacheMs: number;
-  arkCostMicros: (inputTokens: number, outputTokens: number) => number;
   now: () => number;
 }
+
+export type GatewayRuntimeConfiguration = Pick<
+  HandlerDependencies,
+  | 'monthlyBudgetMicros'
+  | 'initialAttemptReserveMicros'
+  | 'retryAttemptReserveMicros'
+  | 'resultCacheMs'
+>;
 
 const SECURITY_HEADERS = {
   'cache-control': 'no-store',
@@ -79,25 +87,31 @@ async function requestFingerprint(accountKey: string, uploadBlobSha256: string):
 
 export function isPhotoAiGatewayConfigured(
   env: GatewayEnv,
-  monthlyBudgetMicros: number,
+  runtime: GatewayRuntimeConfiguration,
 ): boolean {
   const configuredMonthlyBudgetMicros = Number(env.PHOTO_AI_MONTHLY_BUDGET_MICROS);
-  return env.PHOTO_AI_GATEWAY_ENABLED === 'true'
-    && env.PHOTO_AI_MODEL === PHOTO_AI_VERSIONS.model
-    && typeof env.PHOTO_AI_MONTHLY_BUDGET_MICROS === 'string'
-    && /^\d+$/.test(env.PHOTO_AI_MONTHLY_BUDGET_MICROS)
-    && Number.isSafeInteger(monthlyBudgetMicros)
-    && monthlyBudgetMicros > 0
-    && Number.isSafeInteger(configuredMonthlyBudgetMicros)
-    && configuredMonthlyBudgetMicros > 0
-    && configuredMonthlyBudgetMicros <= monthlyBudgetMicros
-    && typeof env.ARK_API_KEY === 'string'
-    && env.ARK_API_KEY.length > 0
-    && isValidCacheEncryptionKey(env.PHOTO_AI_CACHE_AES_KEY)
-    && typeof env.IMAGES === 'object'
-    && env.IMAGES !== null
-    && typeof env.PHOTO_AI_COORDINATOR === 'object'
-    && env.PHOTO_AI_COORDINATOR !== null;
+  if (env.PHOTO_AI_GATEWAY_ENABLED !== 'true'
+    || env.PHOTO_AI_MODEL !== PHOTO_AI_VERSIONS.model
+    || typeof env.PHOTO_AI_MONTHLY_BUDGET_MICROS !== 'string'
+    || !/^\d+$/.test(env.PHOTO_AI_MONTHLY_BUDGET_MICROS)
+    || configuredMonthlyBudgetMicros !== GATEWAY_LIMITS.monthlyBudgetMicros
+    || runtime.monthlyBudgetMicros !== GATEWAY_LIMITS.monthlyBudgetMicros
+    || runtime.initialAttemptReserveMicros !== GATEWAY_LIMITS.initialAttemptReserveMicros
+    || runtime.retryAttemptReserveMicros !== GATEWAY_LIMITS.retryAttemptReserveMicros
+    || runtime.resultCacheMs !== GATEWAY_LIMITS.resultCacheMs
+    || typeof env.ARK_API_KEY !== 'string'
+    || env.ARK_API_KEY.trim().length === 0
+    || env.ARK_API_KEY !== env.ARK_API_KEY.trim()
+    || /[\r\n]/.test(env.ARK_API_KEY)
+    || !isValidCacheEncryptionKey(env.PHOTO_AI_CACHE_AES_KEY)
+    || typeof env.IMAGES !== 'object'
+    || env.IMAGES === null
+    || typeof env.IMAGES.info !== 'function'
+    || typeof env.IMAGES.input !== 'function'
+    || typeof env.PHOTO_AI_COORDINATOR !== 'object'
+    || env.PHOTO_AI_COORDINATOR === null
+    || typeof env.PHOTO_AI_COORDINATOR.getByName !== 'function') return false;
+  return true;
 }
 
 export async function handlePhotoAiRequest(
@@ -116,11 +130,10 @@ export async function handlePhotoAiRequest(
     initialAttemptReserveMicros: Number.NaN,
     retryAttemptReserveMicros: Number.NaN,
     resultCacheMs: Number.NaN,
-    arkCostMicros: () => { throw new TypeError('Missing gateway cost configuration'); },
     now: Date.now,
     ...overrides,
   };
-  if (!isPhotoAiGatewayConfigured(env, dependencies.monthlyBudgetMicros)) {
+  if (!isPhotoAiGatewayConfigured(env, dependencies)) {
     return failure('service-disabled', 503);
   }
   const accountKey = request.headers.get('x-tiezheng-account-key');
@@ -295,7 +308,7 @@ export async function handlePhotoAiRequest(
   let knownAttemptCost: number | null = null;
   if (estimate.usage !== null) {
     try {
-      knownAttemptCost = dependencies.arkCostMicros(
+      knownAttemptCost = arkCostMicros(
         estimate.usage.inputTokens,
         estimate.usage.outputTokens,
       );

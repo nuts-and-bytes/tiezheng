@@ -23,6 +23,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npm run typecheck:edge
+      - run: npm run test:edge
       - run: npm run build
 
   # 上线。needs: ci —— typecheck / test / build 任何一个红，这一步根本不会开始。

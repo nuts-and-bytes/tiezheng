@@ -128,7 +128,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
       if (done) break;
       byteLength += value.byteLength;
       if (byteLength > MAX_RESPONSE_BYTES) {
-        void reader.cancel();
+        void reader.cancel().catch(() => undefined);
         throw new TypeError('Invalid service response');
       }
       chunks.push(value);
@@ -152,7 +152,9 @@ export async function proxyPhotoAiRequest(
   accountKey: string,
   route: PhotoAiProxyRoute,
 ): Promise<Response> {
-  if (env.PHOTO_AI_GATEWAY === undefined) {
+  if (typeof env.PHOTO_AI_GATEWAY !== 'object'
+    || env.PHOTO_AI_GATEWAY === null
+    || typeof env.PHOTO_AI_GATEWAY.fetch !== 'function') {
     return photoAiPagesFailure('service-disabled', 503);
   }
   if (!/^[a-f0-9]{64}$/.test(accountKey)) {

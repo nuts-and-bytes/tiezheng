@@ -45,11 +45,13 @@ export function validatePagesRequest(request: Request, config: PagesRequestConfi
     return { route: 'resume' };
   }
 
-  requireSameOrigin(request, config);
   if (request.method === 'GET' && url.pathname === SESSION_PATH && !url.search) {
     requireNoBody(request);
+    requireSameOriginSessionFetch(request, config);
     return { route: 'session' };
   }
+
+  requireSameOrigin(request, config);
   if (request.method === 'POST' && url.pathname === ESTIMATE_PATH && !url.search) {
     requireEstimateBody(request);
     return { route: 'estimate' };
@@ -63,6 +65,13 @@ export function validatePagesRequest(request: Request, config: PagesRequestConfi
 
 function requireSameOrigin(request: Request, config: PagesRequestConfig): void {
   if (request.headers.get('Origin') !== config.origin || request.headers.get('Sec-Fetch-Site') !== 'same-origin') {
+    throw new PagesRequestError();
+  }
+}
+
+function requireSameOriginSessionFetch(request: Request, config: PagesRequestConfig): void {
+  const origin = request.headers.get('Origin');
+  if ((origin !== null && origin !== config.origin) || request.headers.get('Sec-Fetch-Site') !== 'same-origin') {
     throw new PagesRequestError();
   }
 }

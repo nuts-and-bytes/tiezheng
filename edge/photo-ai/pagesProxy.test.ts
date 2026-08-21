@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import {
   photoAiEstimateInFlightFixture,
@@ -50,7 +50,46 @@ function headerRecord(init?: HeadersInit): Record<string, string> {
   return record;
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe('photo AI Pages service proxy', () => {
+  test.each([
+    true,
+    {},
+    { fetch: 'not-a-function' },
+  ])('fails closed before consuming an estimate when the private binding is invalid', async (binding) => {
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const source = new Request('https://app.example.test/api/nutrition/photo/estimate', {
+      method: 'POST',
+      headers: {
+        'content-length': '20',
+        'content-type': 'multipart/form-data; boundary=a',
+      },
+      body: 'private-image-bytes',
+    });
+    const routeEnv = env();
+    routeEnv.PHOTO_AI_GATEWAY = binding as unknown as Fetcher;
+
+    const response = await proxyPhotoAiRequest(source, routeEnv, ACCOUNT_KEY, 'estimate');
+    const serialized = await response.text();
+
+    expect(response.status).toBe(503);
+    expect(JSON.parse(serialized)).toEqual({
+      ok: false,
+      code: 'service-disabled',
+      retryAt: null,
+      resetAt: null,
+    });
+    expect(source.bodyUsed).toBe(false);
+    expect(serialized).not.toContain('private-image-bytes');
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
+    expectSecure(response);
+  });
+
   test('fails closed when the private service binding is missing', async () => {
     const response = await proxyPhotoAiRequest(
       new Request('https://app.example.test/api/nutrition/photo/session'),
@@ -175,6 +214,51 @@ describe('photo AI Pages service proxy', () => {
       resetAt: null,
     });
     expect(serialized).not.toMatch(/private stack|padding/);
+    expectSecure(response);
+  });
+
+  test('handles a rejected cancellation when a downstream JSON stream exceeds the limit', async () => {
+    const cancellation = {
+      catch: vi.fn((onRejected: (reason: unknown) => unknown) => {
+        onRejected(new Error('private cancellation detail'));
+        return Promise.resolve();
+      }),
+      then: vi.fn((
+        _onFulfilled: ((value: void) => unknown) | null | undefined,
+        onRejected: ((reason: unknown) => unknown) | null | undefined,
+      ) => {
+        onRejected?.(new Error('private cancellation detail'));
+        return Promise.resolve();
+      }),
+    } as unknown as Promise<void>;
+    const cancel = vi
+      .spyOn(ReadableStreamDefaultReader.prototype, 'cancel')
+      .mockReturnValue(cancellation);
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(256_001));
+      },
+    });
+    const fetcher = vi.fn(async () => new Response(oversized, {
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    const response = await proxyPhotoAiRequest(
+      new Request('https://app.example.test/api/nutrition/photo/session'),
+      env(fetcher),
+      ACCOUNT_KEY,
+      'session',
+    );
+
+    expect(response.status).toBe(503);
+    expect(await responseBody(response)).toEqual({
+      ok: false,
+      code: 'provider-unavailable',
+      retryAt: null,
+      resetAt: null,
+    });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancellation.catch).toHaveBeenCalledTimes(1);
     expectSecure(response);
   });
 });

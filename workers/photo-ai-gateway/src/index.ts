@@ -1,7 +1,6 @@
 import {
   GATEWAY_LIMITS,
   PhotoAiCoordinator,
-  arkCostMicros,
 } from './coordinator';
 import type { GatewayEnv } from './env';
 import {
@@ -34,7 +33,12 @@ function serviceDisabled(): Response {
 async function handleSessionRequest(request: Request, env: GatewayEnv): Promise<Response> {
   const accountKey = request.headers.get('x-tiezheng-account-key');
   if (accountKey === null || !/^[a-f0-9]{64}$/.test(accountKey)) return serviceDisabled();
-  if (!isPhotoAiGatewayConfigured(env, GATEWAY_LIMITS.monthlyBudgetMicros)) {
+  if (!isPhotoAiGatewayConfigured(env, {
+    monthlyBudgetMicros: GATEWAY_LIMITS.monthlyBudgetMicros,
+    initialAttemptReserveMicros: GATEWAY_LIMITS.initialAttemptReserveMicros,
+    retryAttemptReserveMicros: GATEWAY_LIMITS.retryAttemptReserveMicros,
+    resultCacheMs: GATEWAY_LIMITS.resultCacheMs,
+  })) {
     return serviceDisabled();
   }
 
@@ -70,7 +74,6 @@ export default {
       initialAttemptReserveMicros: GATEWAY_LIMITS.initialAttemptReserveMicros,
       retryAttemptReserveMicros: GATEWAY_LIMITS.retryAttemptReserveMicros,
       resultCacheMs: GATEWAY_LIMITS.resultCacheMs,
-      arkCostMicros,
     });
   },
 };

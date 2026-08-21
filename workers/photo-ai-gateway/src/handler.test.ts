@@ -1,10 +1,11 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { PHOTO_AI_VERSIONS } from '../../../src/lib/photoAiContract';
 import { stableJson } from '../../../src/lib/stableJson';
 import { PhotoModelAdapterError } from './doubaoAdapter';
 import type { ReserveResult } from './coordinator';
 import type { GatewayEnv } from './env';
+import { GATEWAY_LIMITS } from './gatewayPolicy';
 import type { BoundedPhotoUpload, SanitizedImage } from './imageFirewall';
 import {
   handlePhotoAiRequest as handlePhotoAiRequestImpl,
@@ -14,7 +15,6 @@ import {
 const ACCOUNT_KEY = 'a'.repeat(64);
 const NOW = Date.UTC(2026, 7, 18, 4);
 const LEASE_MS = 60_000;
-const MONTHLY_BUDGET_MICROS = 50_000_000;
 const upload: BoundedPhotoUpload = {
   bytes: Uint8Array.of(1, 2, 3),
   mime: 'image/webp',
@@ -90,7 +90,10 @@ function configuredEnv(coordinator = coordinatorStub()): GatewayEnv {
     PHOTO_AI_MONTHLY_BUDGET_MICROS: '50000000',
     ARK_API_KEY: 'test-ark-key',
     PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
-    IMAGES: {} as ImagesBinding,
+    IMAGES: {
+      info: vi.fn(),
+      input: vi.fn(),
+    } as unknown as ImagesBinding,
     PHOTO_AI_COORDINATOR: {
       getByName: vi.fn().mockReturnValue(coordinator),
     } as unknown as GatewayEnv['PHOTO_AI_COORDINATOR'],
@@ -101,13 +104,22 @@ async function body(response: Response): Promise<Record<string, unknown>> {
   return response.json() as Promise<Record<string, unknown>>;
 }
 
+function auditSerialize(value: unknown): string {
+  return JSON.stringify(value, (_key, candidate) => Object.prototype.toString.call(candidate) === '[object Uint8Array]'
+    ? new TextDecoder().decode(candidate)
+    : candidate);
+}
+
 function handlePhotoAiRequest(
   incoming: Request,
   env: GatewayEnv,
   overrides: Partial<HandlerDependencies> = {},
 ): Promise<Response> {
   return handlePhotoAiRequestImpl(incoming, env, {
-    monthlyBudgetMicros: MONTHLY_BUDGET_MICROS,
+    monthlyBudgetMicros: GATEWAY_LIMITS.monthlyBudgetMicros,
+    initialAttemptReserveMicros: GATEWAY_LIMITS.initialAttemptReserveMicros,
+    retryAttemptReserveMicros: GATEWAY_LIMITS.retryAttemptReserveMicros,
+    resultCacheMs: GATEWAY_LIMITS.resultCacheMs,
     ...overrides,
   } as Partial<HandlerDependencies>);
 }
@@ -128,7 +140,111 @@ async function expectedFingerprint(): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
 describe('private photo AI handler', () => {
+  test('always settles canonical Ark cost even when a legacy caller injects a fake price function', async () => {
+    const coordinator = coordinatorStub();
+    const cache = {
+      ivBase64: 'random-iv',
+      ciphertextBase64: 'ciphertext-only',
+      expiresAt: NOW + GATEWAY_LIMITS.resultCacheMs,
+    };
+    const legacyOverride = {
+      arkCostMicros: () => 1,
+    } as unknown as Partial<HandlerDependencies>;
+
+    const response = await handlePhotoAiRequest(request(), configuredEnv(coordinator), {
+      readPhotoUpload: vi.fn().mockResolvedValue(upload),
+      sanitizeImage: vi.fn().mockResolvedValue(sanitized),
+      createModelAdapter: vi.fn(() => ({
+        estimate: vi.fn().mockResolvedValue({
+          raw: { provider: 'canonical-cost' },
+          usage: { inputTokens: 10, outputTokens: 2 },
+        }),
+      })),
+      parseDoubaoEstimate: vi.fn().mockReturnValue(candidates),
+      encryptCandidateCache: vi.fn().mockResolvedValue(cache),
+      now: () => NOW,
+      ...legacyOverride,
+    });
+
+    expect(response.status).toBe(200);
+    expect(coordinator.settleSuccess).toHaveBeenCalledWith(expect.objectContaining({
+      actualCostMicros: 120,
+    }));
+  });
+
+  test.each([
+    ['missing enabled flag', (env: GatewayEnv) => { delete (env as unknown as Record<string, unknown>).PHOTO_AI_GATEWAY_ENABLED; }, {}],
+    ['non-exact enabled flag', (env: GatewayEnv) => { env.PHOTO_AI_GATEWAY_ENABLED = 'TRUE'; }, {}],
+    ['model alias', (env: GatewayEnv) => { env.PHOTO_AI_MODEL = 'doubao-seed-2-1-pro'; }, {}],
+    ['unexpected model version', (env: GatewayEnv) => { env.PHOTO_AI_MODEL = 'doubao-seed-2-1-pro-260629'; }, {}],
+    ['blank Ark secret', (env: GatewayEnv) => { env.ARK_API_KEY = '   '; }, {}],
+    ['newline Ark secret', (env: GatewayEnv) => { env.ARK_API_KEY = 'key\nleak'; }, {}],
+    ['primitive Images binding', (env: GatewayEnv) => { env.IMAGES = true as unknown as ImagesBinding; }, {}],
+    ['incomplete Images binding', (env: GatewayEnv) => { env.IMAGES = { info: vi.fn() } as unknown as ImagesBinding; }, {}],
+    ['primitive coordinator binding', (env: GatewayEnv) => { env.PHOTO_AI_COORDINATOR = true as unknown as GatewayEnv['PHOTO_AI_COORDINATOR']; }, {}],
+    ['incomplete coordinator binding', (env: GatewayEnv) => { env.PHOTO_AI_COORDINATOR = {} as GatewayEnv['PHOTO_AI_COORDINATOR']; }, {}],
+    ['missing initial reserve', undefined, { initialAttemptReserveMicros: Number.NaN }],
+    ['wrong initial reserve', undefined, { initialAttemptReserveMicros: GATEWAY_LIMITS.initialAttemptReserveMicros - 1 }],
+    ['missing retry reserve', undefined, { retryAttemptReserveMicros: Number.NaN }],
+    ['wrong retry reserve', undefined, { retryAttemptReserveMicros: GATEWAY_LIMITS.retryAttemptReserveMicros - 1 }],
+    ['missing cache TTL', undefined, { resultCacheMs: Number.NaN }],
+    ['wrong cache TTL', undefined, { resultCacheMs: GATEWAY_LIMITS.resultCacheMs - 1 }],
+    ['wrong authoritative budget', undefined, { monthlyBudgetMicros: GATEWAY_LIMITS.monthlyBudgetMicros - 1 }],
+  ] as const)('fails closed before body, bindings or network for %s', async (_case, mutateEnv, overrides) => {
+    const readPhotoUpload = vi.fn();
+    const createModelAdapter = vi.fn();
+    const providerFetch = vi.fn<typeof fetch>();
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.stubGlobal('fetch', providerFetch);
+    const env = configuredEnv();
+    mutateEnv?.(env);
+
+    const response = await handlePhotoAiRequest(request(), env, {
+      readPhotoUpload,
+      createModelAdapter,
+      ...overrides,
+    });
+    const serialized = await response.text();
+
+    expect(response.status).toBe(503);
+    expect(JSON.parse(serialized)).toEqual({
+      ok: false,
+      code: 'service-disabled',
+      retryAt: null,
+      resetAt: null,
+    });
+    expect(readPhotoUpload).not.toHaveBeenCalled();
+    expect(createModelAdapter).not.toHaveBeenCalled();
+    expect(providerFetch).not.toHaveBeenCalled();
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['missing', undefined],
+    ['unrelated', 'https://tiezheng.pages.dev'],
+  ])('does not use %s Pages origin metadata as a private Worker safety gate', async (_case, origin) => {
+    const env = configuredEnv();
+    if (origin === undefined) {
+      delete (env as unknown as Record<string, unknown>).PHOTO_AI_ALLOWED_ORIGINS;
+    } else {
+      env.PHOTO_AI_ALLOWED_ORIGINS = origin;
+    }
+    const readPhotoUpload = vi.fn().mockRejectedValue(new TypeError('Invalid photo upload'));
+
+    const response = await handlePhotoAiRequest(request(), env, { readPhotoUpload });
+
+    expect(response.status).toBe(400);
+    expect(await body(response)).toMatchObject({ ok: false, code: 'unsupported-file' });
+    expect(readPhotoUpload).toHaveBeenCalledTimes(1);
+  });
   test('fails closed before reading the body when the gateway is disabled', async () => {
     const readPhotoUpload = vi.fn();
     const response = await handlePhotoAiRequest(
@@ -209,9 +325,9 @@ describe('private photo AI handler', () => {
   });
 
   test.each([
-    ['zero', '0', MONTHLY_BUDGET_MICROS],
-    ['above the authoritative maximum', String(MONTHLY_BUDGET_MICROS + 1), MONTHLY_BUDGET_MICROS],
-    ['an unsafe integer string', String(Number.MAX_SAFE_INTEGER + 1), MONTHLY_BUDGET_MICROS],
+    ['zero', '0', GATEWAY_LIMITS.monthlyBudgetMicros],
+    ['above the authoritative maximum', String(GATEWAY_LIMITS.monthlyBudgetMicros + 1), GATEWAY_LIMITS.monthlyBudgetMicros],
+    ['an unsafe integer string', String(Number.MAX_SAFE_INTEGER + 1), GATEWAY_LIMITS.monthlyBudgetMicros],
     ['above an injected lower maximum', '11', 10],
   ])('rejects a %s monthly budget before reading the body', async (_case, budget, maximum) => {
     const coordinator = coordinatorStub();
@@ -314,7 +430,6 @@ describe('private photo AI handler', () => {
       sanitizeImage: vi.fn().mockResolvedValue(sanitized),
       createModelAdapter: vi.fn(() => ({ estimate })),
       initialAttemptReserveMicros: 2_000_000,
-      arkCostMicros: vi.fn(),
       now,
     });
 
@@ -494,8 +609,6 @@ describe('private photo AI handler', () => {
       order.push('encrypt');
       return cache;
     });
-    const arkCostMicros = vi.fn().mockReturnValue(1_234);
-
     const response = await handlePhotoAiRequest(incoming, configuredEnv(coordinator), {
       readPhotoUpload: vi.fn().mockResolvedValue(upload),
       sanitizeImage,
@@ -504,7 +617,6 @@ describe('private photo AI handler', () => {
       encryptCandidateCache,
       initialAttemptReserveMicros: 2_000_000,
       resultCacheMs: 600_000,
-      arkCostMicros,
       now: () => NOW,
     });
 
@@ -516,7 +628,6 @@ describe('private photo AI handler', () => {
       now: NOW,
     }));
     expect(parseDoubaoEstimate).toHaveBeenCalledWith(raw);
-    expect(arkCostMicros).toHaveBeenCalledWith(10, 2);
     expect(encryptCandidateCache).toHaveBeenCalledWith(
       success,
       fingerprint,
@@ -525,7 +636,7 @@ describe('private photo AI handler', () => {
     );
     expect(coordinator.settleSuccess).toHaveBeenCalledWith(expect.objectContaining({
       cache,
-      actualCostMicros: 1_234,
+      actualCostMicros: 120,
     }));
     expect(JSON.stringify(coordinator.settleSuccess.mock.calls)).not.toContain('无法确定');
     expect(response.status).toBe(200);
@@ -561,7 +672,6 @@ describe('private photo AI handler', () => {
       initialAttemptReserveMicros: 2_000_000,
       retryAttemptReserveMicros: 2_000_000,
       resultCacheMs: 600_000,
-      arkCostMicros: vi.fn().mockReturnValue(1_234),
       now: () => NOW,
     });
 
@@ -573,7 +683,7 @@ describe('private photo AI handler', () => {
       now: NOW,
     }));
     expect(coordinator.settleSuccess).toHaveBeenCalledWith(expect.objectContaining({
-      actualCostMicros: 2_001_234,
+      actualCostMicros: 2_000_120,
     }));
     expect(response.status).toBe(200);
   });
@@ -589,7 +699,6 @@ describe('private photo AI handler', () => {
       initialAttemptReserveMicros: 2_000_000,
       retryAttemptReserveMicros: 2_000_000,
       resultCacheMs: 600_000,
-      arkCostMicros: vi.fn(),
       now: () => NOW,
     });
 
@@ -617,7 +726,6 @@ describe('private photo AI handler', () => {
       sanitizeImage: vi.fn().mockResolvedValue(sanitized),
       createModelAdapter: vi.fn(() => ({ estimate })),
       initialAttemptReserveMicros: 2_000_000,
-      arkCostMicros: vi.fn(),
       now: () => NOW,
     });
 
@@ -655,7 +763,6 @@ describe('private photo AI handler', () => {
         sanitizeImage: vi.fn().mockResolvedValue(sanitized),
         createModelAdapter: vi.fn(() => ({ estimate })),
         initialAttemptReserveMicros: 2_000_000,
-        arkCostMicros: vi.fn(),
         now,
       },
     );
@@ -685,7 +792,6 @@ describe('private photo AI handler', () => {
       createModelAdapter: vi.fn(() => ({ estimate })),
       initialAttemptReserveMicros: 2_000_000,
       retryAttemptReserveMicros: 2_000_000,
-      arkCostMicros: vi.fn(),
       now: () => NOW,
     });
 
@@ -712,7 +818,6 @@ describe('private photo AI handler', () => {
       createModelAdapter: vi.fn(() => ({ estimate })),
       initialAttemptReserveMicros: 2_000_000,
       retryAttemptReserveMicros: 2_000_000,
-      arkCostMicros: vi.fn(),
       now: () => NOW,
     });
 
@@ -737,7 +842,6 @@ describe('private photo AI handler', () => {
       sanitizeImage,
       createModelAdapter: vi.fn(() => ({ estimate })),
       initialAttemptReserveMicros: 2_000_000,
-      arkCostMicros: vi.fn(),
       now: () => NOW,
     });
 
@@ -763,12 +867,11 @@ describe('private photo AI handler', () => {
       })),
       parseDoubaoEstimate: vi.fn(() => { throw new TypeError(providerSecret); }),
       initialAttemptReserveMicros: 2_000_000,
-      arkCostMicros: vi.fn().mockReturnValue(1_234),
       now: () => NOW,
     });
 
     expect(coordinator.settleFailure).toHaveBeenCalledWith(expect.objectContaining({
-      actualCostMicros: 1_234,
+      actualCostMicros: 120,
       errorCode: 'invalid-estimate',
     }));
     expect(response.status).toBe(502);
@@ -782,10 +885,8 @@ describe('private photo AI handler', () => {
     expect(serialized).not.toContain(providerSecret);
   });
 
-  test('settles an overflowing safe-integer usage as invalid without leaking the thrown cost error', async () => {
+  test('settles an overflowing safe-integer usage as invalid without leaking cost details', async () => {
     const coordinator = coordinatorStub();
-    const privateError = 'private-cost-overflow';
-    const arkCostMicros = vi.fn(() => { throw new TypeError(privateError); });
 
     const response = await handlePhotoAiRequest(request(), configuredEnv(coordinator), {
       readPhotoUpload: vi.fn().mockResolvedValue(upload),
@@ -797,11 +898,9 @@ describe('private photo AI handler', () => {
         }),
       })),
       initialAttemptReserveMicros: 2_000_000,
-      arkCostMicros,
       now: () => NOW,
     });
 
-    expect(arkCostMicros).toHaveBeenCalledWith(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
     expect(coordinator.settleFailure).toHaveBeenCalledWith(expect.objectContaining({
       actualCostMicros: null,
       errorCode: 'invalid-estimate',
@@ -817,7 +916,165 @@ describe('private photo AI handler', () => {
       retryAt: null,
       resetAt: null,
     });
-    expect(serialized).not.toContain(privateError);
+    expect(serialized).not.toMatch(/stack|token|cost/i);
+  });
+
+  test.each([
+    ['upload', 400, 'unsupported-file'],
+    ['reserve', 503, 'service-disabled'],
+    ['sanitize', 400, 'decode-failed'],
+    ['mark', 503, 'service-disabled'],
+    ['provider', 503, 'provider-unavailable'],
+    ['retry', 503, 'provider-unavailable'],
+    ['parse', 502, 'invalid-estimate'],
+    ['encrypt', 502, 'invalid-estimate'],
+    ['settle', 503, 'service-disabled'],
+  ] as const)('keeps %s failure details inside approved image seams', async (stage, status, code) => {
+    const rawImage = 'RIFF-private-raw-WEBP-image';
+    const sanitizedImage = 'RIFF-private-sanitized-WEBP-image';
+    const arkKey = 'private-ark-key';
+    const aesKey = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+    const forbidden = [
+      rawImage,
+      sanitizedImage,
+      arkKey,
+      aesKey,
+      'sha-input-private-bytes',
+      'provider-private-body',
+      'private-system-prompt',
+      'private-json-schema',
+      'user-private-subject',
+      'alice-private@example.com',
+      '203.0.113.77',
+      '私密食物名',
+      '私密做法',
+      '私密假设',
+      '2026-08-21',
+      'dinner-private',
+      '88kg-private',
+      'private-health-goal',
+    ];
+    const failureDetail = forbidden.join('|');
+    const privateUpload: BoundedPhotoUpload = {
+      ...upload,
+      bytes: new TextEncoder().encode(rawImage),
+    };
+    const privateSanitized: SanitizedImage = {
+      ...sanitized,
+      bytes: new TextEncoder().encode(sanitizedImage),
+    };
+    const privateCandidates = [{
+      ...candidates[0],
+      name: '私密食物名',
+      preparation: '私密做法',
+      assumptions: ['私密假设', 'private-health-goal'],
+    }];
+    const coordinator = coordinatorStub();
+    const env = configuredEnv(coordinator);
+    env.ARK_API_KEY = arkKey;
+    env.PHOTO_AI_CACHE_AES_KEY = aesKey;
+    const readPhotoUpload = vi.fn().mockResolvedValue(privateUpload);
+    const sanitizeImage = vi.fn().mockResolvedValue(privateSanitized);
+    const estimate = vi.fn().mockResolvedValue({
+      raw: {
+        body: 'provider-private-body',
+        prompt: 'private-system-prompt',
+        schema: 'private-json-schema',
+      },
+      usage: { inputTokens: 10, outputTokens: 2 },
+    });
+    const createModelAdapter = vi.fn(() => ({ estimate }));
+    const parseDoubaoEstimate = vi.fn().mockReturnValue(privateCandidates);
+    const encryptCandidateCache = vi.fn().mockResolvedValue({
+      ivBase64: 'safe-iv',
+      ciphertextBase64: 'safe-ciphertext',
+      expiresAt: NOW + GATEWAY_LIMITS.resultCacheMs,
+    });
+
+    if (stage === 'upload') readPhotoUpload.mockRejectedValue(new Error(failureDetail));
+    if (stage === 'reserve') coordinator.reserve.mockRejectedValue(new Error(failureDetail));
+    if (stage === 'sanitize') sanitizeImage.mockRejectedValue(new Error(failureDetail));
+    if (stage === 'mark') coordinator.markInvoked.mockRejectedValue(new Error(failureDetail));
+    if (stage === 'provider') estimate.mockRejectedValue(new Error(failureDetail));
+    if (stage === 'retry') {
+      estimate.mockRejectedValue(new PhotoModelAdapterError('provider-unavailable', true));
+      coordinator.reserveRetryCost.mockRejectedValue(new Error(failureDetail));
+    }
+    if (stage === 'parse') parseDoubaoEstimate.mockImplementation(() => { throw new Error(failureDetail); });
+    if (stage === 'encrypt') encryptCandidateCache.mockRejectedValue(new Error(failureDetail));
+    if (stage === 'settle') coordinator.settleSuccess.mockRejectedValue(new Error(failureDetail));
+
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const globalFetch = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', globalFetch);
+
+    const response = await handlePhotoAiRequest(request(), env, {
+      readPhotoUpload,
+      sanitizeImage,
+      createModelAdapter,
+      parseDoubaoEstimate,
+      encryptCandidateCache,
+      now: () => NOW,
+    });
+    const serializedResponse = await response.text();
+    const coordinatorCalls = {
+      reserve: coordinator.reserve.mock.calls,
+      markInvoked: coordinator.markInvoked.mock.calls,
+      abortAfterMarkBeforeProvider: coordinator.abortAfterMarkBeforeProvider.mock.calls,
+      reserveRetryCost: coordinator.reserveRetryCost.mock.calls,
+      abortBeforeInvoke: coordinator.abortBeforeInvoke.mock.calls,
+      settleSuccess: coordinator.settleSuccess.mock.calls,
+      settleFailure: coordinator.settleFailure.mock.calls,
+    };
+    const unapprovedAudit = auditSerialize({
+      response: serializedResponse,
+      consoleLog: consoleLog.mock.calls,
+      consoleError: consoleError.mock.calls,
+      globalFetch: globalFetch.mock.calls,
+      coordinatorCalls,
+    });
+
+    expect(response.status).toBe(status);
+    expect(JSON.parse(serializedResponse)).toEqual({
+      ok: false,
+      code,
+      retryAt: null,
+      resetAt: null,
+    });
+    for (const value of forbidden) expect(unapprovedAudit).not.toContain(value);
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(globalFetch).not.toHaveBeenCalled();
+
+    const reachesImages = !new Set(['upload', 'reserve']).has(stage);
+    const reachesArk = new Set(['provider', 'retry', 'parse', 'encrypt', 'settle']).has(stage);
+    if (reachesImages) {
+      expect(sanitizeImage).toHaveBeenCalledWith(privateUpload, env.IMAGES);
+      expect(auditSerialize(sanitizeImage.mock.calls)).toContain(rawImage);
+    } else {
+      expect(sanitizeImage).not.toHaveBeenCalled();
+    }
+    if (reachesArk) {
+      expect(estimate).toHaveBeenCalledWith(privateSanitized, expect.any(AbortSignal));
+      expect(auditSerialize(estimate.mock.calls)).toContain(sanitizedImage);
+    } else {
+      expect(estimate).not.toHaveBeenCalled();
+    }
+
+    const nonImageSeams = auditSerialize({
+      readPhotoUpload: readPhotoUpload.mock.calls,
+      createModelAdapter: createModelAdapter.mock.calls,
+      parseDoubaoEstimate: parseDoubaoEstimate.mock.calls,
+      encryptCandidateCache: encryptCandidateCache.mock.calls,
+      coordinatorCalls,
+      globalFetch: globalFetch.mock.calls,
+      response: serializedResponse,
+      consoleLog: consoleLog.mock.calls,
+      consoleError: consoleError.mock.calls,
+    });
+    expect(nonImageSeams).not.toContain(rawImage);
+    expect(nonImageSeams).not.toContain(sanitizedImage);
   });
 
   test('encryption and settle errors return fixed JSON without leaking image, provider, or candidate data', async () => {
@@ -848,7 +1105,6 @@ describe('private photo AI handler', () => {
         encryptCandidateCache,
         initialAttemptReserveMicros: 2_000_000,
         resultCacheMs: 600_000,
-        arkCostMicros: vi.fn().mockReturnValue(1_234),
         now: () => NOW,
       });
 
@@ -861,7 +1117,7 @@ describe('private photo AI handler', () => {
       if (failurePoint === 'encrypt') {
         expect(coordinator.settleFailure).toHaveBeenCalledWith(expect.objectContaining({
           errorCode: 'invalid-estimate',
-          actualCostMicros: 1_234,
+          actualCostMicros: 120,
         }));
       }
     }
