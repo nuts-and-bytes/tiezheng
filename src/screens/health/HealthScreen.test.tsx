@@ -238,7 +238,7 @@ test('resume 一次性消费原日期/餐段意图，并 replace 移除查询参
   expect(router.state.location.search).toBe('');
   expect(router.state.historyAction).toBe('REPLACE');
   expect(takePhotoAiIntent()).toBeUndefined();
-  expect(photoClient.session).toHaveBeenCalledOnce();
+  await waitFor(() => expect(photoClient.session).toHaveBeenCalledOnce());
 });
 
 test.each([

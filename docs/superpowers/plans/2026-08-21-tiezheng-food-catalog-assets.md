@@ -988,13 +988,14 @@ Expected: 退出码 0。
 
 ```bash
 npm test -- src/data/presetFoods.test.ts src/lib/photoAiContract.test.ts src/repos/foodRepo.test.ts src/screens/health/FoodPickerSheet.test.tsx src/screens/health/HealthScreen.test.tsx
-npm run test:edge -- workers/photo-ai-gateway/src/doubaoAdapter.test.ts workers/photo-ai-gateway/src/doubaoSchema.test.ts workers/photo-ai-gateway/src/handler.test.ts
+npm test -- workers/photo-ai-gateway/src/doubaoAdapter.test.ts workers/photo-ai-gateway/src/doubaoSchema.test.ts workers/photo-ai-gateway/src/handler.test.ts
+npm run test:edge
 npm run typecheck
 npm run typecheck:edge
 npm run build
 ```
 
-Expected: 五条命令全部退出码 0；照片 adapter 使用 33 项目录提示和 `tiezheng-food-catalog-v2`，Vite 构建成功。
+Expected: 六条命令全部退出码 0；三份普通 gateway 测试和 `*.worker.test.ts` suite 分别运行，照片 adapter 使用 33 项目录提示和 `tiezheng-food-catalog-v2`，Vite 构建成功。
 
 - [ ] **Step 3: 浏览器冒烟**
 
