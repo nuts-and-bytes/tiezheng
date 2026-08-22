@@ -248,7 +248,7 @@ describe('photo candidate confirmation', () => {
     ['negative amount', modelCandidate({ amountLow: -1 })],
     ['NaN amount', modelCandidate({ amountHigh: Number.NaN })],
     ['inverted amount', modelCandidate({ amountLow: 200, amountHigh: 100 })],
-    ['zero nutrient', modelCandidate({ energyKcalLow: 0 })],
+    ['negative nutrient', modelCandidate({ energyKcalLow: -1 })],
   ])('rejects invalid model candidate data: %s', (_label, candidate) => {
     expect(() => buildPhotoMealItem(confirmed(candidate), undefined, IDS)).toThrow();
   });
@@ -279,6 +279,28 @@ describe('photo candidate confirmation', () => {
     );
     assumptions[0] = 'mutated';
     expect(item.assumptions).toEqual(['估算不确定性较高', '用户确认少油']);
+  });
+
+  test('rejects manual nutrient point fields without invoking accessors', () => {
+    const direct = {
+      ...confirmed(modelCandidate()),
+      confirmedEnergyKcal: 200,
+    } as unknown as ConfirmedPhotoCandidate;
+    const accessor = confirmed(modelCandidate()) as ConfirmedPhotoCandidate & {
+      confirmedProteinG?: number;
+    };
+    let getterCalls = 0;
+    Object.defineProperty(accessor, 'confirmedProteinG', {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return 30;
+      },
+    });
+
+    expect(() => buildPhotoMealItem(direct, undefined, IDS)).toThrow();
+    expect(() => buildPhotoMealItem(accessor, undefined, IDS)).toThrow();
+    expect(getterCalls).toBe(0);
   });
 
   test('rejects a corrupt local catalog snapshot before using it', () => {

@@ -1,5 +1,9 @@
 import { PHOTO_AI_VERSIONS } from './photoAiContract';
 import {
+  buildModelRangeMealItem,
+  type ConfirmedModelRangeCandidate,
+} from './estimateConfirmation';
+import {
   FOOD_SNAPSHOT_LIMITS,
   assertBoundedText,
   assertFiniteRange,
@@ -9,14 +13,10 @@ import {
 } from './foodSnapshotValidation';
 import type { Food, MealEstimateCandidate, MealItem } from './nutritionTypes';
 
-export interface ConfirmedPhotoCandidate {
-  candidate: MealEstimateCandidate;
-  confirmedAmount: number;
-  confirmedUnit: 'g' | 'mL';
-  confirmedName: string;
-  confirmedPreparation: string;
-  confirmedAssumptions: string[];
-}
+export type ConfirmedPhotoCandidate = Omit<
+  ConfirmedModelRangeCandidate,
+  'confirmedEnergyKcal' | 'confirmedProteinG'
+>;
 
 export interface RawModelNutrientRange {
   energyKcalLow: number;
@@ -74,12 +74,6 @@ const FOOD_KEYS = [
   'updatedAt',
   'deletedAt',
 ] as const;
-const MODEL_SOURCE_VERSION = [
-  PHOTO_AI_VERSIONS.model,
-  PHOTO_AI_VERSIONS.prompt,
-  PHOTO_AI_VERSIONS.schema,
-  PHOTO_AI_VERSIONS.uncertainty,
-].join('/');
 
 function snapshotObject(
   value: unknown,
@@ -293,14 +287,6 @@ function stable(value: number): number {
   return rounded;
 }
 
-function midpointInteger(low: number, high: number): number {
-  return Math.round((low + high) / 2);
-}
-
-function midpointTenth(low: number, high: number): number {
-  return Math.round(((low + high) / 2 + Number.EPSILON) * 10) / 10;
-}
-
 function baseItem(
   input: ConfirmedPhotoCandidate,
   ids: { id: string; mealId: string; order: number; now: number },
@@ -446,71 +432,32 @@ export function buildPhotoMealItem(
   if (catalogFood !== undefined || snapshot.candidate.catalogFoodId !== null) {
     throw new Error('model-range candidates cannot use a catalog food');
   }
-  if (snapshot.confirmedUnit !== snapshot.candidate.unit) {
-    manualEntry('model-range unit conversion is unavailable');
-  }
-  if (snapshot.candidate.assumptions.length === 0) {
-    throw new Error('model-range candidate assumptions are required');
-  }
-  const candidateRange = snapshotRawRange({
-    energyKcalLow: snapshot.candidate.energyKcalLow as number,
-    energyKcalHigh: snapshot.candidate.energyKcalHigh as number,
-    proteinGLow: snapshot.candidate.proteinGLow as number,
-    proteinGHigh: snapshot.candidate.proteinGHigh as number,
-  });
-  const range = {
-    energyKcalLow: Math.max(
-      0,
-      Math.floor(
-        (candidateRange.energyKcalLow * snapshot.confirmedAmount) /
-          snapshot.candidate.amountHigh,
-      ),
-    ),
-    energyKcalHigh: Math.ceil(
-      (candidateRange.energyKcalHigh * snapshot.confirmedAmount) /
-        snapshot.candidate.amountLow,
-    ),
-    proteinGLow:
-      Math.max(
-        0,
-        Math.floor(
-          (candidateRange.proteinGLow * snapshot.confirmedAmount * 10) /
-            snapshot.candidate.amountHigh,
-        ),
-      ) / 10,
-    proteinGHigh:
-      Math.ceil(
-        (candidateRange.proteinGHigh * snapshot.confirmedAmount * 10) /
-          snapshot.candidate.amountLow,
-      ) / 10,
-  };
-  assertOutputRange(range);
-  const pointEnergy = midpointInteger(range.energyKcalLow, range.energyKcalHigh);
-  const pointProtein = midpointTenth(range.proteinGLow, range.proteinGHigh);
-  const row: MealItem = {
-    ...common,
-    originalEnergyValue: pointEnergy,
-    originalEnergyUnit: 'kcal',
-    originalProteinG: pointProtein,
-    originalBasisAmount: snapshot.confirmedAmount,
-    originalBasisUnit: snapshot.confirmedUnit,
-    basisAmount: snapshot.confirmedAmount,
-    basisUnit: snapshot.confirmedUnit,
-    ediblePortionRatio: 1,
-    densityGPerMl: null,
-    conversionAssumptions: [],
-    fdcId: null,
-    fdcDataType: null,
-    sourceRetrievedAt: null,
-    source: 'photo-ai-user-confirmed',
-    sourceVersion: MODEL_SOURCE_VERSION,
-    license: 'model-estimate-user-confirmed',
-    energyKcal: pointEnergy,
-    proteinG: pointProtein,
-    ...range,
-    assumptions: ['估算不确定性较高', ...snapshot.confirmedAssumptions],
-    uncertaintyModelVersion: PHOTO_AI_VERSIONS.uncertainty,
-  };
-  assertNutrientSnapshot(row, 'photo model item');
-  return row;
+  return buildModelRangeMealItem(
+    {
+      candidate: snapshot.candidate as MealEstimateCandidate,
+      confirmedAmount: snapshot.confirmedAmount,
+      confirmedUnit: snapshot.confirmedUnit,
+      confirmedName: snapshot.confirmedName,
+      confirmedPreparation: snapshot.confirmedPreparation,
+      confirmedAssumptions: snapshot.confirmedAssumptions,
+    },
+    {
+      id: snapshot.identity.id,
+      mealId: snapshot.identity.mealId,
+      order: snapshot.identity.order,
+      now: snapshot.identity.confirmedAt,
+    },
+    {
+      source: 'photo-ai-user-confirmed',
+      sourceVersion: [
+        PHOTO_AI_VERSIONS.model,
+        PHOTO_AI_VERSIONS.prompt,
+        PHOTO_AI_VERSIONS.schema,
+        PHOTO_AI_VERSIONS.uncertainty,
+      ].join('/'),
+      uncertaintyModelVersion: PHOTO_AI_VERSIONS.uncertainty,
+      allowEditedNutrients: false,
+      rangePolicy: 'scale-by-confirmed-amount',
+    },
+  );
 }
