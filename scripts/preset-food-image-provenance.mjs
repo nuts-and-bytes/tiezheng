@@ -4,6 +4,19 @@ const LEGACY_PROMPT_SUFFIX =
   'Cooked edible form matching the label, top-down to 45-degree camera, shallow white ceramic dish, soft neutral light-gray background, natural texture, no garnish that changes nutrition, no text, no logo, no packaging, no hands, one food only, centered, square composition, production catalog photography.';
 const PROMPT_SUFFIX =
   'Edible form matching the label; extreme close crop with food filling about 78-88 percent of the frame; top-down to 45-degree camera; shallow white or light ceramic dish, or a plain clear glass for liquids; soft neutral light-gray background; natural texture; no garnish that changes nutrition; no text; no logo; no packaging; no hands; one food only; square production catalog photo.';
+const EARLY_GENERATION_SLUGS = new Set([
+  'oatmeal-porridge',
+  'whole-wheat-bread',
+  'sweet-potato',
+  'sweet-corn',
+  'boiled-potato',
+]);
+const PROMPT_SUFFIX_OVERRIDES = {
+  'chicken-thigh':
+    ' Critical invariant: absolutely no chicken skin, no skin-on pieces, and no golden skin layer; show only boneless skinless thigh muscle meat with lightly browned cut surfaces.',
+  shiitake:
+    ' Critical invariant: plain steamed or boiled shiitake mushrooms, thoroughly drained; absolutely no sauce, no oil, no seasoning, and no cooking liquid visible.',
+};
 
 const REVIEWED_IMAGE_ROWS = [
   {
@@ -99,9 +112,11 @@ const newProvenance = NEW_IMAGE_ROWS.map(
     height: 256,
     cropVersion: 'center-cover-256-v2',
     generator: 'OpenAI imagegen',
-    generationDate: '2026-08-21',
-    reviewed: false,
-    prompt: `${PROMPT_PREFIX} ${subject}. ${PROMPT_SUFFIX}`,
+    generationDate: EARLY_GENERATION_SLUGS.has(slug)
+      ? '2026-08-21'
+      : '2026-08-22',
+    reviewed: true,
+    prompt: `${PROMPT_PREFIX} ${subject}. ${PROMPT_SUFFIX}${PROMPT_SUFFIX_OVERRIDES[slug] ?? ''}`,
     conversionRecipe: 'sharp@0.33.5/webp-effort6-quality-loop-v1',
     contentReview: `${name}与“${preparation}”状态一致；单一食物特写，无文字、包装、手部、第二种食物或改变营养含义的装饰`,
   }),
