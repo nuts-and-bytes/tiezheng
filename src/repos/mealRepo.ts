@@ -1,6 +1,11 @@
 import Dexie from 'dexie';
 import { db, type NutritionDb } from '../lib/db';
 import {
+  buildModelRangeMealItem,
+  TEXT_MODEL_POLICY,
+  type ConfirmedModelRangeCandidate,
+} from '../lib/estimateConfirmation';
+import {
   FOOD_SNAPSHOT_LIMITS,
   assertBoundedStringArray,
   assertBoundedText,
@@ -66,6 +71,13 @@ export interface ConfirmPhotoEstimateInput {
   thumbnail: { blob: Blob; width: number; height: number };
 }
 
+export interface ConfirmTextEstimateInput {
+  operationId: string;
+  date: string;
+  slot: MealSlot;
+  candidate: ConfirmedModelRangeCandidate;
+}
+
 export interface MealRepository {
   saveConfirmedFoodItem(input: SaveConfirmedFoodItemInput): Promise<MealItem>;
   updateMealItemAmount(id: string, amount: number): Promise<MealItem>;
@@ -76,6 +88,7 @@ export interface MealRepository {
   putMealEstimate(estimate: MealEstimate): Promise<void>;
   clearMealTemporaryState(mealId: string): Promise<void>;
   confirmPhotoEstimate(input: ConfirmPhotoEstimateInput): Promise<MealItem[]>;
+  confirmTextEstimate(input: ConfirmTextEstimateInput): Promise<MealItem>;
   clearMealEstimate(mealId: string): Promise<void>;
 }
 
@@ -435,6 +448,224 @@ function validateConfirmInput(input: ConfirmPhotoEstimateInput): string {
   return parentId;
 }
 
+const TEXT_CONFIRM_INPUT_KEYS = ['operationId', 'date', 'slot', 'candidate'] as const;
+const TEXT_CONFIRMED_REQUIRED_KEYS = [
+  'candidate',
+  'confirmedAmount',
+  'confirmedUnit',
+  'confirmedName',
+  'confirmedPreparation',
+  'confirmedAssumptions',
+] as const;
+const TEXT_CONFIRMED_OPTIONAL_KEYS = [
+  'confirmedEnergyKcal',
+  'confirmedProteinG',
+] as const;
+const TEXT_CANDIDATE_KEYS = [
+  'id',
+  'name',
+  'preparation',
+  'amountLow',
+  'amountHigh',
+  'unit',
+  'catalogFoodId',
+  'nutrientSource',
+  'energyKcalLow',
+  'energyKcalHigh',
+  'proteinGLow',
+  'proteinGHigh',
+  'assumptions',
+] as const;
+const CANONICAL_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function invalidTextConfirmationInput(): never {
+  throw new Error('text confirmation input is invalid');
+}
+
+function snapshotTextObject(value: unknown): ReadonlyMap<string, unknown> {
+  try {
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype
+    ) {
+      return invalidTextConfirmationInput();
+    }
+    const snapshot = new Map<string, unknown>();
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string') return invalidTextConfirmationInput();
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
+        return invalidTextConfirmationInput();
+      }
+      snapshot.set(key, descriptor.value);
+    }
+    return snapshot;
+  } catch {
+    return invalidTextConfirmationInput();
+  }
+}
+
+function requireTextKeys(
+  snapshot: ReadonlyMap<string, unknown>,
+  required: readonly string[],
+  allowed: readonly string[] = required,
+): void {
+  if (
+    !required.every((key) => snapshot.has(key)) ||
+    snapshot.size < required.length ||
+    snapshot.size > allowed.length ||
+    [...snapshot.keys()].some((key) => !allowed.includes(key))
+  ) {
+    invalidTextConfirmationInput();
+  }
+}
+
+function snapshotTextStringArray(value: unknown): string[] {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+      return invalidTextConfirmationInput();
+    }
+    const fields = new Map<string, unknown>();
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string') return invalidTextConfirmationInput();
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
+        return invalidTextConfirmationInput();
+      }
+      fields.set(key, descriptor.value);
+    }
+    const length = fields.get('length');
+    if (
+      typeof length !== 'number' ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      fields.size !== length + 1
+    ) {
+      return invalidTextConfirmationInput();
+    }
+    const snapshot: string[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const entry = fields.get(String(index));
+      if (typeof entry !== 'string') return invalidTextConfirmationInput();
+      snapshot.push(entry);
+    }
+    return snapshot;
+  } catch {
+    return invalidTextConfirmationInput();
+  }
+}
+
+function snapshotTextModelCandidate(value: unknown): MealEstimate['candidates'][number] {
+  const fields = snapshotTextObject(value);
+  requireTextKeys(fields, TEXT_CANDIDATE_KEYS);
+  const id = fields.get('id');
+  const name = fields.get('name');
+  const preparation = fields.get('preparation');
+  const amountLow = fields.get('amountLow');
+  const amountHigh = fields.get('amountHigh');
+  const unit = fields.get('unit');
+  const catalogFoodId = fields.get('catalogFoodId');
+  const nutrientSource = fields.get('nutrientSource');
+  const energyKcalLow = fields.get('energyKcalLow');
+  const energyKcalHigh = fields.get('energyKcalHigh');
+  const proteinGLow = fields.get('proteinGLow');
+  const proteinGHigh = fields.get('proteinGHigh');
+  if (
+    typeof id !== 'string' ||
+    typeof name !== 'string' ||
+    typeof preparation !== 'string' ||
+    typeof amountLow !== 'number' ||
+    typeof amountHigh !== 'number' ||
+    (unit !== 'g' && unit !== 'mL') ||
+    (catalogFoodId !== null && typeof catalogFoodId !== 'string') ||
+    (nutrientSource !== 'catalog' && nutrientSource !== 'model-range') ||
+    typeof energyKcalLow !== 'number' ||
+    typeof energyKcalHigh !== 'number' ||
+    typeof proteinGLow !== 'number' ||
+    typeof proteinGHigh !== 'number'
+  ) {
+    return invalidTextConfirmationInput();
+  }
+  return {
+    id,
+    name,
+    preparation,
+    amountLow,
+    amountHigh,
+    unit,
+    catalogFoodId,
+    nutrientSource,
+    energyKcalLow,
+    energyKcalHigh,
+    proteinGLow,
+    proteinGHigh,
+    assumptions: snapshotTextStringArray(fields.get('assumptions')),
+  };
+}
+
+function snapshotTextConfirmedCandidate(value: unknown): ConfirmedModelRangeCandidate {
+  const fields = snapshotTextObject(value);
+  const allowed = [...TEXT_CONFIRMED_REQUIRED_KEYS, ...TEXT_CONFIRMED_OPTIONAL_KEYS];
+  requireTextKeys(fields, TEXT_CONFIRMED_REQUIRED_KEYS, allowed);
+  const confirmedAmount = fields.get('confirmedAmount');
+  const confirmedUnit = fields.get('confirmedUnit');
+  const confirmedName = fields.get('confirmedName');
+  const confirmedPreparation = fields.get('confirmedPreparation');
+  if (
+    typeof confirmedAmount !== 'number' ||
+    (confirmedUnit !== 'g' && confirmedUnit !== 'mL') ||
+    typeof confirmedName !== 'string' ||
+    typeof confirmedPreparation !== 'string'
+  ) {
+    return invalidTextConfirmationInput();
+  }
+  const snapshot: ConfirmedModelRangeCandidate = {
+    candidate: snapshotTextModelCandidate(fields.get('candidate')),
+    confirmedAmount,
+    confirmedUnit,
+    confirmedName,
+    confirmedPreparation,
+    confirmedAssumptions: snapshotTextStringArray(fields.get('confirmedAssumptions')),
+  };
+  if (fields.has('confirmedEnergyKcal')) {
+    const confirmedEnergyKcal = fields.get('confirmedEnergyKcal');
+    if (typeof confirmedEnergyKcal !== 'number') return invalidTextConfirmationInput();
+    snapshot.confirmedEnergyKcal = confirmedEnergyKcal;
+  }
+  if (fields.has('confirmedProteinG')) {
+    const confirmedProteinG = fields.get('confirmedProteinG');
+    if (typeof confirmedProteinG !== 'number') return invalidTextConfirmationInput();
+    snapshot.confirmedProteinG = confirmedProteinG;
+  }
+  return snapshot;
+}
+
+function snapshotTextConfirmInput(input: ConfirmTextEstimateInput): ConfirmTextEstimateInput {
+  const fields = snapshotTextObject(input);
+  requireTextKeys(fields, TEXT_CONFIRM_INPUT_KEYS);
+  const operationId = fields.get('operationId');
+  const date = fields.get('date');
+  const slot = fields.get('slot');
+  if (
+    typeof operationId !== 'string' ||
+    !CANONICAL_UUID_PATTERN.test(operationId) ||
+    typeof date !== 'string' ||
+    typeof slot !== 'string' ||
+    !MEAL_SLOTS.includes(slot as MealSlot)
+  ) {
+    return invalidTextConfirmationInput();
+  }
+  return {
+    operationId,
+    date,
+    slot: slot as MealSlot,
+    candidate: snapshotTextConfirmedCandidate(fields.get('candidate')),
+  };
+}
+
 function assertSelectedCandidates(
   selected: ConfirmedPhotoCandidate[],
   estimate: MealEstimate,
@@ -716,6 +947,118 @@ export function createMealRepo(database: NutritionDb): MealRepository {
       await database.mealItems.put(row);
       return row;
     });
+  }
+
+  async function confirmText(input: ConfirmTextEstimateInput): Promise<MealItem> {
+    const snapshot = snapshotTextConfirmInput(input);
+    const parentId = checkedMealId(snapshot.date, snapshot.slot);
+    const itemId = mealItemId(snapshot.operationId);
+    const preflight = buildModelRangeMealItem(
+      snapshot.candidate,
+      { id: itemId, mealId: parentId, order: 0, now: 0 },
+      TEXT_MODEL_POLICY,
+    );
+    assertMealItemSnapshot(preflight);
+
+    const committed = await database.transaction(
+      'rw',
+      database.meals,
+      database.mealItems,
+      async () => {
+        const existingItem = await database.mealItems.get(itemId);
+        if (existingItem !== undefined) {
+          const existingMeal = await database.meals.get(parentId);
+          const mealItems = await database.mealItems
+            .where('mealId')
+            .equals(parentId)
+            .toArray();
+          try {
+            assertMealItemSnapshot(existingItem);
+            if (
+              existingItem.id !== itemId ||
+              existingItem.mealId !== parentId ||
+              existingItem.deletedAt !== null ||
+              existingMeal === undefined
+            ) {
+              throw new Error('invalid replay state');
+            }
+            assertMealSnapshot(existingMeal);
+            if (
+              existingMeal.id !== parentId ||
+              existingMeal.date !== snapshot.date ||
+              existingMeal.slot !== snapshot.slot ||
+              existingMeal.deletedAt !== null
+            ) {
+              throw new Error('invalid replay parent');
+            }
+            mealItems.forEach(assertMealItemSnapshot);
+            if (
+              mealItems.some((item) =>
+                item.id !== existingItem.id &&
+                item.deletedAt === null &&
+                item.order === existingItem.order,
+              )
+            ) {
+              throw new Error('duplicate replay order');
+            }
+            const desired = buildModelRangeMealItem(
+              snapshot.candidate,
+              {
+                id: itemId,
+                mealId: parentId,
+                order: existingItem.order,
+                now: existingItem.confirmedAt,
+              },
+              TEXT_MODEL_POLICY,
+            );
+            assertMealItemSnapshot(desired);
+            if (itemSemantic(existingItem) !== itemSemantic(desired)) {
+              throw new Error('replay semantic mismatch');
+            }
+          } catch {
+            throw new Error('text confirmation operation conflict');
+          }
+          return existingItem;
+        }
+
+        const existingMeal = await database.meals.get(parentId);
+        if (existingMeal !== undefined) assertMealSnapshot(existingMeal);
+        const allItems = await database.mealItems.where('mealId').equals(parentId).toArray();
+        allItems.forEach(assertMealItemSnapshot);
+        const activeItems = allItems.filter((item) => item.deletedAt === null);
+        if (new Set(activeItems.map((item) => item.order)).size !== activeItems.length) {
+          throw new Error('active meal item orders must be unique');
+        }
+        const order =
+          activeItems.reduce((maximum, item) => Math.max(maximum, item.order), -1) + 1;
+        if (!Number.isInteger(order) || order > 10_000) {
+          throw new Error('meal item order must be an integer between 0 and 10000');
+        }
+        const now = operationTimestamp(
+          existingMeal?.updatedAt,
+          existingMeal?.deletedAt,
+          ...allItems.flatMap((item) => [item.updatedAt, item.confirmedAt, item.deletedAt]),
+        );
+        const parent: Meal = {
+          id: parentId,
+          date: snapshot.date,
+          slot: snapshot.slot,
+          updatedAt: now,
+          deletedAt: null,
+        };
+        assertMealSnapshot(parent);
+        const row = buildModelRangeMealItem(
+          snapshot.candidate,
+          { id: itemId, mealId: parentId, order, now },
+          TEXT_MODEL_POLICY,
+        );
+        assertMealItemSnapshot(row);
+        await database.meals.put(parent);
+        await database.mealItems.put(row);
+        return row;
+      },
+    );
+    return structuredClone(committed);
   }
 
   async function updateAmount(id: string, amount: number): Promise<MealItem> {
@@ -1177,6 +1520,7 @@ export function createMealRepo(database: NutritionDb): MealRepository {
     putMealEstimate: putEstimate,
     clearMealTemporaryState: clearTemporary,
     confirmPhotoEstimate: confirmPhoto,
+    confirmTextEstimate: confirmText,
     clearMealEstimate: clearEstimate,
   };
 }
@@ -1202,5 +1546,8 @@ export const clearMealTemporaryState = (mealId: string): Promise<void> =>
 export const confirmPhotoEstimate = (
   input: ConfirmPhotoEstimateInput,
 ): Promise<MealItem[]> => defaultRepo.confirmPhotoEstimate(input);
+export const confirmTextEstimate = (
+  input: ConfirmTextEstimateInput,
+): Promise<MealItem> => defaultRepo.confirmTextEstimate(input);
 export const clearMealEstimate = (mealId: string): Promise<void> =>
   defaultRepo.clearMealEstimate(mealId);

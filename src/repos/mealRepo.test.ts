@@ -1,6 +1,7 @@
 import Dexie from 'dexie';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { DB_V4_STORES, db, type NutritionDb } from '../lib/db';
+import type { ConfirmedModelRangeCandidate } from '../lib/estimateConfirmation';
 import { buildMealSnapshotHash } from '../lib/mealSnapshot';
 import { mealEstimateId, mealId, mealPhotoId } from '../lib/nutritionIds';
 import type { ConfirmedPhotoCandidate } from '../lib/photoAiCandidate';
@@ -13,10 +14,12 @@ import {
   mealRow,
 } from '../test/nutritionFixtures';
 import { resetDb } from '../test/dbTestUtils';
+import { textAiCandidateFixture } from '../test/textAiFixtures';
 import {
   clearMealEstimate,
   clearMealTemporaryState,
   confirmPhotoEstimate,
+  confirmTextEstimate,
   createMealRepo,
   listNutritionDay,
   putMealEstimate,
@@ -26,6 +29,7 @@ import {
   saveConfirmedFoodItem,
   updateMealItemAmount,
   type ConfirmPhotoEstimateInput,
+  type ConfirmTextEstimateInput,
   type SaveConfirmedFoodItemInput,
 } from './mealRepo';
 
@@ -153,6 +157,48 @@ function modelConfirmedCandidate(
     confirmedPreparation: '少油炒制',
     ...overrides,
   });
+}
+
+const TEXT_OPERATION_ID = '11111111-1111-4111-8111-111111111111';
+
+function repoTextCandidate(
+  overrides: Partial<ConfirmedModelRangeCandidate> = {},
+): ConfirmedModelRangeCandidate {
+  return {
+    candidate: {
+      ...textAiCandidateFixture,
+      assumptions: [...textAiCandidateFixture.assumptions],
+    },
+    confirmedAmount: 500,
+    confirmedUnit: 'g',
+    confirmedName: '少油牛肉面',
+    confirmedPreparation: '整餐文字估算',
+    confirmedAssumptions: [...textAiCandidateFixture.assumptions],
+    confirmedEnergyKcal: 670,
+    confirmedProteinG: 35,
+    ...overrides,
+  };
+}
+
+function textConfirmInput(
+  overrides: Partial<ConfirmTextEstimateInput> = {},
+): ConfirmTextEstimateInput {
+  return {
+    operationId: TEXT_OPERATION_ID,
+    date: '2026-08-21',
+    slot: 'dinner',
+    candidate: repoTextCandidate(),
+    ...overrides,
+  };
+}
+
+function accessor<T extends object>(value: T, key: keyof T): T {
+  const decorated = (Array.isArray(value) ? [...value] : { ...value }) as T;
+  Object.defineProperty(decorated, key, {
+    enumerable: true,
+    get: () => value[key],
+  });
+  return decorated;
 }
 
 function confirmPhotoInput(
@@ -1265,6 +1311,294 @@ test('保存和改量都拒绝溢出或负数营养值，不写入不可备份�
 
   await db.mealItems.put({ ...saved, proteinGLow: -1 });
   await expect(updateMealItemAmount(saved.id, 200)).rejects.toThrow('stored proteinGLow');
+});
+
+describe('文字确认原子事务', () => {
+  test('文字确认原子创建一条 ai-confirmed 餐食且不创建照片临时状态', async () => {
+    const transaction = vi.spyOn(db, 'transaction');
+
+    const row = await confirmTextEstimate(textConfirmInput());
+
+    expect(row).toMatchObject({
+      id: `meal-item:${TEXT_OPERATION_ID}`,
+      mealId: 'meal:2026-08-21:dinner',
+      name: '少油牛肉面',
+      method: 'ai-confirmed',
+      quality: 'B',
+      source: 'text-ai-user-confirmed',
+      energyKcalLow: 560,
+      energyKcalHigh: 780,
+      proteinGLow: 28,
+      proteinGHigh: 42,
+      order: 0,
+      deletedAt: null,
+    });
+    expect(await db.meals.toArray()).toMatchObject([
+      { id: 'meal:2026-08-21:dinner', date: '2026-08-21', slot: 'dinner', deletedAt: null },
+    ]);
+    expect(await db.mealItems.count()).toBe(1);
+    expect(await db.mealPhotos.count()).toBe(0);
+    expect(await db.mealEstimates.count()).toBe(0);
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(transaction.mock.calls[0]?.slice(0, 3)).toEqual([
+      'rw',
+      db.meals,
+      db.mealItems,
+    ]);
+  });
+
+  test('相同操作重放返回脱离快照，语义变化则冲突', async () => {
+    const first = await confirmTextEstimate(textConfirmInput());
+    const firstStored = await db.mealItems.get(first.id);
+    first.name = '调用方突变';
+    first.assumptions.push('调用方突变');
+
+    await expect(confirmTextEstimate(textConfirmInput())).resolves.toEqual(firstStored);
+    await expect(confirmTextEstimate(textConfirmInput({
+      candidate: repoTextCandidate({ confirmedEnergyKcal: 901 }),
+    }))).rejects.toThrow('text confirmation operation conflict');
+    await expect(confirmTextEstimate(textConfirmInput({
+      date: '2026-08-22',
+    }))).rejects.toThrow('text confirmation operation conflict');
+    expect(await db.mealItems.count()).toBe(1);
+    expect(await db.mealItems.get(first.id)).toEqual(firstStored);
+  });
+
+  test('parent 软删除后重放冲突且不自动恢复', async () => {
+    const row = await confirmTextEstimate(textConfirmInput());
+    const parent = await db.meals.get(row.mealId);
+    if (parent === undefined) throw new Error('test requires parent meal');
+    const tombstone = { ...parent, deletedAt: parent.updatedAt };
+    await db.meals.put(tombstone);
+
+    await expect(confirmTextEstimate(textConfirmInput())).rejects.toThrow(
+      'text confirmation operation conflict',
+    );
+
+    expect(await db.meals.get(row.mealId)).toEqual(tombstone);
+    expect(await db.mealItems.get(row.id)).toEqual(row);
+  });
+
+  test('item 软删除后重放冲突且不复活条目', async () => {
+    const row = await confirmTextEstimate(textConfirmInput());
+    const tombstone = { ...row, deletedAt: row.updatedAt };
+    await db.mealItems.put(tombstone);
+
+    await expect(confirmTextEstimate(textConfirmInput())).rejects.toThrow(
+      'text confirmation operation conflict',
+    );
+
+    expect(await db.mealItems.get(row.id)).toEqual(tombstone);
+  });
+
+  test('parent 缺失时重放冲突且不重建 parent', async () => {
+    const row = await confirmTextEstimate(textConfirmInput());
+    await db.meals.delete(row.mealId);
+
+    await expect(confirmTextEstimate(textConfirmInput())).rejects.toThrow(
+      'text confirmation operation conflict',
+    );
+
+    expect(await db.meals.get(row.mealId)).toBeUndefined();
+    expect(await db.mealItems.get(row.id)).toEqual(row);
+  });
+
+  test.each([
+    ['date', { date: '2026-08-20' }],
+    ['slot', { slot: 'lunch' as const }],
+  ])('parent %s 与确定性 ID 不一致时重放冲突且不修复腐化数据', async (_label, patch) => {
+    const row = await confirmTextEstimate(textConfirmInput());
+    const parent = await db.meals.get(row.mealId);
+    if (parent === undefined) throw new Error('test requires parent meal');
+    const corrupted = { ...parent, ...patch };
+    await db.meals.put(corrupted);
+
+    await expect(confirmTextEstimate(textConfirmInput())).rejects.toThrow(
+      'text confirmation operation conflict',
+    );
+
+    expect(await db.meals.get(row.mealId)).toEqual(corrupted);
+    expect(await db.mealItems.get(row.id)).toEqual(row);
+  });
+
+  test.each([
+    ['wrong parent', { mealId: 'meal:2026-08-21:lunch' }],
+    ['corrupt snapshot', { name: '' }],
+  ])('existing item %s 时重放 fail closed 为 operation conflict', async (_label, patch) => {
+    const row = await confirmTextEstimate(textConfirmInput());
+    const corrupted = { ...row, ...patch };
+    await db.mealItems.put(corrupted);
+
+    await expect(confirmTextEstimate(textConfirmInput())).rejects.toThrow(
+      'text confirmation operation conflict',
+    );
+
+    expect(await db.mealItems.get(row.id)).toEqual(corrupted);
+  });
+
+  test('同 meal 其他 active item 占用 existing.order 时重放冲突', async () => {
+    const row = await confirmTextEstimate(textConfirmInput());
+    const sibling = await saveConfirmedFoodItem(confirmed({
+      operationId: 'duplicate-text-order',
+      date: '2026-08-21',
+      slot: 'dinner',
+    }));
+    const duplicateOrder = { ...sibling, order: row.order };
+    await db.mealItems.put(duplicateOrder);
+
+    await expect(confirmTextEstimate(textConfirmInput())).rejects.toThrow(
+      'text confirmation operation conflict',
+    );
+
+    expect(await db.mealItems.get(row.id)).toEqual(row);
+    expect(await db.mealItems.get(sibling.id)).toEqual(duplicateOrder);
+  });
+
+  test.each(['meals', 'mealItems'] as const)(
+    '文字确认 %s 写入失败回滚 parent/item，随后同 operationId 可安全重试',
+    async (table) => {
+      const put = vi.spyOn(db[table], 'put').mockRejectedValueOnce(new Error('disk full'));
+
+      await expect(confirmTextEstimate(textConfirmInput())).rejects.toThrow('disk full');
+      expect(await db.meals.count()).toBe(0);
+      expect(await db.mealItems.count()).toBe(0);
+
+      put.mockRestore();
+      await expect(confirmTextEstimate(textConfirmInput())).resolves.toMatchObject({
+        id: `meal-item:${TEXT_OPERATION_ID}`,
+      });
+      expect(await db.meals.count()).toBe(1);
+      expect(await db.mealItems.count()).toBe(1);
+    },
+  );
+
+  test('在任何事务或 await 前快照完整输入与嵌套数组', async () => {
+    const input = textConfirmInput();
+    const pending = confirmTextEstimate(input);
+    input.operationId = '22222222-2222-4222-8222-222222222222';
+    input.date = '2026-08-22';
+    input.slot = 'lunch';
+    input.candidate.confirmedName = '突变名称';
+    input.candidate.confirmedEnergyKcal = 999;
+    input.candidate.candidate.name = '突变候选';
+    input.candidate.candidate.assumptions[0] = '突变候选假设';
+    input.candidate.confirmedAssumptions[0] = '突变确认假设';
+
+    await expect(pending).resolves.toMatchObject({
+      id: `meal-item:${TEXT_OPERATION_ID}`,
+      mealId: 'meal:2026-08-21:dinner',
+      name: '少油牛肉面',
+      energyKcal: 670,
+      assumptions: expect.arrayContaining(['按一碗面、熟牛肉和少量油估算']),
+    });
+    expect(await db.mealItems.get(`meal-item:${TEXT_OPERATION_ID}`)).toBeDefined();
+    expect(await db.mealItems.get('meal-item:22222222-2222-4222-8222-222222222222'))
+      .toBeUndefined();
+  });
+
+  test.each([
+    ['non-canonical uuid', textConfirmInput({ operationId: '11111111-1111-1111-1111-111111111111' })],
+    ['uppercase uuid', textConfirmInput({ operationId: '11111111-1111-4111-8111-11111111111A' })],
+    ['invalid date', textConfirmInput({ date: '2026-02-30' })],
+    ['invalid slot', textConfirmInput({ slot: 'brunch' as never })],
+    ['outer unknown key', { ...textConfirmInput(), extra: true }],
+    ['outer symbol key', { ...textConfirmInput(), [Symbol('hidden')]: true }],
+    ['outer accessor', accessor(textConfirmInput(), 'date')],
+    ['confirmation unknown key', textConfirmInput({
+      candidate: { ...repoTextCandidate(), extra: true } as ConfirmedModelRangeCandidate,
+    })],
+    ['confirmation symbol key', textConfirmInput({
+      candidate: { ...repoTextCandidate(), [Symbol('hidden')]: true },
+    })],
+    ['confirmation accessor', textConfirmInput({
+      candidate: accessor(repoTextCandidate(), 'confirmedName'),
+    })],
+    ['candidate unknown key', textConfirmInput({
+      candidate: repoTextCandidate({
+        candidate: { ...textAiCandidateFixture, extra: true } as MealEstimateCandidate,
+      }),
+    })],
+    ['candidate symbol key', textConfirmInput({
+      candidate: repoTextCandidate({
+        candidate: { ...textAiCandidateFixture, [Symbol('hidden')]: true },
+      }),
+    })],
+    ['candidate accessor', textConfirmInput({
+      candidate: repoTextCandidate({
+        candidate: accessor({ ...textAiCandidateFixture }, 'name'),
+      }),
+    })],
+    ['candidate assumptions accessor', textConfirmInput({
+      candidate: repoTextCandidate({
+        candidate: {
+          ...textAiCandidateFixture,
+          assumptions: accessor([...textAiCandidateFixture.assumptions], 0),
+        },
+      }),
+    })],
+    ['confirmed assumptions symbol key', textConfirmInput({
+      candidate: repoTextCandidate({
+        confirmedAssumptions: Object.assign([...textAiCandidateFixture.assumptions], {
+          [Symbol('hidden')]: true,
+        }),
+      }),
+    })],
+  ])('拒绝非普通、非精确或非规范的文字确认输入：%s', async (_label, input) => {
+    const transaction = vi.spyOn(db, 'transaction');
+
+    await expect(confirmTextEstimate(input as ConfirmTextEstimateInput)).rejects.toThrow();
+
+    expect(transaction).not.toHaveBeenCalled();
+    expect(await db.meals.count()).toBe(0);
+    expect(await db.mealItems.count()).toBe(0);
+  });
+
+  test('复用 active parent 并在现有条目末尾追加唯一 order', async () => {
+    await saveConfirmedFoodItem(confirmed({ operationId: 'existing-a', slot: 'dinner' }));
+    await saveConfirmedFoodItem(confirmed({ operationId: 'existing-b', slot: 'dinner' }));
+    const parentBefore = await db.meals.get('meal:2026-08-14:dinner');
+
+    const row = await confirmTextEstimate(textConfirmInput({ date: '2026-08-14' }));
+
+    expect(row.order).toBe(2);
+    expect(await db.meals.count()).toBe(1);
+    expect((await db.mealItems.where('mealId').equals(row.mealId).toArray())
+      .map((item) => item.order)
+      .sort((left, right) => left - right)).toEqual([0, 1, 2]);
+    expect((await db.meals.get(row.mealId))?.updatedAt)
+      .toBeGreaterThanOrEqual(parentBefore!.updatedAt);
+  });
+
+  test('同 operationId 并发重放不重复，不同 operationId 并发仍保持末尾 order 唯一', async () => {
+    const second = new Dexie('tiezheng') as NutritionDb;
+    second.version(4).stores(DB_V4_STORES);
+    await second.open();
+    try {
+      const secondRepo = createMealRepo(second);
+      const same = textConfirmInput();
+      const [left, right] = await Promise.all([
+        confirmTextEstimate(same),
+        secondRepo.confirmTextEstimate(structuredClone(same)),
+      ]);
+      expect(left).toEqual(right);
+      expect(await db.mealItems.count()).toBe(1);
+
+      const [third, fourth] = await Promise.all([
+        confirmTextEstimate(textConfirmInput({
+          operationId: '22222222-2222-4222-8222-222222222222',
+        })),
+        secondRepo.confirmTextEstimate(textConfirmInput({
+          operationId: '33333333-3333-4333-8333-333333333333',
+        })),
+      ]);
+      expect(new Set([left.order, third.order, fourth.order])).toEqual(new Set([0, 1, 2]));
+      const rows = await db.mealItems.where('mealId').equals(left.mealId).toArray();
+      expect(rows).toHaveLength(3);
+      expect(new Set(rows.map((row) => row.order)).size).toBe(3);
+    } finally {
+      second.close();
+    }
+  });
 });
 
 describe('照片估算原子确认', () => {
