@@ -407,6 +407,86 @@ test('最多六项，none 不可确认，目录/模型来源与高不确定性�
   expect(screen.getByLabelText('启用候选 6')).toBeDisabled();
 });
 
+test('照片候选使用只读营养区间且绝不暴露最终营养覆盖输入', async () => {
+  const user = userEvent.setup();
+  sheet();
+  await reachSource();
+  await reachCandidates(user);
+
+  const chicken = screen.getByRole('group', { name: '候选 鸡胸肉' });
+  expect(within(chicken).getByText('150–230 kcal')).toBeInTheDocument();
+  expect(within(chicken).getByText('24–36 g')).toBeInTheDocument();
+  expect(screen.queryByLabelText('最终热量（kcal）')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('最终蛋白质（g）')).not.toBeInTheDocument();
+});
+
+test.each([
+  ['中文逗号', '，'],
+  ['英文逗号', ','],
+])('%s逐键输入的尾随分隔符和空格保留到照片确认边界', async (_label, separator) => {
+  const user = userEvent.setup();
+  const initialAssumption = '按去皮鸡胸肉估算';
+  const onConfirm = vi.fn().mockResolvedValue(undefined);
+  const client = fakeClient({
+    estimate: vi.fn().mockResolvedValue({
+      ...photoAiEstimateSuccessFixture,
+      candidates: [
+        {
+          ...photoAiModelRangeCandidateFixture,
+          assumptions: [initialAssumption],
+        },
+      ],
+    }),
+  });
+  sheet({ client, onConfirm });
+  await reachSource();
+  await reachCandidates(user);
+
+  const candidate = screen.getByRole('group', { name: '候选 鸡胸肉' });
+  const assumptions = within(candidate).getByLabelText('确认说明');
+  await user.type(assumptions, `${separator} `);
+  expect(assumptions).toHaveValue(`${initialAssumption}${separator} `);
+  await user.type(assumptions, '碗较深');
+  await user.click(screen.getByRole('button', { name: '确认并加入午餐' }));
+
+  await waitFor(() => expect(onConfirm).toHaveBeenCalledOnce());
+  expect(
+    onConfirm.mock.calls[0]?.[0].candidates[0]?.confirmedAssumptions,
+  ).toEqual([initialAssumption, '碗较深']);
+});
+
+test('未编辑的单条含逗号说明在修改其他字段后仍作为一条保存', async () => {
+  const user = userEvent.setup();
+  const originalAssumption = '牛肉 100g，少油';
+  const onConfirm = vi.fn().mockResolvedValue(undefined);
+  const client = fakeClient({
+    estimate: vi.fn().mockResolvedValue({
+      ...photoAiEstimateSuccessFixture,
+      candidates: [
+        {
+          ...photoAiModelRangeCandidateFixture,
+          name: '牛肉',
+          assumptions: [originalAssumption],
+        },
+      ],
+    }),
+  });
+  sheet({ client, onConfirm });
+  await reachSource();
+  await reachCandidates(user);
+
+  const candidate = screen.getByRole('group', { name: '候选 牛肉' });
+  const name = within(candidate).getByLabelText('食物名称');
+  await user.clear(name);
+  await user.type(name, '少油牛肉');
+  await user.click(screen.getByRole('button', { name: '确认并加入午餐' }));
+
+  await waitFor(() => expect(onConfirm).toHaveBeenCalledOnce());
+  expect(
+    onConfirm.mock.calls[0]?.[0].candidates[0]?.confirmedAssumptions,
+  ).toEqual([originalAssumption]);
+});
+
 test('候选可删除、改名称/做法/份量/假设；原子保存成功后才关闭', async () => {
   const user = userEvent.setup();
   let resolveConfirm!: () => void;

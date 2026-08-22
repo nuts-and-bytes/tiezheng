@@ -24,11 +24,14 @@ import type {
   MealSlot,
 } from '../../lib/nutritionTypes';
 import type { ConfirmPhotoEstimateInput } from '../../repos/mealRepo';
+import {
+  EstimateConfirmationEditor,
+  fromEditorDraft,
+  toEditorDraft,
+  type EstimateConfirmationDraft,
+} from './EstimateConfirmationEditor';
 import { MEAL_LABELS } from './MealSection';
 import { useDialogFocusTrap } from './useDialogFocusTrap';
-
-const CONTROL_CLASS =
-  'min-h-11 w-full rounded-xl border border-line bg-bg px-3 text-ink outline-none focus-visible:ring-2 focus-visible:ring-iron focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:opacity-50';
 
 export interface PhotoEstimateSheetProps {
   date: string;
@@ -43,6 +46,8 @@ export interface PhotoEstimateSheetProps {
 }
 
 interface EditableCandidate extends ConfirmedPhotoCandidate {
+  assumptionsText: string;
+  assumptionsEdited: boolean;
   enabled: boolean;
 }
 
@@ -93,7 +98,7 @@ function midpoint(low: number, high: number): number {
 }
 
 function editableCandidate(candidate: MealEstimateCandidate): EditableCandidate {
-  return {
+  const draft = toEditorDraft({
     candidate: {
       ...candidate,
       assumptions: [...candidate.assumptions],
@@ -103,7 +108,49 @@ function editableCandidate(candidate: MealEstimateCandidate): EditableCandidate 
     confirmedName: candidate.name,
     confirmedPreparation: candidate.preparation,
     confirmedAssumptions: [...candidate.assumptions],
+  });
+  return {
+    ...draft,
+    assumptionsEdited: false,
     enabled: candidate.nutrientSource !== 'none',
+  };
+}
+
+function updateEditableCandidate(
+  current: EditableCandidate,
+  draft: EstimateConfirmationDraft,
+): EditableCandidate {
+  return {
+    candidate: draft.candidate,
+    confirmedAmount: draft.confirmedAmount,
+    confirmedUnit: draft.confirmedUnit,
+    confirmedName: draft.confirmedName,
+    confirmedPreparation: draft.confirmedPreparation,
+    confirmedAssumptions: [...draft.confirmedAssumptions],
+    assumptionsText: draft.assumptionsText,
+    assumptionsEdited:
+      current.assumptionsEdited || draft.assumptionsText !== current.assumptionsText,
+    enabled: current.enabled,
+  };
+}
+
+function confirmedPhotoCandidate(
+  editable: EditableCandidate,
+): ConfirmedPhotoCandidate {
+  const confirmedAssumptions = (
+    editable.assumptionsEdited
+      ? fromEditorDraft(editable).confirmedAssumptions
+      : editable.confirmedAssumptions
+  )
+    .map((assumption) => assumption.trim())
+    .filter((assumption) => assumption.length > 0);
+  return {
+    candidate: editable.candidate,
+    confirmedAmount: editable.confirmedAmount,
+    confirmedUnit: editable.confirmedUnit,
+    confirmedName: editable.confirmedName.trim(),
+    confirmedPreparation: editable.confirmedPreparation.trim(),
+    confirmedAssumptions,
   };
 }
 
@@ -510,14 +557,7 @@ export function PhotoEstimateSheet({
     if (saveLatch.current) return;
     const selected = context.candidates
       .filter((candidate) => candidate.enabled && candidate.candidate.nutrientSource !== 'none')
-      .map((candidate) => ({
-        ...candidate,
-        confirmedName: candidate.confirmedName.trim(),
-        confirmedPreparation: candidate.confirmedPreparation.trim(),
-        confirmedAssumptions: candidate.confirmedAssumptions
-          .map((assumption) => assumption.trim())
-          .filter((assumption) => assumption.length > 0),
-      }));
+      .map(confirmedPhotoCandidate);
     if (selected.length === 0) {
       showError('invalid-estimate', context, '请至少保留一项可确认的食物');
       return;
@@ -547,7 +587,7 @@ export function PhotoEstimateSheet({
         slot,
         requestId: context.requestId,
         uploadBlobSha256: context.prepared.uploadBlobSha256,
-        candidates: selected.map(({ enabled: _enabled, ...candidate }) => ({
+        candidates: selected.map((candidate) => ({
           ...candidate,
           confirmedName: candidate.confirmedName,
           confirmedPreparation: candidate.confirmedPreparation,
@@ -744,111 +784,21 @@ export function PhotoEstimateSheet({
                   </Button>
                 </div>
                 <p className="mb-3 text-xs leading-5 text-mute">{sourceCopy}</p>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="grid gap-1 text-xs text-mute">
-                    食物名称
-                    <input
-                      aria-label="食物名称"
-                      maxLength={120}
-                      className={CONTROL_CLASS}
-                      value={editable.confirmedName}
-                      onChange={(event) =>
-                        updateCandidates(
-                          editableContext,
-                          context.candidates.map((row) =>
-                            row.candidate.id === candidate.id
-                              ? { ...row, confirmedName: event.target.value }
-                              : row,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                  <label className="grid gap-1 text-xs text-mute">
-                    处理方式
-                    <input
-                      aria-label="处理方式"
-                      maxLength={120}
-                      className={CONTROL_CLASS}
-                      value={editable.confirmedPreparation}
-                      onChange={(event) =>
-                        updateCandidates(
-                          editableContext,
-                          context.candidates.map((row) =>
-                            row.candidate.id === candidate.id
-                              ? { ...row, confirmedPreparation: event.target.value }
-                              : row,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                  <label className="grid gap-1 text-xs text-mute">
-                    实际数量
-                    <input
-                      type="number"
-                      min="0.01"
-                      max="100000"
-                      step="0.01"
-                      aria-label="实际数量"
-                      className={CONTROL_CLASS}
-                      value={editable.confirmedAmount}
-                      onChange={(event) =>
-                        updateCandidates(
-                          editableContext,
-                          context.candidates.map((row) =>
-                            row.candidate.id === candidate.id
-                              ? { ...row, confirmedAmount: Number(event.target.value) }
-                              : row,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                  <label className="grid gap-1 text-xs text-mute">
-                    单位
-                    <select
-                      aria-label="单位"
-                      className={CONTROL_CLASS}
-                      value={editable.confirmedUnit}
-                      onChange={(event) =>
-                        updateCandidates(
-                          editableContext,
-                          context.candidates.map((row) =>
-                            row.candidate.id === candidate.id
-                              ? {
-                                  ...row,
-                                  confirmedUnit: event.target.value as 'g' | 'mL',
-                                }
-                              : row,
-                          ),
-                        )
-                      }
-                    >
-                      <option value="g">g</option>
-                      <option value="mL">mL</option>
-                    </select>
-                  </label>
-                </div>
-                <label className="mt-3 grid gap-1 text-xs text-mute">
-                  确认说明
-                  <textarea
-                    aria-label="确认说明"
-                    maxLength={500}
-                    className={`${CONTROL_CLASS} min-h-20 py-3`}
-                    value={editable.confirmedAssumptions.join('，')}
-                    onChange={(event) =>
-                      updateCandidates(
-                        editableContext,
-                        context.candidates.map((row) =>
-                          row.candidate.id === candidate.id
-                            ? { ...row, confirmedAssumptions: [event.target.value] }
-                            : row,
-                        ),
-                      )
-                    }
-                  />
-                </label>
+                <EstimateConfirmationEditor
+                  draft={editable}
+                  nutrientMode="read-only-range"
+                  disabled={locked}
+                  onChange={(draft) => {
+                    updateCandidates(
+                      editableContext,
+                      context.candidates.map((row) =>
+                        row.candidate.id === editable.candidate.id
+                          ? updateEditableCandidate(row, draft)
+                          : row,
+                      ),
+                    );
+                  }}
+                />
               </fieldset>
             );
           })}
