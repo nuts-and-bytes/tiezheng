@@ -5,3 +5,7 @@ export function autoNutritionTargetsEnabled(): boolean {
 export function photoAiEnabled(): boolean {
   return import.meta.env.VITE_ENABLE_PHOTO_AI === 'true';
 }
+
+export function textAiEnabled(): boolean {
+  return import.meta.env.VITE_ENABLE_TEXT_AI === 'true';
+}

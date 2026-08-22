@@ -23,17 +23,20 @@ afterEach(() => {
 function picker(overrides: Partial<ComponentProps<typeof FoodPickerSheet>> = {}) {
   const onClose = overrides.onClose ?? vi.fn();
   const onSave = overrides.onSave ?? vi.fn().mockResolvedValue(undefined);
+  const onEstimateMeal = overrides.onEstimateMeal ?? vi.fn();
   const view = render(
     <FoodPickerSheet
       slot="lunch"
       foods={PRESET_FOODS}
+      textAiEnabled={false}
+      onEstimateMeal={onEstimateMeal}
       onClose={onClose}
       onCreateCustomFood={saveCustomFood}
       onSave={onSave}
       {...overrides}
     />,
   );
-  return { ...view, onClose, onSave };
+  return { ...view, onClose, onSave, onEstimateMeal };
 }
 
 async function selectRice(user: ReturnType<typeof userEvent.setup>) {
@@ -49,6 +52,34 @@ async function openManualFoodForm(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('原始蛋白质（克）'), '3.2');
   await user.type(screen.getByLabelText('换算说明'), '包装标签每 100 mL');
 }
+
+test('文字 AI 入口独立于手动添加并先关闭选择器', async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  const onEstimateMeal = vi.fn();
+  const { onSave } = picker({
+    textAiEnabled: true,
+    onClose,
+    onEstimateMeal,
+  });
+
+  await user.click(screen.getByRole('button', { name: 'AI 估算餐食' }));
+
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(onEstimateMeal).toHaveBeenCalledWith('lunch');
+  expect(onClose.mock.invocationCallOrder[0]).toBeLessThan(
+    onEstimateMeal.mock.invocationCallOrder[0],
+  );
+  expect(onSave).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText('食物名称')).not.toBeInTheDocument();
+});
+
+test('文字 AI 关闭时不影响手动添加入口', () => {
+  picker({ textAiEnabled: false, onEstimateMeal: vi.fn() });
+
+  expect(screen.queryByRole('button', { name: 'AI 估算餐食' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '手动添加食物' })).toBeInTheDocument();
+});
 
 test('33 种基础食物全部使用独立本地图且无占位，搜索与单位提示可用且不发网络请求', async () => {
   const user = userEvent.setup();
@@ -331,6 +362,8 @@ test('StrictMode effect replay 后失败仍显示错误并可成功重试关闭'
       <FoodPickerSheet
         slot="lunch"
         foods={PRESET_FOODS}
+        textAiEnabled={false}
+        onEstimateMeal={vi.fn()}
         onClose={onClose}
         onCreateCustomFood={saveCustomFood}
         onSave={onSave}

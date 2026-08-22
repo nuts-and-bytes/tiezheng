@@ -14,6 +14,8 @@ const CONTROL_CLASS =
 export interface FoodPickerSheetProps {
   slot: MealSlot;
   foods: Food[];
+  textAiEnabled: boolean;
+  onEstimateMeal(slot: MealSlot): void;
   onClose(): void;
   onCreateCustomFood(operationId: string, input: SaveCustomFoodInput): Promise<Food>;
   onSave(input: { operationId: string; food: Food; amount: number }): Promise<void>;
@@ -31,6 +33,8 @@ function initialOperationId(ref: { current: string | null }): string {
 export function FoodPickerSheet({
   slot,
   foods,
+  textAiEnabled,
+  onEstimateMeal,
   onClose,
   onCreateCustomFood,
   onSave,
@@ -267,19 +271,35 @@ export function FoodPickerSheet({
             </div>
           </fieldset>
 
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={submitting}
-            onClick={() => {
-              setManual(true);
-              setSelectedId(undefined);
-              setAmount('100');
-              setError('');
-            }}
-          >
-            手动添加食物
-          </Button>
+          <div className="flex gap-3">
+            {textAiEnabled ? (
+              <Button
+                type="button"
+                disabled={submitting}
+                className="flex-1"
+                onClick={() => {
+                  onClose();
+                  onEstimateMeal(slot);
+                }}
+              >
+                AI 估算餐食
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={submitting}
+              className={textAiEnabled ? 'flex-1' : ''}
+              onClick={() => {
+                setManual(true);
+                setSelectedId(undefined);
+                setAmount('100');
+                setError('');
+              }}
+            >
+              手动添加食物
+            </Button>
+          </div>
 
           {manual && (
             <fieldset

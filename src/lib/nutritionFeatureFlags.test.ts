@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   autoNutritionTargetsEnabled,
   photoAiEnabled,
+  textAiEnabled,
 } from './nutritionFeatureFlags';
 
 afterEach(() => {
@@ -45,5 +46,27 @@ describe('photoAiEnabled', () => {
   test('fails closed when the flag is absent', () => {
     vi.stubEnv('VITE_ENABLE_PHOTO_AI', undefined);
     expect(photoAiEnabled()).toBe(false);
+  });
+});
+
+describe('textAiEnabled', () => {
+  test('only accepts the exact string true', () => {
+    vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
+    expect(textAiEnabled()).toBe(true);
+  });
+
+  test.each(['TRUE', 'True', '1', ' true ', 'false', ''])(
+    'fails closed for %j',
+    (value) => {
+      vi.stubEnv('VITE_ENABLE_TEXT_AI', value);
+      expect(textAiEnabled()).toBe(false);
+    },
+  );
+
+  test('fails closed when the flag is absent without changing the photo flag', () => {
+    vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+    vi.stubEnv('VITE_ENABLE_TEXT_AI', undefined);
+    expect(textAiEnabled()).toBe(false);
+    expect(photoAiEnabled()).toBe(true);
   });
 });

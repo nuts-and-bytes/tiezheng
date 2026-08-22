@@ -6,6 +6,17 @@ import { seedPresets } from './repos/exerciseRepo';
 import { resetDb } from './test/dbTestUtils';
 import { completeOnboarding, reachOnboardingGoal } from './test/helpers';
 import { savePhotoAiIntent, takePhotoAiIntent } from './lib/photoAiIntent';
+import { saveTextAiIntent, takeTextAiIntent } from './lib/textAiIntent';
+import { textAiSessionSuccessFixture } from './test/textAiFixtures';
+
+const appTextClient = vi.hoisted(() => ({
+  session: vi.fn(),
+  estimate: vi.fn(),
+}));
+
+vi.mock('./lib/textAiClient', () => ({
+  createTextAiClient: () => appTextClient,
+}));
 
 /**
  * 这个文件只管**引导门与路由**：没引导过的人能不能绕过引导。
@@ -14,9 +25,25 @@ import { savePhotoAiIntent, takePhotoAiIntent } from './lib/photoAiIntent';
  */
 
 beforeEach(async () => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  window.history.replaceState(null, '', '/');
   window.location.hash = '';
+  sessionStorage.clear();
+  localStorage.clear();
+  appTextClient.session.mockReset().mockResolvedValue(textAiSessionSuccessFixture);
+  appTextClient.estimate.mockReset();
   await resetDb();
   await seedPresets();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  sessionStorage.clear();
+  localStorage.clear();
+  window.history.replaceState(null, '', '/');
+  window.location.hash = '';
 });
 
 /**
@@ -96,19 +123,114 @@ test('登录服务回到无 hash 的固定健康地址时，桥接 HashRouter �
   await db.profile.put({ id: 'me', weeklyGoal: 4, onboarded: true, updatedAt: Date.now() });
   vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
   savePhotoAiIntent('2026-08-13', 'dinner');
-  window.history.replaceState(null, '', '/health?photoAi=resume');
+  window.history.replaceState(null, '', '/health?keep=1&photoAi=resume');
 
   try {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: '健康' })).toBeInTheDocument();
     expect(await screen.findByRole('dialog', { name: '拍照识别晚餐' })).toBeInTheDocument();
-    await waitFor(() => expect(window.location.hash).toBe('#/health'));
+    await waitFor(() => expect(window.location.hash).toBe('#/health?keep=1'));
     expect(takePhotoAiIntent()).toBeUndefined();
   } finally {
     vi.unstubAllEnvs();
     window.history.replaceState(null, '', '/');
   }
+});
+
+test('真实 App 将无 hash 的文字回跳桥接到健康路由并一次恢复完整草稿', async () => {
+  await db.profile.put({ id: 'me', weeklyGoal: 4, onboarded: true, updatedAt: Date.now() });
+  vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
+  saveTextAiIntent({
+    date: '2026-08-13',
+    slot: 'dinner',
+    description: '牛肉面一碗，少油',
+    amount: { value: 500, unit: 'g' },
+  });
+  window.history.replaceState(null, '', '/health?keep=1&textAi=resume');
+  const replaceState = vi.spyOn(window.history, 'replaceState');
+  const removeItem = vi.spyOn(Storage.prototype, 'removeItem');
+
+  render(<App />);
+
+  expect(await screen.findByRole('heading', { name: '健康' })).toBeInTheDocument();
+  expect(await screen.findByRole('dialog', { name: 'AI 估算晚餐' })).toBeInTheDocument();
+  expect(screen.getByText('2026-08-13')).toBeInTheDocument();
+  expect(await screen.findByLabelText('餐食描述')).toHaveValue('牛肉面一碗，少油');
+  expect(screen.getByLabelText('大约重量')).toHaveValue(500);
+  expect(replaceState.mock.calls[0]?.[2]).toBe('/#/health?keep=1&textAi=resume');
+  await waitFor(() => expect(window.location.hash).toBe('#/health?keep=1'));
+  expect(window.location.search).toBe('');
+  expect(
+    removeItem.mock.calls.filter(([key]) => key === 'tiezheng:text-ai-intent:v1'),
+  ).toHaveLength(1);
+  expect(sessionStorage.getItem('tiezheng:text-ai-intent:v1')).toBeNull();
+  expect(appTextClient.session).toHaveBeenCalledOnce();
+  expect(appTextClient.estimate).not.toHaveBeenCalled();
+});
+
+test('真实 App 同时收到 photo/text resume 时保留原查询并确定性只恢复文字面板', async () => {
+  await db.profile.put({ id: 'me', weeklyGoal: 4, onboarded: true, updatedAt: Date.now() });
+  vi.stubEnv('VITE_ENABLE_PHOTO_AI', 'true');
+  vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
+  savePhotoAiIntent('2026-08-12', 'dinner');
+  saveTextAiIntent({
+    date: '2026-08-13',
+    slot: 'breakfast',
+    description: '燕麦粥和牛奶',
+    amount: { value: 380, unit: 'g' },
+  });
+  window.history.replaceState(
+    null,
+    '',
+    '/health?keep=1&photoAi=resume&textAi=resume',
+  );
+  const replaceState = vi.spyOn(window.history, 'replaceState');
+
+  render(<App />);
+
+  expect(await screen.findByRole('dialog', { name: 'AI 估算早餐' })).toBeInTheDocument();
+  expect(screen.queryByRole('dialog', { name: /拍照识别/ })).not.toBeInTheDocument();
+  expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  expect(screen.getByText('2026-08-13')).toBeInTheDocument();
+  expect(await screen.findByLabelText('餐食描述')).toHaveValue('燕麦粥和牛奶');
+  expect(screen.getByLabelText('大约重量')).toHaveValue(380);
+  expect(replaceState.mock.calls[0]?.[2]).toBe(
+    '/#/health?keep=1&photoAi=resume&textAi=resume',
+  );
+  await waitFor(() => expect(window.location.hash).toBe('#/health?keep=1'));
+  expect(takePhotoAiIntent()).toBeUndefined();
+  expect(takeTextAiIntent()).toBeUndefined();
+  expect(appTextClient.session).toHaveBeenCalledOnce();
+  expect(appTextClient.estimate).not.toHaveBeenCalled();
+});
+
+test('App 桥接 replaceState 同步失败时退回 hash 导航且不丢文字 intent', async () => {
+  await db.profile.put({ id: 'me', weeklyGoal: 4, onboarded: true, updatedAt: Date.now() });
+  vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
+  saveTextAiIntent({
+    date: '2026-08-13',
+    slot: 'lunch',
+    description: '桥接失败回退',
+    amount: null,
+  });
+  window.history.replaceState(null, '', '/health?textAi=resume');
+  const originalReplaceState = window.history.replaceState.bind(window.history);
+  vi.spyOn(window.history, 'replaceState')
+    .mockImplementationOnce(() => {
+      throw new Error('replaceState unavailable');
+    })
+    .mockImplementation(originalReplaceState);
+
+  render(<App />);
+
+  expect(await screen.findByRole('heading', { name: '健康' })).toBeInTheDocument();
+  expect(await screen.findByRole('dialog', { name: 'AI 估算午餐' })).toBeInTheDocument();
+  expect(await screen.findByLabelText('餐食描述')).toHaveValue('桥接失败回退');
+  await waitFor(() => expect(window.location.hash).toBe('#/health'));
+  expect(takeTextAiIntent()).toBeUndefined();
+  expect(appTextClient.session).toHaveBeenCalledOnce();
+  expect(appTextClient.estimate).not.toHaveBeenCalled();
 });
 
 test('从今日饮食入口进入健康页，且没有底栏', async () => {

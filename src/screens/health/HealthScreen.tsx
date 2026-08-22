@@ -4,14 +4,22 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '../../components/Button';
 import { addDays, todayStr } from '../../lib/dates';
 import { createPhotoAiClient } from '../../lib/photoAiClient';
+import { createTextAiClient } from '../../lib/textAiClient';
+import type { TextMealDraft } from '../../lib/textAiContract';
 import {
   PHOTO_AI_LOGIN_PATH,
   savePhotoAiIntent,
   takePhotoAiIntent,
 } from '../../lib/photoAiIntent';
 import {
+  saveTextAiIntent,
+  takeTextAiIntent,
+  TEXT_AI_LOGIN_PATH,
+} from '../../lib/textAiIntent';
+import {
   autoNutritionTargetsEnabled,
   photoAiEnabled,
+  textAiEnabled,
 } from '../../lib/nutritionFeatureFlags';
 import {
   evaluateNutritionDay,
@@ -23,6 +31,7 @@ import {
   listNutritionDay,
   clearMealTemporaryState,
   confirmPhotoEstimate,
+  confirmTextEstimate,
   putMealEstimate,
   removeMealItem,
   saveConfirmedFoodItem,
@@ -33,6 +42,7 @@ import { FoodPickerSheet } from './FoodPickerSheet';
 import { MealSection } from './MealSection';
 import { NutritionPlanDetails, NutritionPlanSetup } from './NutritionPlanSetup';
 import { PhotoEstimateSheet } from './PhotoEstimateSheet';
+import { TextEstimateSheet } from './TextEstimateSheet';
 
 const DATA_LOADING = Symbol('health-data-loading');
 
@@ -43,10 +53,15 @@ export function HealthScreen() {
   const [date, setDate] = useState(today);
   const [pickerSlot, setPickerSlot] = useState<MealSlot>();
   const [photoSlot, setPhotoSlot] = useState<MealSlot>();
+  const [textSlot, setTextSlot] = useState<MealSlot>();
+  const [textDraft, setTextDraft] = useState<TextMealDraft>();
+  const [textSheetVersion, setTextSheetVersion] = useState(0);
   const [editingPlan, setEditingPlan] = useState(false);
   const targetsEnabled = autoNutritionTargetsEnabled();
   const photosEnabled = photoAiEnabled();
+  const textsEnabled = textAiEnabled();
   const photoClient = useMemo(() => createPhotoAiClient(), []);
+  const textClient = useMemo(() => createTextAiClient(), []);
   const handledResume = useRef<string | undefined>(undefined);
   const data = useLiveQuery(
     async () => {
@@ -73,32 +88,96 @@ export function HealthScreen() {
 
   useEffect(() => {
     const search = new URLSearchParams(location.search);
-    if (search.get('photoAi') !== 'resume') return;
-    const resumeKey = `${location.pathname}${location.search}`;
+    const resumePhoto = search.get('photoAi') === 'resume';
+    const resumeText = search.get('textAi') === 'resume';
+    if (!resumePhoto && !resumeText) {
+      handledResume.current = undefined;
+      return;
+    }
+    const resumeKey = `${location.pathname}${location.search}${location.hash}`;
     if (handledResume.current === resumeKey) return;
     handledResume.current = resumeKey;
 
-    const intent = takePhotoAiIntent();
-    search.delete('photoAi');
+    const photoIntent = resumePhoto ? takePhotoAiIntent() : undefined;
+    const textIntent = resumeText ? takeTextAiIntent() : undefined;
+    if (textsEnabled && textIntent !== undefined) {
+      setPickerSlot(undefined);
+      setPhotoSlot(undefined);
+      setEditingPlan(false);
+      setDate(textIntent.date);
+      setTextDraft({
+        description: textIntent.description,
+        amount: textIntent.amount === null ? null : { ...textIntent.amount },
+      });
+      setTextSheetVersion((value) => value + 1);
+      setTextSlot(textIntent.slot);
+    } else if (photosEnabled && photoIntent !== undefined) {
+      setPickerSlot(undefined);
+      setTextSlot(undefined);
+      setTextDraft(undefined);
+      setEditingPlan(false);
+      setDate(photoIntent.date);
+      setPhotoSlot(photoIntent.slot);
+    }
+
+    if (resumePhoto) search.delete('photoAi');
+    if (resumeText) search.delete('textAi');
     const nextSearch = search.toString();
-    navigate(
-      {
-        pathname: location.pathname,
-        search: nextSearch.length > 0 ? `?${nextSearch}` : '',
-        hash: location.hash,
-      },
-      { replace: true },
-    );
-    if (!photosEnabled || intent === undefined) return;
-    setPickerSlot(undefined);
+    try {
+      void Promise.resolve(
+        navigate(
+          {
+            pathname: location.pathname,
+            search: nextSearch.length > 0 ? `?${nextSearch}` : '',
+            hash: location.hash,
+          },
+          { replace: true },
+        ),
+      ).catch(() => undefined);
+    } catch {
+      // Intent snapshots are already restored. URL cleanup is best effort and
+      // handledResume prevents a failed replace from consuming them twice.
+    }
+  }, [
+    location.hash,
+    location.pathname,
+    location.search,
+    navigate,
+    photosEnabled,
+    textsEnabled,
+  ]);
+
+  function openPicker(slot: MealSlot) {
+    setPhotoSlot(undefined);
+    setTextSlot(undefined);
+    setTextDraft(undefined);
     setEditingPlan(false);
-    setDate(intent.date);
-    setPhotoSlot(intent.slot);
-  }, [location.hash, location.pathname, location.search, navigate, photosEnabled]);
+    setPickerSlot(slot);
+  }
+
+  function openPhoto(slot: MealSlot) {
+    setPickerSlot(undefined);
+    setTextSlot(undefined);
+    setTextDraft(undefined);
+    setEditingPlan(false);
+    setPhotoSlot(slot);
+  }
+
+  function openText(slot: MealSlot) {
+    if (!textsEnabled) return;
+    setPickerSlot(undefined);
+    setPhotoSlot(undefined);
+    setEditingPlan(false);
+    setTextDraft(undefined);
+    setTextSheetVersion((value) => value + 1);
+    setTextSlot(slot);
+  }
 
   function changeDate(nextDate: string) {
     setPickerSlot(undefined);
     setPhotoSlot(undefined);
+    setTextSlot(undefined);
+    setTextDraft(undefined);
     setEditingPlan(false);
     setDate(nextDate);
   }
@@ -171,7 +250,13 @@ export function HealthScreen() {
               <NutritionPlanDetails
                 plan={data.plan}
                 targetsEnabled={targetsEnabled}
-                onEdit={() => setEditingPlan(true)}
+                onEdit={() => {
+                  setPickerSlot(undefined);
+                  setPhotoSlot(undefined);
+                  setTextSlot(undefined);
+                  setTextDraft(undefined);
+                  setEditingPlan(true);
+                }}
               />
             )}
           </div>
@@ -202,9 +287,9 @@ export function HealthScreen() {
                 key={slot}
                 slot={slot}
                 items={items}
-                onAdd={setPickerSlot}
+                onAdd={openPicker}
                 photoAiEnabled={photosEnabled}
-                onPhoto={setPhotoSlot}
+                onPhoto={openPhoto}
                 onUpdate={async (id, amount) => {
                   await updateMealItemAmount(id, amount);
                 }}
@@ -217,6 +302,8 @@ export function HealthScreen() {
             <FoodPickerSheet
               slot={pickerSlot}
               foods={data.foods}
+              textAiEnabled={textsEnabled}
+              onEstimateMeal={openText}
               onClose={() => setPickerSlot(undefined)}
               onCreateCustomFood={saveCustomFood}
               onSave={async ({ operationId, food, amount }) => {
@@ -248,6 +335,45 @@ export function HealthScreen() {
                 await confirmPhotoEstimate(input);
               }}
               onClose={() => setPhotoSlot(undefined)}
+            />
+          )}
+
+          {textsEnabled && textSlot && (
+            <TextEstimateSheet
+              key={`text:${textSheetVersion}`}
+              date={date}
+              slot={textSlot}
+              initialDraft={textDraft}
+              client={textClient}
+              onLogin={(draft) => {
+                const snapshot: TextMealDraft = {
+                  description: draft.description,
+                  amount: draft.amount === null ? null : { ...draft.amount },
+                };
+                setTextDraft(snapshot);
+                try {
+                  saveTextAiIntent({ date, slot: textSlot, ...snapshot });
+                  globalThis.location.assign(TEXT_AI_LOGIN_PATH);
+                } catch {
+                  setTextSheetVersion((value) => value + 1);
+                  return;
+                }
+              }}
+              onUseManual={() => {
+                const slot = textSlot;
+                setTextSlot(undefined);
+                setTextDraft(undefined);
+                setPhotoSlot(undefined);
+                setEditingPlan(false);
+                setPickerSlot(slot);
+              }}
+              onConfirm={async (input) => {
+                await confirmTextEstimate(input);
+              }}
+              onClose={() => {
+                setTextSlot(undefined);
+                setTextDraft(undefined);
+              }}
             />
           )}
         </>

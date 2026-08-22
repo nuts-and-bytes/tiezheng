@@ -16,13 +16,27 @@ import { TodayScreen } from './screens/today/TodayScreen';
 import { Onboarding } from './screens/Onboarding';
 import { getProfile } from './repos/profileRepo';
 
-function bridgePhotoAiResumeIntoHashRouter(): void {
+function bridgeNutritionAiResumeIntoHashRouter(): void {
+  if (window.location.hash !== '' || window.location.pathname !== '/health') return;
+  const search = new URLSearchParams(window.location.search);
   if (
-    window.location.hash === '' &&
-    window.location.pathname === '/health' &&
-    new URLSearchParams(window.location.search).get('photoAi') === 'resume'
-  ) {
-    window.history.replaceState(window.history.state, '', '/#/health?photoAi=resume');
+    search.get('photoAi') !== 'resume' &&
+    search.get('textAi') !== 'resume'
+  ) return;
+
+  const targetHash = `#/health${window.location.search}`;
+  try {
+    window.history.replaceState(window.history.state, '', `/${targetHash}`);
+    return;
+  } catch {
+    // Some embedded browsers reject History API writes. Hash assignment is the
+    // narrow fallback HashRouter understands and leaves the stored intent intact.
+  }
+  try {
+    window.location.hash = targetHash;
+  } catch {
+    // If navigation is entirely unavailable, remain off the health route so no
+    // intent is consumed and a later retry can recover it.
   }
 }
 
@@ -68,7 +82,7 @@ function OnboardingGate() {
 }
 
 export default function App() {
-  bridgePhotoAiResumeIntoHashRouter();
+  bridgeNutritionAiResumeIntoHashRouter();
 
   return (
     <ErrorBoundary>
