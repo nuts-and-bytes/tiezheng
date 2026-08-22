@@ -50,20 +50,31 @@ async function openManualFoodForm(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('换算说明'), '包装标签每 100 mL');
 }
 
-test('真实图目录、本地名称和别名搜索、单位提示均可用且不发网络请求', async () => {
+test('33 种基础食物全部使用独立本地图且无占位，搜索与单位提示可用且不发网络请求', async () => {
   const user = userEvent.setup();
   const fetchSpy = vi.spyOn(globalThis, 'fetch');
-  const { container } = picker();
+  picker();
 
   const dialog = screen.getByRole('dialog', { name: '选择食物' });
   expect(dialog).toHaveAttribute('aria-modal', 'true');
   expect(dialog).toHaveClass('motion-reduce:transition-none');
   expect(dialog).toHaveClass('forged-surface');
-  const images = [...container.querySelectorAll('img')];
-  expect(images).toHaveLength(3);
-  expect(new Set(images.map((image) => image.getAttribute('src'))).size).toBe(3);
-  expect(images.every((image) => image.getAttribute('src')?.endsWith('.webp'))).toBe(true);
+  const images = PRESET_FOODS.map((food) => {
+    const button = screen.getByRole('button', { name: food.name });
+    const foodImages = [...button.querySelectorAll('img')];
+    expect(foodImages).toHaveLength(1);
+    return foodImages[0];
+  });
+  const imageSources = images.map((image) => image.getAttribute('src'));
+  expect(images).toHaveLength(33);
+  expect(new Set(imageSources).size).toBe(33);
+  expect(
+    imageSources.every(
+      (source) => source?.startsWith('/food-presets/') && source.endsWith('.webp'),
+    ),
+  ).toBe(true);
   expect(images.every((image) => image.className.includes('object-cover'))).toBe(true);
+  expect(screen.queryByText('暂无图片')).not.toBeInTheDocument();
 
   await user.type(screen.getByLabelText('搜索食物'), '米饭');
   expect(screen.getByRole('button', { name: '熟米饭' })).toBeInTheDocument();
@@ -71,6 +82,13 @@ test('真实图目录、本地名称和别名搜索、单位提示均可用且�
   await user.clear(screen.getByLabelText('搜索食物'));
   await user.type(screen.getByLabelText('搜索食物'), '鸡胸肉');
   expect(screen.getByRole('button', { name: '熟鸡胸肉' })).toBeInTheDocument();
+  await user.clear(screen.getByLabelText('搜索食物'));
+  await user.type(screen.getByLabelText('搜索食物'), '白馒头');
+  expect(
+    PRESET_FOODS.filter((food) =>
+      screen.queryByRole('button', { name: food.name }),
+    ).map((food) => food.name),
+  ).toEqual(['馒头']);
   expect(fetchSpy).not.toHaveBeenCalled();
 });
 
