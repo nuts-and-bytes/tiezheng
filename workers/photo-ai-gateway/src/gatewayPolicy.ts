@@ -1,13 +1,32 @@
+export type AiChannel = 'photo' | 'text';
+
+export const GATEWAY_CHANNEL_POLICY = Object.freeze({
+  photo: Object.freeze({
+    accountDaily: 10,
+    globalDaily: 30,
+    accountPerMinute: 2,
+    initialAttemptReserveMicros: 2_000_000,
+    retryAttemptReserveMicros: 2_000_000,
+  }),
+  text: Object.freeze({
+    accountDaily: 10,
+    globalDaily: 30,
+    accountPerMinute: 2,
+    initialAttemptReserveMicros: 500_000,
+    retryAttemptReserveMicros: 500_000,
+  }),
+} as const);
+
 export const GATEWAY_LIMITS = Object.freeze({
-  accountDaily: 10,
-  accountPerMinute: 2,
+  accountDaily: GATEWAY_CHANNEL_POLICY.photo.accountDaily,
+  accountPerMinute: GATEWAY_CHANNEL_POLICY.photo.accountPerMinute,
   accountConcurrent: 1,
   betaAccounts: 3,
-  globalDaily: 30,
+  globalDaily: GATEWAY_CHANNEL_POLICY.photo.globalDaily,
   globalConcurrent: 2,
   monthlyBudgetMicros: 50_000_000,
-  initialAttemptReserveMicros: 2_000_000,
-  retryAttemptReserveMicros: 2_000_000,
+  initialAttemptReserveMicros: GATEWAY_CHANNEL_POLICY.photo.initialAttemptReserveMicros,
+  retryAttemptReserveMicros: GATEWAY_CHANNEL_POLICY.photo.retryAttemptReserveMicros,
   leaseMs: 60_000,
   resultCacheMs: 10 * 60_000,
   idempotencyMs: 24 * 60 * 60_000,

@@ -1,8 +1,41 @@
 import { describe, expect, test } from 'vitest';
 
-import { GATEWAY_LIMITS, arkCostMicros } from './gatewayPolicy';
+import {
+  GATEWAY_CHANNEL_POLICY,
+  GATEWAY_LIMITS,
+  arkCostMicros,
+} from './gatewayPolicy';
 
 describe('photo AI gateway policy', () => {
+  test('owns immutable photo and text channel quotas and provider reserves', () => {
+    expect(Object.isFrozen(GATEWAY_CHANNEL_POLICY)).toBe(true);
+    expect(Object.isFrozen(GATEWAY_CHANNEL_POLICY.photo)).toBe(true);
+    expect(Object.isFrozen(GATEWAY_CHANNEL_POLICY.text)).toBe(true);
+    expect(GATEWAY_CHANNEL_POLICY).toEqual({
+      photo: {
+        accountDaily: 10,
+        globalDaily: 30,
+        accountPerMinute: 2,
+        initialAttemptReserveMicros: 2_000_000,
+        retryAttemptReserveMicros: 2_000_000,
+      },
+      text: {
+        accountDaily: 10,
+        globalDaily: 30,
+        accountPerMinute: 2,
+        initialAttemptReserveMicros: 500_000,
+        retryAttemptReserveMicros: 500_000,
+      },
+    });
+    expect(GATEWAY_LIMITS.accountDaily).toBe(GATEWAY_CHANNEL_POLICY.photo.accountDaily);
+    expect(GATEWAY_LIMITS.globalDaily).toBe(GATEWAY_CHANNEL_POLICY.photo.globalDaily);
+    expect(GATEWAY_LIMITS.accountPerMinute).toBe(GATEWAY_CHANNEL_POLICY.photo.accountPerMinute);
+    expect(GATEWAY_LIMITS.initialAttemptReserveMicros)
+      .toBe(GATEWAY_CHANNEL_POLICY.photo.initialAttemptReserveMicros);
+    expect(GATEWAY_LIMITS.retryAttemptReserveMicros)
+      .toBe(GATEWAY_CHANNEL_POLICY.photo.retryAttemptReserveMicros);
+  });
+
   test('owns the exact immutable limits and canonical Ark pricing', () => {
     expect(Object.isFrozen(GATEWAY_LIMITS)).toBe(true);
     expect(GATEWAY_LIMITS).toMatchObject({

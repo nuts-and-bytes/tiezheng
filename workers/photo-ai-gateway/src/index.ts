@@ -44,6 +44,7 @@ async function handleSessionRequest(request: Request, env: GatewayEnv): Promise<
 
   try {
     const status = await env.PHOTO_AI_COORDINATOR.getByName('stage2').status({
+      channel: 'photo',
       accountKey,
       now: Date.now(),
     });

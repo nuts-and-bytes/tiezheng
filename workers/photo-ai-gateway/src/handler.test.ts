@@ -390,6 +390,7 @@ describe('private photo AI handler', () => {
 
     const fingerprint = await expectedFingerprint();
     expect(coordinator.reserve).toHaveBeenCalledWith({
+      channel: 'photo',
       accountKey: ACCOUNT_KEY,
       idempotencyKey: upload.metadata.idempotencyKey,
       fingerprint,
@@ -399,6 +400,7 @@ describe('private photo AI handler', () => {
     expect(sanitizeImage).toHaveBeenCalledWith(upload, expect.anything());
     expect(order).toEqual(['reserve', 'sanitize', 'abort']);
     expect(coordinator.abortBeforeInvoke).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'photo',
       accountKey: ACCOUNT_KEY,
       fingerprint,
       leaseId: '11111111-1111-4111-8111-111111111111',
@@ -435,6 +437,7 @@ describe('private photo AI handler', () => {
 
     expect(coordinator.reserve).toHaveBeenCalledWith(expect.objectContaining({ now: NOW }));
     expect(coordinator.markInvoked).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'photo',
       now: NOW + LEASE_MS + 1,
     }));
     expect(estimate).not.toHaveBeenCalled();
@@ -622,6 +625,7 @@ describe('private photo AI handler', () => {
 
     expect(order).toEqual(['reserve', 'sanitize', 'mark', 'model', 'parse', 'encrypt', 'settle']);
     expect(coordinator.markInvoked).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'photo',
       accountKey: ACCOUNT_KEY,
       fingerprint,
       leaseId: '11111111-1111-4111-8111-111111111111',
@@ -635,6 +639,7 @@ describe('private photo AI handler', () => {
       NOW + 600_000,
     );
     expect(coordinator.settleSuccess).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'photo',
       cache,
       actualCostMicros: 120,
     }));
@@ -678,11 +683,13 @@ describe('private photo AI handler', () => {
     expect(estimate).toHaveBeenCalledTimes(2);
     expect(order).toEqual(['model-1', 'retry-reserve', 'model-2', 'settle']);
     expect(coordinator.reserveRetryCost).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'photo',
       accountKey: ACCOUNT_KEY,
       leaseId: '11111111-1111-4111-8111-111111111111',
       now: NOW,
     }));
     expect(coordinator.settleSuccess).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'photo',
       actualCostMicros: 2_000_120,
     }));
     expect(response.status).toBe(200);
@@ -705,6 +712,7 @@ describe('private photo AI handler', () => {
     expect(estimate).toHaveBeenCalledTimes(2);
     expect(coordinator.reserveRetryCost).toHaveBeenCalledTimes(1);
     expect(coordinator.settleFailure).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'photo',
       actualCostMicros: null,
       errorCode: 'provider-timeout',
     }));
@@ -770,6 +778,7 @@ describe('private photo AI handler', () => {
     expect(order).toEqual(['mark', 'compensate']);
     expect(coordinator.markInvoked).toHaveBeenCalledWith(expect.objectContaining({ now: NOW + 1 }));
     expect(coordinator.abortAfterMarkBeforeProvider).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'photo',
       now: NOW + 2,
     }));
     expect(estimate).not.toHaveBeenCalled();
@@ -871,6 +880,7 @@ describe('private photo AI handler', () => {
     });
 
     expect(coordinator.settleFailure).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'photo',
       actualCostMicros: 120,
       errorCode: 'invalid-estimate',
     }));

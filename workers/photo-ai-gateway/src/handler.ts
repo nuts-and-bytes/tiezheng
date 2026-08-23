@@ -152,6 +152,7 @@ export async function handlePhotoAiRequest(
   let reservation;
   try {
     reservation = await env.PHOTO_AI_COORDINATOR.getByName('stage2').reserve({
+      channel: 'photo',
       accountKey,
       idempotencyKey: upload.metadata.idempotencyKey,
       fingerprint,
@@ -207,6 +208,7 @@ export async function handlePhotoAiRequest(
   }
 
   const lease: Omit<LeaseInput, 'now'> = {
+    channel: 'photo',
     accountKey,
     idempotencyKey: upload.metadata.idempotencyKey,
     fingerprint,

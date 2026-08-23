@@ -1,9 +1,18 @@
 import { DurableObject } from 'cloudflare:workers';
 
 import type { GatewayEnv } from './env';
-import { GATEWAY_LIMITS } from './gatewayPolicy';
+import {
+  GATEWAY_CHANNEL_POLICY,
+  GATEWAY_LIMITS,
+  type AiChannel,
+} from './gatewayPolicy';
 
-export { GATEWAY_LIMITS, arkCostMicros } from './gatewayPolicy';
+export {
+  GATEWAY_CHANNEL_POLICY,
+  GATEWAY_LIMITS,
+  arkCostMicros,
+  type AiChannel,
+} from './gatewayPolicy';
 
 const INVALID_INPUT = 'Invalid coordinator input';
 const OPERATION_REJECTED = 'Coordinator operation rejected';
@@ -12,6 +21,7 @@ const MAX_DATE_MS = 8_640_000_000_000_000;
 const MAX_DERIVED_DATE_WINDOW_MS = 32 * 86_400_000 + 8 * 60 * 60_000;
 
 export interface StatusInput {
+  channel: AiChannel;
   accountKey: string;
   now: number;
 }
@@ -29,6 +39,7 @@ export interface CoordinatorStatus {
 }
 
 export interface ReserveInput {
+  channel: AiChannel;
   accountKey: string;
   idempotencyKey: string;
   fingerprint: string;
@@ -45,7 +56,8 @@ export interface EncryptedCandidateCache {
 export type CoordinatorFailureCode =
   | 'provider-timeout'
   | 'provider-unavailable'
-  | 'invalid-estimate';
+  | 'invalid-estimate'
+  | 'uncertain-food';
 
 export type ReserveResult =
   | { kind: 'reserved'; leaseId: string }
@@ -60,6 +72,7 @@ export type ReserveResult =
     };
 
 export interface LeaseInput {
+  channel: AiChannel;
   accountKey: string;
   idempotencyKey: string;
   fingerprint: string;
@@ -105,6 +118,7 @@ interface IdempotencyRow {
 
 interface LeaseRow {
   lease_id: string;
+  channel: AiChannel;
   account_key: string;
   idempotency_key: string;
   fingerprint: string;
@@ -138,6 +152,11 @@ function safeMicros(value: unknown): number {
 
 function accountKey(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) return invalid();
+  return value;
+}
+
+function aiChannel(value: unknown): AiChannel {
+  if (value !== 'photo' && value !== 'text') return invalid();
   return value;
 }
 
@@ -204,7 +223,8 @@ function retryAfter(now: number, until: number): number {
 function failureCode(value: unknown): CoordinatorFailureCode {
   if (value !== 'provider-timeout'
     && value !== 'provider-unavailable'
-    && value !== 'invalid-estimate') return invalid();
+    && value !== 'invalid-estimate'
+    && value !== 'uncertain-food') return invalid();
   return value;
 }
 
@@ -230,6 +250,7 @@ function cacheValue(value: EncryptedCandidateCache, now: number): EncryptedCandi
 
 function leaseInput(value: LeaseInput): LeaseInput {
   return {
+    channel: aiChannel(value.channel),
     accountKey: accountKey(value.accountKey),
     idempotencyKey: idempotencyKey(value.idempotencyKey),
     fingerprint: fingerprint(value.fingerprint),
@@ -238,58 +259,173 @@ function leaseInput(value: LeaseInput): LeaseInput {
   };
 }
 
+function storageIdempotencyKey(channel: AiChannel, rawKey: string): string {
+  return `${channel}:${rawKey}`;
+}
+
+function channelScopes(channel: AiChannel, account: string): {
+  account: string;
+  global: string;
+  minute: string;
+  enabled: 'global_enabled' | 'text_global_enabled';
+} {
+  return channel === 'photo'
+    ? { account, global: GLOBAL_SCOPE, minute: account, enabled: 'global_enabled' }
+    : {
+        account: `text:${account}`,
+        global: `${GLOBAL_SCOPE}:text`,
+        minute: `text:${account}`,
+        enabled: 'text_global_enabled',
+      };
+}
+
+function schemaExec(sql: SqlStorage, query: string, ...bindings: SqlStorageValue[]): void {
+  sql.exec(query, ...bindings).toArray();
+}
+
+function persistedStorageKey(value: unknown): { channel: AiChannel; key: string } {
+  if (typeof value !== 'string') return rejectedOperation();
+  if (/^[a-f0-9]{32}$/.test(value)) {
+    return { channel: 'photo', key: `photo:${value}` };
+  }
+  const match = /^(photo|text):([a-f0-9]{32})$/.exec(value);
+  if (match === null) return rejectedOperation();
+  return { channel: aiChannel(match[1]), key: value };
+}
+
+export function ensureCoordinatorSchema(sql: SqlStorage): void {
+  schemaExec(sql, `CREATE TABLE IF NOT EXISTS idempotency (
+    account_key TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    state TEXT NOT NULL,
+    lease_id TEXT,
+    cache_iv TEXT,
+    cache_ciphertext TEXT,
+    cache_expires_at INTEGER,
+    error_code TEXT,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (account_key, idempotency_key)
+  )`);
+  schemaExec(sql, `CREATE TABLE IF NOT EXISTS daily_counters (
+    scope TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    pending INTEGER NOT NULL,
+    consumed INTEGER NOT NULL,
+    PRIMARY KEY (scope, bucket)
+  )`);
+  schemaExec(sql, `CREATE TABLE IF NOT EXISTS minute_counters (
+    account_key TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    PRIMARY KEY (account_key, bucket)
+  )`);
+  schemaExec(sql, `CREATE TABLE IF NOT EXISTS active_leases (
+    lease_id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    account_key TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    day_bucket TEXT NOT NULL,
+    month_bucket TEXT NOT NULL,
+    initial_reserve_micros INTEGER NOT NULL,
+    retry_reserve_micros INTEGER NOT NULL,
+    invoked INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`);
+  schemaExec(sql, `CREATE TABLE IF NOT EXISTS account_flags (
+    account_key TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL
+  )`);
+  schemaExec(sql, `CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+  )`);
+
+  const columns = sql.exec<{ name: string }>('PRAGMA table_info(active_leases)').toArray();
+  if (!columns.some((column) => column.name === 'channel')) {
+    schemaExec(sql, "ALTER TABLE active_leases ADD COLUMN channel TEXT NOT NULL DEFAULT 'photo'");
+  }
+
+  const idempotencyRows = sql.exec<{
+    account_key: string;
+    idempotency_key: string;
+    fingerprint: string;
+    state: string;
+    lease_id: string | null;
+  }>(
+    `SELECT account_key, idempotency_key, fingerprint, state, lease_id
+     FROM idempotency ORDER BY account_key, idempotency_key`,
+  ).toArray();
+  const migratedIdempotencyKeys = new Set<string>();
+  const idempotencyByIdentity = new Map<string, typeof idempotencyRows[number]>();
+  for (const row of idempotencyRows) {
+    const account = accountKey(row.account_key);
+    const persisted = persistedStorageKey(row.idempotency_key);
+    fingerprint(row.fingerprint);
+    if (row.state !== 'reserved'
+      && row.state !== 'invoked'
+      && row.state !== 'succeeded'
+      && row.state !== 'failed') return rejectedOperation();
+    if ((row.state === 'reserved' || row.state === 'invoked') !== (row.lease_id !== null)) {
+      return rejectedOperation();
+    }
+    const identity = `${account}:${persisted.key}`;
+    if (migratedIdempotencyKeys.has(identity)) return rejectedOperation();
+    migratedIdempotencyKeys.add(identity);
+    idempotencyByIdentity.set(identity, row);
+  }
+
+  const leaseRows = sql.exec<{
+    lease_id: string;
+    account_key: string;
+    channel: string;
+    idempotency_key: string;
+    fingerprint: string;
+    invoked: number;
+  }>(
+    `SELECT lease_id, account_key, channel, idempotency_key, fingerprint, invoked
+     FROM active_leases ORDER BY lease_id`,
+  ).toArray();
+  const migratedLeaseKeys = new Set<string>();
+  for (const row of leaseRows) {
+    const account = accountKey(row.account_key);
+    const channel = aiChannel(row.channel);
+    const persisted = persistedStorageKey(row.idempotency_key);
+    fingerprint(row.fingerprint);
+    if (persisted.channel !== channel) return rejectedOperation();
+    if (row.invoked !== 0 && row.invoked !== 1) return rejectedOperation();
+    const identity = `${account}:${persisted.key}`;
+    if (migratedLeaseKeys.has(identity)) return rejectedOperation();
+    migratedLeaseKeys.add(identity);
+    const idempotency = idempotencyByIdentity.get(identity);
+    const expectedState = row.invoked === 1 ? 'invoked' : 'reserved';
+    if (idempotency === undefined
+      || idempotency.lease_id !== row.lease_id
+      || idempotency.fingerprint !== row.fingerprint
+      || idempotency.state !== expectedState) return rejectedOperation();
+  }
+  for (const [identity, row] of idempotencyByIdentity) {
+    if ((row.state === 'reserved' || row.state === 'invoked') && !migratedLeaseKeys.has(identity)) {
+      return rejectedOperation();
+    }
+  }
+
+  schemaExec(sql, `UPDATE idempotency
+    SET idempotency_key = 'photo:' || idempotency_key
+    WHERE instr(idempotency_key, ':') = 0`);
+  schemaExec(sql, `UPDATE active_leases
+    SET idempotency_key = 'photo:' || idempotency_key,
+        channel = 'photo'
+    WHERE instr(idempotency_key, ':') = 0`);
+  schemaExec(sql, "INSERT OR IGNORE INTO settings (key, value) VALUES ('global_enabled', 0)");
+  schemaExec(sql, "INSERT OR IGNORE INTO settings (key, value) VALUES ('text_global_enabled', 0)");
+}
+
 export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
   constructor(ctx: DurableObjectState, env: GatewayEnv) {
     super(ctx, env);
-    this.ctx.storage.transactionSync(() => {
-      this.exec(`CREATE TABLE IF NOT EXISTS idempotency (
-        account_key TEXT NOT NULL,
-        idempotency_key TEXT NOT NULL,
-        fingerprint TEXT NOT NULL,
-        state TEXT NOT NULL,
-        lease_id TEXT,
-        cache_iv TEXT,
-        cache_ciphertext TEXT,
-        cache_expires_at INTEGER,
-        error_code TEXT,
-        expires_at INTEGER NOT NULL,
-        PRIMARY KEY (account_key, idempotency_key)
-      )`);
-      this.exec(`CREATE TABLE IF NOT EXISTS daily_counters (
-        scope TEXT NOT NULL,
-        bucket TEXT NOT NULL,
-        pending INTEGER NOT NULL,
-        consumed INTEGER NOT NULL,
-        PRIMARY KEY (scope, bucket)
-      )`);
-      this.exec(`CREATE TABLE IF NOT EXISTS minute_counters (
-        account_key TEXT NOT NULL,
-        bucket TEXT NOT NULL,
-        attempts INTEGER NOT NULL,
-        PRIMARY KEY (account_key, bucket)
-      )`);
-      this.exec(`CREATE TABLE IF NOT EXISTS active_leases (
-        lease_id TEXT PRIMARY KEY,
-        account_key TEXT NOT NULL,
-        idempotency_key TEXT NOT NULL,
-        fingerprint TEXT NOT NULL,
-        day_bucket TEXT NOT NULL,
-        month_bucket TEXT NOT NULL,
-        initial_reserve_micros INTEGER NOT NULL,
-        retry_reserve_micros INTEGER NOT NULL,
-        invoked INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL
-      )`);
-      this.exec(`CREATE TABLE IF NOT EXISTS account_flags (
-        account_key TEXT PRIMARY KEY,
-        enabled INTEGER NOT NULL
-      )`);
-      this.exec(`CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value INTEGER NOT NULL
-      )`);
-      this.exec("INSERT OR IGNORE INTO settings (key, value) VALUES ('global_enabled', 0)");
-    });
+    this.ctx.storage.transactionSync(() => ensureCoordinatorSchema(this.ctx.storage.sql));
   }
 
   private exec(query: string, ...bindings: SqlStorageValue[]): void {
@@ -369,23 +505,25 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
 
   private getLease(value: LeaseInput): LeaseRow {
     const row = this.rows<LeaseRow>(
-      `SELECT lease_id, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
+      `SELECT lease_id, channel, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
               initial_reserve_micros, retry_reserve_micros, invoked, expires_at
        FROM active_leases WHERE lease_id = ?`,
       value.leaseId,
     )[0];
     if (row === undefined
+      || row.channel !== value.channel
       || row.account_key !== value.accountKey
-      || row.idempotency_key !== value.idempotencyKey
+      || row.idempotency_key !== storageIdempotencyKey(value.channel, value.idempotencyKey)
       || row.fingerprint !== value.fingerprint) return rejectedOperation();
     return row;
   }
 
   private releaseExpiredLease(row: LeaseRow): void {
     const totalReserve = row.initial_reserve_micros + row.retry_reserve_micros;
+    const scopes = channelScopes(aiChannel(row.channel), accountKey(row.account_key));
     if (row.invoked === 0) {
-      this.changeDaily(row.account_key, row.day_bucket, -1, 0);
-      this.changeDaily(GLOBAL_SCOPE, row.day_bucket, -1, 0);
+      this.changeDaily(scopes.account, row.day_bucket, -1, 0);
+      this.changeDaily(scopes.global, row.day_bucket, -1, 0);
       this.changeCost(row.month_bucket, 0, -totalReserve);
     } else {
       this.changeCost(row.month_bucket, totalReserve, -totalReserve);
@@ -412,7 +550,7 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
 
   private cleanup(now: number): void {
     const expired = this.rows<LeaseRow>(
-      `SELECT lease_id, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
+      `SELECT lease_id, channel, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
               initial_reserve_micros, retry_reserve_micros, invoked, expires_at
        FROM active_leases WHERE expires_at <= ? ORDER BY lease_id`,
       now,
@@ -427,24 +565,27 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
   }
 
   async status(input: StatusInput): Promise<CoordinatorStatus> {
+    const channel = aiChannel(input.channel);
     const account = accountKey(input.accountKey);
     const now = safeTimestamp(input.now);
     return this.ctx.storage.transactionSync(() => {
       this.cleanup(now);
       const day = dayBucket(now);
       const month = monthBucket(now);
-      const accountCounter = this.counter(account, day);
-      const globalCounter = this.counter(GLOBAL_SCOPE, day);
+      const scopes = channelScopes(channel, account);
+      const policy = GATEWAY_CHANNEL_POLICY[channel];
+      const accountCounter = this.counter(scopes.account, day);
+      const globalCounter = this.counter(scopes.global, day);
       const accountEnabled = this.rows<{ enabled: number }>(
         'SELECT enabled FROM account_flags WHERE account_key = ?',
         account,
       )[0]?.enabled === 1;
       const cost = this.cost(month);
       return {
-        enabled: this.setting('global_enabled') === 1,
+        enabled: this.setting(scopes.enabled) === 1,
         accountEnabled,
-        accountRemaining: Math.max(0, GATEWAY_LIMITS.accountDaily - accountCounter.pending - accountCounter.consumed),
-        globalRemaining: Math.max(0, GATEWAY_LIMITS.globalDaily - globalCounter.pending - globalCounter.consumed),
+        accountRemaining: Math.max(0, policy.accountDaily - accountCounter.pending - accountCounter.consumed),
+        globalRemaining: Math.max(0, policy.globalDaily - globalCounter.pending - globalCounter.consumed),
         accountConcurrent: this.activeCount(now, account),
         globalConcurrent: this.activeCount(now),
         budgetSpentMicros: cost.spent,
@@ -455,16 +596,20 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
   }
 
   async reserve(input: ReserveInput): Promise<ReserveResult> {
+    const channel = aiChannel(input.channel);
     const account = accountKey(input.accountKey);
-    const idem = idempotencyKey(input.idempotencyKey);
+    const rawIdempotencyKey = idempotencyKey(input.idempotencyKey);
+    const idem = storageIdempotencyKey(channel, rawIdempotencyKey);
     const requestFingerprint = fingerprint(input.fingerprint);
     const now = safeTimestamp(input.now);
     const reserveMicros = safeMicros(input.reserveMicros);
-    if (reserveMicros < GATEWAY_LIMITS.initialAttemptReserveMicros) return invalid();
+    const policy = GATEWAY_CHANNEL_POLICY[channel];
+    if (reserveMicros < policy.initialAttemptReserveMicros) return invalid();
 
     return this.ctx.storage.transactionSync(() => {
       this.cleanup(now);
-      const enabled = this.setting('global_enabled') === 1;
+      const scopes = channelScopes(channel, account);
+      const enabled = this.setting(scopes.enabled) === 1;
       const accountEnabled = this.rows<{ enabled: number }>(
         'SELECT enabled FROM account_flags WHERE account_key = ?',
         account,
@@ -506,8 +651,27 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
         }
         const active = existing.lease_id === null
           ? undefined
-          : this.rows<{ expires_at: number }>('SELECT expires_at FROM active_leases WHERE lease_id = ?', existing.lease_id)[0];
-        if ((existing.state === 'reserved' || existing.state === 'invoked') && active !== undefined) {
+          : this.rows<{
+              lease_id: string;
+              channel: string;
+              account_key: string;
+              idempotency_key: string;
+              fingerprint: string;
+              invoked: number;
+              expires_at: number;
+            }>(
+              `SELECT lease_id, channel, account_key, idempotency_key, fingerprint, invoked, expires_at
+               FROM active_leases WHERE lease_id = ?`,
+              existing.lease_id,
+            )[0];
+        const activeMatches = active !== undefined
+          && active.channel === channel
+          && active.account_key === account
+          && active.idempotency_key === idem
+          && active.fingerprint === requestFingerprint
+          && ((existing.state === 'reserved' && active.invoked === 0)
+            || (existing.state === 'invoked' && active.invoked === 1));
+        if ((existing.state === 'reserved' || existing.state === 'invoked') && activeMatches) {
           return { kind: 'in-flight', retryAfterMs: retryAfter(now, active.expires_at) };
         }
         return reserveRejection(
@@ -520,24 +684,24 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       const minute = minuteBucket(now);
       const attempts = this.rows<{ attempts: number }>(
         'SELECT attempts FROM minute_counters WHERE account_key = ? AND bucket = ?',
-        account,
+        scopes.minute,
         minute,
       )[0]?.attempts ?? 0;
-      if (attempts >= GATEWAY_LIMITS.accountPerMinute) {
+      if (attempts >= policy.accountPerMinute) {
         return reserveRejection('rate-limited', nextMinute(now));
       }
       this.exec(
         `INSERT INTO minute_counters (account_key, bucket, attempts) VALUES (?, ?, 1)
          ON CONFLICT(account_key, bucket) DO UPDATE SET attempts = minute_counters.attempts + 1`,
-        account,
+        scopes.minute,
         minute,
       );
 
       const day = dayBucket(now);
-      const accountCounter = this.counter(account, day);
-      const globalCounter = this.counter(GLOBAL_SCOPE, day);
-      if (accountCounter.pending + accountCounter.consumed >= GATEWAY_LIMITS.accountDaily
-        || globalCounter.pending + globalCounter.consumed >= GATEWAY_LIMITS.globalDaily) {
+      const accountCounter = this.counter(scopes.account, day);
+      const globalCounter = this.counter(scopes.global, day);
+      if (accountCounter.pending + accountCounter.consumed >= policy.accountDaily
+        || globalCounter.pending + globalCounter.consumed >= policy.globalDaily) {
         return reserveRejection('quota-exceeded', null, nextDay(now));
       }
       if (this.activeCount(now, account) >= GATEWAY_LIMITS.accountConcurrent) {
@@ -566,15 +730,16 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       const newLeaseId = crypto.randomUUID();
       const leaseExpiresAt = now + GATEWAY_LIMITS.leaseMs;
       const idempotencyExpiresAt = now + GATEWAY_LIMITS.idempotencyMs;
-      this.changeDaily(account, day, 1, 0);
-      this.changeDaily(GLOBAL_SCOPE, day, 1, 0);
+      this.changeDaily(scopes.account, day, 1, 0);
+      this.changeDaily(scopes.global, day, 1, 0);
       this.changeCost(month, 0, reserveMicros);
       this.exec(
         `INSERT INTO active_leases (
-          lease_id, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
+          lease_id, channel, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
           initial_reserve_micros, retry_reserve_micros, invoked, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
         newLeaseId,
+        channel,
         account,
         idem,
         requestFingerprint,
@@ -604,8 +769,9 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       this.cleanup(value.now);
       const lease = this.getLease(value);
       if (lease.invoked === 1) return;
-      this.changeDaily(lease.account_key, lease.day_bucket, -1, 1);
-      this.changeDaily(GLOBAL_SCOPE, lease.day_bucket, -1, 1);
+      const scopes = channelScopes(aiChannel(lease.channel), accountKey(lease.account_key));
+      this.changeDaily(scopes.account, lease.day_bucket, -1, 1);
+      this.changeDaily(scopes.global, lease.day_bucket, -1, 1);
       this.exec('UPDATE active_leases SET invoked = 1 WHERE lease_id = ?', lease.lease_id);
       this.exec(
         `UPDATE idempotency SET state = 'invoked'
@@ -623,8 +789,9 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       this.cleanup(value.now);
       const lease = this.getLease(value);
       if (lease.invoked !== 1 || lease.retry_reserve_micros !== 0) return rejectedOperation();
-      this.changeDaily(lease.account_key, lease.day_bucket, 0, -1);
-      this.changeDaily(GLOBAL_SCOPE, lease.day_bucket, 0, -1);
+      const scopes = channelScopes(aiChannel(lease.channel), accountKey(lease.account_key));
+      this.changeDaily(scopes.account, lease.day_bucket, 0, -1);
+      this.changeDaily(scopes.global, lease.day_bucket, 0, -1);
       this.changeCost(lease.month_bucket, 0, -lease.initial_reserve_micros);
       this.exec('DELETE FROM active_leases WHERE lease_id = ?', lease.lease_id);
       this.exec(
@@ -645,13 +812,14 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       if (lease.invoked !== 1 || lease.retry_reserve_micros !== 0) return rejectedOperation();
       const cost = this.cost(lease.month_bucket);
       const budget = this.budgetLimit();
-      if (budget === null || cost.spent + cost.reserved + GATEWAY_LIMITS.retryAttemptReserveMicros > budget) {
+      const retryReserveMicros = GATEWAY_CHANNEL_POLICY[aiChannel(lease.channel)].retryAttemptReserveMicros;
+      if (budget === null || cost.spent + cost.reserved + retryReserveMicros > budget) {
         return rejectedOperation();
       }
-      this.changeCost(lease.month_bucket, 0, GATEWAY_LIMITS.retryAttemptReserveMicros);
+      this.changeCost(lease.month_bucket, 0, retryReserveMicros);
       this.exec(
         'UPDATE active_leases SET retry_reserve_micros = ? WHERE lease_id = ?',
-        GATEWAY_LIMITS.retryAttemptReserveMicros,
+        retryReserveMicros,
         lease.lease_id,
       );
     });
@@ -663,8 +831,9 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       this.cleanup(value.now);
       const lease = this.getLease(value);
       if (lease.invoked !== 0 || lease.retry_reserve_micros !== 0) return rejectedOperation();
-      this.changeDaily(lease.account_key, lease.day_bucket, -1, 0);
-      this.changeDaily(GLOBAL_SCOPE, lease.day_bucket, -1, 0);
+      const scopes = channelScopes(aiChannel(lease.channel), accountKey(lease.account_key));
+      this.changeDaily(scopes.account, lease.day_bucket, -1, 0);
+      this.changeDaily(scopes.global, lease.day_bucket, -1, 0);
       this.changeCost(lease.month_bucket, 0, -lease.initial_reserve_micros);
       this.exec('DELETE FROM active_leases WHERE lease_id = ?', lease.lease_id);
       this.exec(
@@ -731,6 +900,11 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
     this.ctx.storage.transactionSync(() => this.setSetting('global_enabled', enabled ? 1 : 0));
   }
 
+  async setTextGlobalEnabled(enabled: boolean): Promise<void> {
+    if (typeof enabled !== 'boolean') return invalid();
+    this.ctx.storage.transactionSync(() => this.setSetting('text_global_enabled', enabled ? 1 : 0));
+  }
+
   async setAccountEnabled(account: string, enabled: boolean): Promise<void> {
     const normalized = accountKey(account);
     if (typeof enabled !== 'boolean') return invalid();
@@ -758,7 +932,7 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
     const normalized = accountKey(account);
     this.ctx.storage.transactionSync(() => {
       const leases = this.rows<LeaseRow>(
-        `SELECT lease_id, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
+        `SELECT lease_id, channel, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
                 initial_reserve_micros, retry_reserve_micros, invoked, expires_at
          FROM active_leases WHERE account_key = ? ORDER BY lease_id`,
         normalized,
@@ -766,7 +940,8 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       for (const lease of leases) {
         const totalReserve = lease.initial_reserve_micros + lease.retry_reserve_micros;
         if (lease.invoked === 0) {
-          this.changeDaily(GLOBAL_SCOPE, lease.day_bucket, -1, 0);
+          const scopes = channelScopes(aiChannel(lease.channel), normalized);
+          this.changeDaily(scopes.global, lease.day_bucket, -1, 0);
           this.changeCost(lease.month_bucket, 0, -totalReserve);
         } else {
           this.changeCost(lease.month_bucket, totalReserve, -totalReserve);
@@ -774,8 +949,8 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       }
       this.exec('DELETE FROM active_leases WHERE account_key = ?', normalized);
       this.exec('DELETE FROM idempotency WHERE account_key = ?', normalized);
-      this.exec('DELETE FROM minute_counters WHERE account_key = ?', normalized);
-      this.exec('DELETE FROM daily_counters WHERE scope = ?', normalized);
+      this.exec('DELETE FROM minute_counters WHERE account_key IN (?, ?)', normalized, `text:${normalized}`);
+      this.exec('DELETE FROM daily_counters WHERE scope IN (?, ?)', normalized, `text:${normalized}`);
       this.exec('DELETE FROM account_flags WHERE account_key = ?', normalized);
     });
   }
