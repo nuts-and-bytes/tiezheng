@@ -111,6 +111,11 @@ describe('arkCostMicros', () => {
 });
 
 describe('private gateway entrypoint', () => {
+  test('loads text gateway vars in their fixed default-closed state', () => {
+    expect((env as GatewayEnv).TEXT_AI_GATEWAY_ENABLED).toBe('false');
+    expect((env as GatewayEnv).TEXT_AI_MODEL).toBe('doubao-seed-2-1-pro-260628');
+  });
+
   test('serves the exact coordinator session through the private route', async () => {
     const stub = await enable();
     const gatewayEnv = {
@@ -139,6 +144,70 @@ describe('private gateway entrypoint', () => {
       globalRemaining: expected.globalRemaining,
       resetAt: expected.resetAt,
     });
+  });
+
+  test('serves the exact text session route through text configuration and status', async () => {
+    const stub = await enable();
+    await stub.setTextGlobalEnabled(true);
+    const gatewayEnv = {
+      ...env,
+      TEXT_AI_GATEWAY_ENABLED: 'true',
+      ARK_API_KEY: 'test-ark-key',
+      PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    } as GatewayEnv;
+
+    const response = await worker.fetch(
+      new Request('https://photo-ai-gateway.internal/text/session', {
+        headers: { 'x-tiezheng-account-key': ACCOUNT_A },
+      }),
+      gatewayEnv,
+    );
+    const expected = await stub.status({ channel: 'text', accountKey: ACCOUNT_A, now: Date.now() });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      enabled: true,
+      accountRemaining: expected.accountRemaining,
+      globalRemaining: expected.globalRemaining,
+      resetAt: expected.resetAt,
+    });
+  });
+
+  test('routes only the exact text estimate method, path and empty query', async () => {
+    const gatewayEnv = {
+      ...env,
+      TEXT_AI_GATEWAY_ENABLED: 'true',
+      ARK_API_KEY: 'test-ark-key',
+      PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    } as GatewayEnv;
+    const exact = await worker.fetch(new Request(
+      'https://photo-ai-gateway.internal/text/estimate',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'text/plain',
+          'x-tiezheng-account-key': ACCOUNT_A,
+        },
+        body: '{}',
+      },
+    ), gatewayEnv);
+    expect(exact.status).toBe(502);
+    expect(await exact.json()).toMatchObject({ ok: false, code: 'invalid-estimate' });
+
+    for (const [method, url] of [
+      ['GET', 'https://photo-ai-gateway.internal/text/estimate'],
+      ['POST', 'https://photo-ai-gateway.internal/text/estimate?x=1'],
+      ['POST', 'https://photo-ai-gateway.internal/text/session'],
+      ['GET', 'https://photo-ai-gateway.internal/text/session?resume=1'],
+    ] as const) {
+      const response = await worker.fetch(new Request(url, {
+        method,
+        body: method === 'POST' ? '{}' : undefined,
+      }), gatewayEnv);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ ok: false, code: 'service-disabled' });
+    }
   });
 
   test('rejects an incomplete estimate configuration before touching the coordinator', async () => {
@@ -199,6 +268,52 @@ describe('PhotoAiCoordinator', () => {
     expect(text.accountConcurrent).toBe(1);
     expect(text.globalConcurrent).toBe(1);
     expect(text.budgetReservedMicros).toBe(2_000_000);
+  });
+
+  test('charges photo and text daily quota independently while accumulating both actual costs in one monthly budget', async () => {
+    const stub = coordinator();
+    await stub.setGlobalEnabled(true);
+    await stub.setTextGlobalEnabled(true);
+    await stub.setAccountEnabled(ACCOUNT_A, true);
+
+    const photoInput = channelReserveInput('photo', ACCOUNT_A, 21);
+    const photoResult = await stub.reserve(photoInput);
+    expect(photoResult.kind).toBe('reserved');
+    if (photoResult.kind !== 'reserved') throw new Error('expected photo lease');
+    const photoLease = leaseInput(photoInput, photoResult.leaseId);
+    await stub.markInvoked(photoLease);
+    await stub.settleFailure({
+      ...photoLease,
+      actualCostMicros: 123_456,
+      errorCode: 'invalid-estimate',
+    });
+
+    const textInput = channelReserveInput('text', ACCOUNT_A, 22);
+    const textResult = await stub.reserve(textInput);
+    expect(textResult.kind).toBe('reserved');
+    if (textResult.kind !== 'reserved') throw new Error('expected text lease');
+    const textLease = leaseInput(textInput, textResult.leaseId);
+    await stub.markInvoked(textLease);
+    await stub.settleFailure({
+      ...textLease,
+      actualCostMicros: 321_000,
+      errorCode: 'uncertain-food',
+    });
+
+    const photo = await stub.status({ channel: 'photo', accountKey: ACCOUNT_A, now: BASE_NOW });
+    const text = await stub.status({ channel: 'text', accountKey: ACCOUNT_A, now: BASE_NOW });
+    expect(photo).toMatchObject({
+      accountRemaining: 9,
+      globalRemaining: 29,
+      budgetSpentMicros: 444_456,
+      budgetReservedMicros: 0,
+    });
+    expect(text).toMatchObject({
+      accountRemaining: 9,
+      globalRemaining: 29,
+      budgetSpentMicros: 444_456,
+      budgetReservedMicros: 0,
+    });
   });
 
   test('starts text closed separately and enables it without changing the photo global gate', async () => {

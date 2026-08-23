@@ -7,6 +7,11 @@ import {
   handlePhotoAiRequest,
   isPhotoAiGatewayConfigured,
 } from './handler';
+import {
+  TEXT_GATEWAY_RUNTIME,
+  handleTextAiRequest,
+  handleTextSessionRequest,
+} from './textHandler';
 import type { PhotoAiSessionSuccess } from '../../../src/lib/photoAiContract';
 
 export { PhotoAiCoordinator };
@@ -64,6 +69,12 @@ async function handleSessionRequest(request: Request, env: GatewayEnv): Promise<
 export default {
   fetch(request: Request, env: GatewayEnv): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === 'GET' && url.pathname === '/text/session' && url.search === '') {
+      return handleTextSessionRequest(request, env);
+    }
+    if (request.method === 'POST' && url.pathname === '/text/estimate' && url.search === '') {
+      return handleTextAiRequest(request, env, TEXT_GATEWAY_RUNTIME);
+    }
     if (request.method === 'GET' && url.pathname === '/session' && url.search === '') {
       return handleSessionRequest(request, env);
     }
