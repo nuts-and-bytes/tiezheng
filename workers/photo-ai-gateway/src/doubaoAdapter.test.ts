@@ -72,6 +72,16 @@ function providerPayload(outputText = JSON.stringify({ candidates: [rawCandidate
   };
 }
 
+function officialUsage(): Record<string, unknown> {
+  return {
+    input_tokens: 100,
+    input_tokens_details: { cached_tokens: 25 },
+    output_tokens: 40,
+    output_tokens_details: { reasoning_tokens: 10 },
+    total_tokens: 140,
+  };
+}
+
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -100,6 +110,7 @@ describe('createDoubaoAdapter', () => {
       'https://ark.cn-beijing.volces.com/api/v3/responses',
       expect.objectContaining({
         method: 'POST',
+        redirect: 'error',
         headers: {
           authorization: 'Bearer test-api-key',
           'content-type': 'application/json',
@@ -200,6 +211,19 @@ describe('createDoubaoAdapter', () => {
     expect(serialized).toContain('不推断身份');
     expect(serialized).toContain('不推断医疗');
     expect(serialized).toContain('none');
+  });
+
+  test('accepts the exact official Ark usage shape without changing the photo usage ABI', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => jsonResponse(providerPayload(
+      JSON.stringify({ candidates: [noneCandidate()] }),
+      officialUsage(),
+    )));
+    await expect(createDoubaoAdapter('key', fetcher).estimate(
+      image,
+      new AbortController().signal,
+    )).resolves.toMatchObject({
+      usage: { inputTokens: 100, outputTokens: 40 },
+    });
   });
 
   test('performs exactly one provider attempt and snapshots image bytes before fetch', async () => {
@@ -316,9 +340,54 @@ describe('createDoubaoAdapter', () => {
     }
   });
 
+  test('maps a locked provider body acquisition failure to unavailable without leaking details', async () => {
+    const response = jsonResponse(providerPayload());
+    const lock = response.body?.getReader();
+    if (lock === undefined) throw new Error('expected response body');
+    const fetcher = vi.fn<typeof fetch>(async () => response);
+    const promise = createDoubaoAdapter('secret-api-key', fetcher).estimate(
+      image,
+      new AbortController().signal,
+    );
+    try {
+      await expect(promise).rejects.toMatchObject({
+        code: 'provider-unavailable',
+        retryable: false,
+        message: 'Photo model request failed',
+      });
+      await expect(promise).rejects.not.toThrow('locked');
+      await expect(promise).rejects.not.toThrow('secret-api-key');
+    } finally {
+      lock.releaseLock();
+    }
+  });
+
+  test('maps an asynchronous provider body read rejection to unavailable without leaking details', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error('secret-photo-body-read'));
+      },
+    });
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(stream, {
+      headers: { 'content-type': 'application/json' },
+    }));
+    const promise = createDoubaoAdapter('secret-api-key', fetcher).estimate(
+      image,
+      new AbortController().signal,
+    );
+    await expect(promise).rejects.toMatchObject({
+      code: 'provider-unavailable',
+      retryable: false,
+      message: 'Photo model request failed',
+    });
+    await expect(promise).rejects.not.toThrow('secret-photo-body-read');
+    await expect(promise).rejects.not.toThrow('secret-api-key');
+  });
+
   test.each([
     ['non-JSON response', new Response('not json', { headers: { 'content-type': 'application/json' } })],
     ['HTML response', new Response('<html>login</html>', { headers: { 'content-type': 'text/html' } })],
+    ['invalid UTF-8 response', new Response(Uint8Array.of(0xff), { headers: { 'content-type': 'application/json' } })],
     ['invalid local schema', jsonResponse(providerPayload('{"candidates":[{"id":"attacker"}]}'))],
     ['incomplete response', jsonResponse({ ...providerPayload(), status: 'incomplete' })],
     ['incomplete message', jsonResponse({
@@ -336,6 +405,14 @@ describe('createDoubaoAdapter', () => {
       { type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ candidates: [noneCandidate()] }) }] },
     ] })],
     ['invalid usage', jsonResponse(providerPayload(JSON.stringify({ candidates: [noneCandidate()] }), { input_tokens: -1, output_tokens: 1 }))],
+    ['negative-zero usage', new Response(
+      JSON.stringify(providerPayload(
+        JSON.stringify({ candidates: [noneCandidate()] }),
+        { input_tokens: 0, output_tokens: 1 },
+      )).replace('"input_tokens":0', '"input_tokens":-0'),
+      { headers: { 'content-type': 'application/json' } },
+    )],
+    ['extra usage field', jsonResponse(providerPayload(JSON.stringify({ candidates: [noneCandidate()] }), { input_tokens: 1, output_tokens: 1, total_tokens: 2 }))],
   ])('rejects %s without retry or provider details', async (_label, response) => {
     const fetcher = vi.fn<typeof fetch>(async () => response);
     const promise = createDoubaoAdapter('key', fetcher).estimate(image, new AbortController().signal);
@@ -348,16 +425,29 @@ describe('createDoubaoAdapter', () => {
   });
 
   test('rejects an oversized provider body before parsing it', async () => {
-    const fetcher = vi.fn<typeof fetch>(async () => new Response('x'.repeat(256_001), {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(256_001));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = new Response(stream, {
       headers: { 'content-type': 'application/json' },
-    }));
+    });
+    const fetcher = vi.fn<typeof fetch>(async () => response);
     await expect(createDoubaoAdapter('key', fetcher).estimate(image, new AbortController().signal))
       .rejects.toMatchObject({ code: 'invalid-estimate', retryable: false });
+    expect(cancelled).toBe(true);
+    expect(response.body?.locked).toBe(false);
   });
 
   test('fails closed before fetch for a blank API key or malformed sanitized image', async () => {
     const fetcher = vi.fn<typeof fetch>();
     expect(() => createDoubaoAdapter(' ', fetcher)).toThrow('Invalid photo model configuration');
+    expect(() => createDoubaoAdapter('key\r\nX-Evil: yes', fetcher)).toThrow('Invalid photo model configuration');
     await expect(createDoubaoAdapter('key', fetcher).estimate(
       { ...image, mime: 'image/jpeg' as 'image/webp' },
       new AbortController().signal,

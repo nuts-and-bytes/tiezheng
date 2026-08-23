@@ -9,6 +9,10 @@ export default defineWorkersConfig({
       'edge/text-ai/pagesProxy.test.ts',
       'edge/photo-ai/pagesProxy.test.ts',
       'edge/photo-ai/pagesRoutes.test.ts',
+      'workers/photo-ai-gateway/src/doubaoTextSchema.test.ts',
+      'workers/photo-ai-gateway/src/doubaoResponse.test.ts',
+      'workers/photo-ai-gateway/src/doubaoTextAdapter.test.ts',
+      'workers/photo-ai-gateway/src/doubaoAdapter.test.ts',
     ],
     poolOptions: {
       workers: {

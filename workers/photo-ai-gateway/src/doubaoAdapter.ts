@@ -8,16 +8,19 @@ import {
   DOUBAO_ESTIMATE_JSON_SCHEMA,
   validateDoubaoEstimate,
 } from './doubaoSchema';
+import {
+  ProviderResponseError,
+  parseResponsesOutput,
+  readBoundedProviderText,
+  type ModelUsage,
+} from './doubaoResponse';
+
+export type { ModelUsage } from './doubaoResponse';
 
 const ENDPOINT = 'https://ark.cn-beijing.volces.com/api/v3/responses';
 const PROVIDER_TIMEOUT_MS = 12_000;
 const MAX_PROVIDER_BYTES = 256_000;
 const ERROR_MESSAGE = 'Photo model request failed';
-
-export interface ModelUsage {
-  inputTokens: number;
-  outputTokens: number;
-}
 
 export interface PhotoModelAdapter {
   estimate(image: SanitizedImage, signal: AbortSignal): Promise<{
@@ -133,82 +136,6 @@ function requestBody(image: SanitizedImage): Record<string, unknown> {
   };
 }
 
-async function boundedText(response: Response): Promise<string> {
-  if (response.body === null) return fail('invalid-estimate');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  try {
-    while (true) {
-      const result = await reader.read();
-      if (result.done) break;
-      const remaining = MAX_PROVIDER_BYTES - length;
-      if (result.value.byteLength > remaining) {
-        void reader.cancel().catch(() => undefined);
-        return fail('invalid-estimate');
-      }
-      const copy = result.value.slice();
-      chunks.push(copy);
-      length += copy.byteLength;
-    }
-  } catch (error) {
-    if (error instanceof PhotoModelAdapterError) throw error;
-    return fail('provider-unavailable');
-  } finally {
-    try { reader.releaseLock(); } catch { /* no provider detail escapes */ }
-  }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return fail('invalid-estimate');
-  }
-}
-
-function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return fail('invalid-estimate');
-  return value as Record<string, unknown>;
-}
-
-function denseArray(value: unknown, maximum: number): unknown[] {
-  if (!Array.isArray(value) || value.length > maximum) return fail('invalid-estimate');
-  const result: unknown[] = [];
-  for (let index = 0; index < value.length; index += 1) {
-    if (!Object.prototype.hasOwnProperty.call(value, index)) return fail('invalid-estimate');
-    result.push(value[index]);
-  }
-  return result;
-}
-
-function outputText(envelope: unknown): { text: string; usage: ModelUsage | null } {
-  const root = record(envelope);
-  if (root.status !== 'completed') return fail('invalid-estimate');
-  const output = denseArray(root.output, 8);
-  if (output.length !== 1) return fail('invalid-estimate');
-  const message = record(output[0]);
-  if (message.type !== 'message' || message.status !== 'completed') return fail('invalid-estimate');
-  const content = denseArray(message.content, 8);
-  if (content.length !== 1) return fail('invalid-estimate');
-  const item = record(content[0]);
-  if (item.type !== 'output_text' || typeof item.text !== 'string' || item.text.length > 100_000) return fail('invalid-estimate');
-  if (root.usage === undefined || root.usage === null) return { text: item.text, usage: null };
-  const usage = record(root.usage);
-  if (!Number.isSafeInteger(usage.input_tokens) || (usage.input_tokens as number) < 0
-    || !Number.isSafeInteger(usage.output_tokens) || (usage.output_tokens as number) < 0) return fail('invalid-estimate');
-  return {
-    text: item.text,
-    usage: {
-      inputTokens: usage.input_tokens as number,
-      outputTokens: usage.output_tokens as number,
-    },
-  };
-}
-
 function retryableStatus(status: number): boolean {
   return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 }
@@ -239,6 +166,7 @@ export function createDoubaoAdapter(
       try {
         const response = await fetcher(ENDPOINT, {
           method: 'POST',
+          redirect: 'error',
           headers: {
             authorization,
             'content-type': 'application/json',
@@ -246,12 +174,26 @@ export function createDoubaoAdapter(
           body: JSON.stringify(requestBody(image)),
           signal: controller.signal,
         });
-        if (!response.ok) return fail('provider-unavailable', retryableStatus(response.status));
-        if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '')) return fail('invalid-estimate');
-        const serialized = await boundedText(response);
+        let serialized: string;
+        try {
+          serialized = await readBoundedProviderText(response, MAX_PROVIDER_BYTES);
+        } catch (error) {
+          if (abortReason !== null || controller.signal.aborted) throw error;
+          if (error instanceof ProviderResponseError) {
+            if (error.kind === 'http-status') {
+              return fail(
+                'provider-unavailable',
+                error.status === null ? false : retryableStatus(error.status),
+              );
+            }
+            if (error.kind === 'read-failed') return fail('provider-unavailable');
+            return fail('invalid-estimate');
+          }
+          return fail('provider-unavailable');
+        }
         try {
           const envelope = JSON.parse(serialized) as unknown;
-          const extracted = outputText(envelope);
+          const extracted = parseResponsesOutput(envelope);
           return {
             raw: validateDoubaoEstimate(extracted.text),
             usage: extracted.usage,
