@@ -104,6 +104,27 @@ function headerRecord(init?: HeadersInit): Record<string, string> {
   return result;
 }
 
+function expectJoseJwksRequest(
+  input: { url: string; headers: Record<string, string> },
+): void {
+  expect(input.url).toBe(`${ISSUER}/cdn-cgi/access/certs`);
+  expect(input.headers.accept).toBe('application/json, application/jwk-set+json');
+  expect(Object.keys(input.headers).filter((name) => name !== 'user-agent')).toEqual(['accept']);
+  const userAgent = input.headers['user-agent'];
+  if (userAgent !== undefined) expect(userAgent).toMatch(/^jose\/v\d+(?:\.\d+){2}(?:[-+][0-9A-Za-z.-]+)?$/);
+  for (const name of [
+    'authorization',
+    'cookie',
+    'cf-access-jwt-assertion',
+    'cf-access-client-id',
+    'cf-access-client-secret',
+    'origin',
+    'sec-fetch-site',
+  ]) {
+    expect(input.headers).not.toHaveProperty(name);
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -114,6 +135,9 @@ describe('photo AI Pages routes', () => {
     const accessToken = token();
     const forbidden = [
       accessToken,
+      'private-authorization',
+      'private-cookie',
+      'private-caller-agent',
       'user-123',
       'alice@example.com',
       '203.0.113.7',
@@ -156,6 +180,9 @@ describe('photo AI Pages routes', () => {
     const request = new Request(`${ORIGIN}/api/nutrition/photo/session`, {
       headers: {
         ...sameOriginHeaders(accessToken),
+        authorization: 'private-authorization',
+        cookie: 'private-cookie',
+        'user-agent': 'private-caller-agent',
         'cf-connecting-ip': '203.0.113.7',
         'x-food-name': 'private-food-name',
         'x-preparation': 'private-preparation',
@@ -184,16 +211,12 @@ describe('photo AI Pages routes', () => {
       retryAt: null,
       resetAt: null,
     });
-    expect(networkInputs).toEqual([
-      {
-        url: `${ISSUER}/cdn-cgi/access/certs`,
-        headers: { accept: 'application/json, application/jwk-set+json' },
-      },
-      {
-        url: 'https://photo-ai-gateway.internal/session',
-        headers: { 'x-tiezheng-account-key': '8870f376de268ea42aabb3bae207e1696f98f0952560e9fc087579dc59dcbd97' },
-      },
-    ]);
+    expect(networkInputs).toHaveLength(2);
+    expectJoseJwksRequest(networkInputs[0]!);
+    expect(networkInputs[1]).toEqual({
+      url: 'https://photo-ai-gateway.internal/session',
+      headers: { 'x-tiezheng-account-key': '8870f376de268ea42aabb3bae207e1696f98f0952560e9fc087579dc59dcbd97' },
+    });
     for (const value of forbidden) expect(audit).not.toContain(value);
     expect(consoleLog).not.toHaveBeenCalled();
     expect(consoleError).not.toHaveBeenCalled();
@@ -217,6 +240,9 @@ describe('photo AI Pages routes', () => {
     const forbidden = [
       ...uploadSecrets,
       accessToken,
+      'private-authorization',
+      'private-cookie',
+      'private-caller-agent',
       'user-123',
       'alice@example.com',
       '203.0.113.7',
@@ -254,6 +280,9 @@ describe('photo AI Pages routes', () => {
       method: 'POST',
       headers: {
         ...sameOriginHeaders(accessToken),
+        authorization: 'private-authorization',
+        cookie: 'private-cookie',
+        'user-agent': 'private-caller-agent',
         'cf-connecting-ip': '203.0.113.7',
         'content-length': String(uploadBytes.byteLength),
         'content-type': 'multipart/form-data; boundary=audit',
@@ -278,10 +307,8 @@ describe('photo AI Pages routes', () => {
       retryAt: null,
       resetAt: null,
     });
-    expect(externalInputs).toEqual([{
-      url: `${ISSUER}/cdn-cgi/access/certs`,
-      headers: { accept: 'application/json, application/jwk-set+json' },
-    }]);
+    expect(externalInputs).toHaveLength(1);
+    expectJoseJwksRequest(externalInputs[0]!);
     expect(privateInputs).toEqual([{
       url: 'https://photo-ai-gateway.internal/estimate',
       headers: {
@@ -443,15 +470,26 @@ describe('photo AI Pages routes', () => {
     expectSecure(response);
   });
 
-  test('routes only the photo API families through Pages Functions', () => {
+  test('routes only the approved nutrition AI API families through Pages Functions', () => {
     expect(routes).toEqual({
       version: 1,
       include: [
         '/api/nutrition/photo/*',
         '/api/nutrition/photo-admin/*',
+        '/api/nutrition/text/*',
       ],
       exclude: [],
     });
     expect(routes.include).not.toContain('/*');
+  });
+
+  test.each([
+    '/api/nutrition/text/session',
+    '/api/nutrition/text/estimate',
+    '/api/nutrition/text/logout',
+  ])('makes the deployed text Function reachable: %s', (path) => {
+    expect(routes.include.some((pattern) => (
+      pattern.endsWith('*') && path.startsWith(pattern.slice(0, -1))
+    ))).toBe(true);
   });
 });

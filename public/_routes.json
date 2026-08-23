@@ -2,7 +2,8 @@
   "version": 1,
   "include": [
     "/api/nutrition/photo/*",
-    "/api/nutrition/photo-admin/*"
+    "/api/nutrition/photo-admin/*",
+    "/api/nutrition/text/*"
   ],
   "exclude": []
 }

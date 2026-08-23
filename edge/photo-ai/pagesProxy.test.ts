@@ -108,13 +108,13 @@ describe('photo AI Pages service proxy', () => {
     expectSecure(response);
   });
 
-  test('forwards an estimate body stream once with only the account and required content headers', async () => {
+  test('copies an estimate body once and derives Content-Length from actual bytes', async () => {
     const source = new Request('https://app.example.test/api/nutrition/photo/estimate?return=https://evil.test', {
       method: 'POST',
       headers: {
         authorization: 'private-jwt',
         'cf-access-jwt-assertion': 'private-access-token',
-        'content-length': '3',
+        'content-length': '1',
         'content-type': 'multipart/form-data; boundary=a',
         origin: 'https://app.example.test',
         'sec-fetch-site': 'same-origin',
@@ -125,7 +125,8 @@ describe('photo AI Pages service proxy', () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe('https://photo-ai-gateway.internal/estimate');
       expect(init?.method).toBe('POST');
-      expect(init?.body).toBe(source.body);
+      expect(init?.body).toBeInstanceOf(Uint8Array);
+      expect(init?.body).not.toBe(source.body);
       expect(headerRecord(init?.headers)).toEqual({
         'content-length': '3',
         'content-type': 'multipart/form-data; boundary=a',
@@ -141,6 +142,64 @@ describe('photo AI Pages service proxy', () => {
     expect(source.bodyUsed).toBe(true);
     expect(response.status).toBe(200);
     expect(await responseBody(response)).toEqual(photoAiEstimateSuccessFixture);
+    expectSecure(response);
+  });
+
+  test('rejects text JSON on the photo estimate wrapper without calling the service', async () => {
+    const fetcher = vi.fn();
+    const response = await proxyPhotoAiRequest(
+      new Request('https://app.example.test/api/nutrition/photo/estimate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{"private":"meal"}',
+      }),
+      env(fetcher),
+      ACCOUNT_KEY,
+      'estimate',
+    );
+
+    const serialized = await response.text();
+    expect(response.status).toBe(503);
+    expect(JSON.parse(serialized)).toEqual({
+      ok: false,
+      code: 'provider-unavailable',
+      retryAt: null,
+      resetAt: null,
+    });
+    expect(serialized).not.toContain('private');
+    expect(fetcher).not.toHaveBeenCalled();
+    expectSecure(response);
+  });
+
+  test.each([
+    'Multipart/Form-Data; Boundary=a',
+    'MULTIPART/FORM-DATA; BOUNDARY="safe-boundary"',
+  ])('preserves MIME-insensitive multipart syntax accepted by the photo firewall: %s', async (
+    contentType,
+  ) => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(headerRecord(init?.headers)).toEqual({
+        'content-length': '3',
+        'content-type': contentType,
+        'x-tiezheng-account-key': ACCOUNT_KEY,
+      });
+      expect(await new Response(init?.body).text()).toBe('abc');
+      return json(photoAiEstimateSuccessFixture);
+    });
+    const response = await proxyPhotoAiRequest(
+      new Request('https://app.example.test/api/nutrition/photo/estimate', {
+        method: 'POST',
+        headers: { 'content-type': contentType },
+        body: 'abc',
+      }),
+      env(fetcher),
+      ACCOUNT_KEY,
+      'estimate',
+    );
+
+    expect(response.status).toBe(200);
+    expect(await responseBody(response)).toEqual(photoAiEstimateSuccessFixture);
+    expect(fetcher).toHaveBeenCalledTimes(1);
     expectSecure(response);
   });
 
@@ -218,22 +277,9 @@ describe('photo AI Pages service proxy', () => {
   });
 
   test('handles a rejected cancellation when a downstream JSON stream exceeds the limit', async () => {
-    const cancellation = {
-      catch: vi.fn((onRejected: (reason: unknown) => unknown) => {
-        onRejected(new Error('private cancellation detail'));
-        return Promise.resolve();
-      }),
-      then: vi.fn((
-        _onFulfilled: ((value: void) => unknown) | null | undefined,
-        onRejected: ((reason: unknown) => unknown) | null | undefined,
-      ) => {
-        onRejected?.(new Error('private cancellation detail'));
-        return Promise.resolve();
-      }),
-    } as unknown as Promise<void>;
     const cancel = vi
       .spyOn(ReadableStreamDefaultReader.prototype, 'cancel')
-      .mockReturnValue(cancellation);
+      .mockReturnValue(Promise.reject(new Error('private cancellation detail')));
     const oversized = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new Uint8Array(256_001));
@@ -258,7 +304,6 @@ describe('photo AI Pages service proxy', () => {
       resetAt: null,
     });
     expect(cancel).toHaveBeenCalledTimes(1);
-    expect(cancellation.catch).toHaveBeenCalledTimes(1);
     expectSecure(response);
   });
 });
