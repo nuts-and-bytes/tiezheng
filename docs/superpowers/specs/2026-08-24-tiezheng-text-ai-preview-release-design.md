@@ -61,12 +61,10 @@
 - `PHOTO_AI_ACCOUNT_HMAC_KEY`（沿用共享账号键字段名）
 - `TEXT_AI_USER_1_EMAIL`
 - `TEXT_AI_USER_2_EMAIL`
-- `TEXT_AI_ADMIN_ACCESS_AUD`
-- `TEXT_AI_USER_ACCESS_AUD`
 - `TEXT_AI_CF_ACCESS_CLIENT_ID`
 - `TEXT_AI_CF_ACCESS_CLIENT_SECRET`
 
-Cloudflare team domain 和账号 ID 可以使用 GitHub Environment variables；仓库已有的 `CLOUDFLARE_API_TOKEN` 继续只作为 GitHub Secret 使用。工作流不得读取或打印任何 Secret 的值，只能输出“存在/缺失”和经过白名单过滤的资源状态。
+Access audience 由 Cloudflare 创建 Application 时生成，工作流在内存中读取并直接写入 Pages Preview 的加密环境变量，不作为人工维护的 GitHub Secret。Cloudflare team domain 和账号 ID 可以使用 GitHub Environment variables；仓库已有的 `CLOUDFLARE_API_TOKEN` 继续只作为 GitHub Secret 使用。工作流不得读取或打印任何 Secret 的值，只能输出“存在/缺失”和经过白名单过滤的资源状态。
 
 ## 5. 组件设计
 
