@@ -1,6 +1,17 @@
 import { createSign, generateKeyPairSync } from 'node:crypto';
 import { describe, expect, expectTypeOf, test } from 'vitest';
-import { AccessDeniedError, parseAccessConfig, verifyAccess, type AccessConfig, type AccessEnv } from './access';
+import {
+  AccessDeniedError,
+  deriveAccountKey,
+  parseAccessConfig,
+  parseAccessConfigFields,
+  verifyAccess,
+  verifyAccessPrincipal,
+  type AccessConfig,
+  type AccessConfigFields,
+  type AccessEnv,
+  type VerifiedAccessPrincipal,
+} from './access';
 
 const issuer = 'https://team-alpha.cloudflareaccess.com';
 const audience = 'photo-ai-audience';
@@ -49,6 +60,16 @@ function request(token?: string) {
   });
 }
 
+function joseUsesIoContextSafeRemoteJwksReload(): boolean {
+  const edgeGlobals = globalThis as typeof globalThis & {
+    EdgeRuntime?: unknown;
+    WebSocketPair?: unknown;
+  };
+  return (typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers')
+    || typeof edgeGlobals.WebSocketPair !== 'undefined'
+    || edgeGlobals.EdgeRuntime === 'vercel';
+}
+
 describe('parseAccessConfig', () => {
   test('accepts exactly three distinct lowercase emails and a safe team slug', () => {
     const config = parseAccessConfig(baseEnv);
@@ -62,8 +83,14 @@ describe('parseAccessConfig', () => {
     }>();
   });
 
+  test('keeps photo access fixed to exactly three allowlisted emails', () => {
+    expect(() => parseAccessConfig({
+      ...baseEnv,
+      PHOTO_AI_ALLOWED_EMAILS: 'alice@example.com,bob@example.com',
+    })).toThrow('Access denied');
+  });
+
   test.each([
-    [{ ...baseEnv, PHOTO_AI_ALLOWED_EMAILS: 'alice@example.com,bob@example.com' }],
     [{ ...baseEnv, PHOTO_AI_ALLOWED_EMAILS: 'alice@example.com,bob@example.com,alice@example.com' }],
     [{ ...baseEnv, PHOTO_AI_ALLOWED_EMAILS: 'Alice@example.com,bob@example.com,carol@example.com' }],
     [{ ...baseEnv, PHOTO_AI_ALLOWED_EMAILS: 'alice@example.com,bob@example,carol@example.com' }],
@@ -79,6 +106,98 @@ describe('parseAccessConfig', () => {
   });
 });
 
+describe('parseAccessConfigFields', () => {
+  test.each([
+    [1, 'alice@example.com'],
+    [2, 'alice@example.com,bob@example.com'],
+    [3, 'alice@example.com,bob@example.com,carol@example.com'],
+  ] as const)('accepts exactly %i distinct normalized email(s)', (expectedEmailCount, allowedEmails) => {
+    const config = parseAccessConfigFields({
+      teamDomain: baseEnv.PHOTO_AI_TEAM_DOMAIN,
+      audience,
+      allowedEmails,
+      expectedEmailCount,
+      accountHmacSecret: baseEnv.PHOTO_AI_ACCOUNT_HMAC_KEY,
+    });
+
+    expect([...config.allowedEmails]).toEqual(allowedEmails.split(','));
+  });
+
+  test.each([
+    [1, 'alice@example.com,bob@example.com'],
+    [2, 'alice@example.com'],
+    [3, 'alice@example.com,bob@example.com'],
+  ] as const)('rejects a list whose size does not match expected count %i', (expectedEmailCount, allowedEmails) => {
+    expect(() => parseAccessConfigFields({
+      teamDomain: baseEnv.PHOTO_AI_TEAM_DOMAIN,
+      audience,
+      allowedEmails,
+      expectedEmailCount,
+      accountHmacSecret: baseEnv.PHOTO_AI_ACCOUNT_HMAC_KEY,
+    })).toThrow('Access denied');
+  });
+
+  test('keeps the photo environment wrapper equivalent to the shared three-email parser', () => {
+    const fields: AccessConfigFields = {
+      teamDomain: baseEnv.PHOTO_AI_TEAM_DOMAIN,
+      audience: baseEnv.PHOTO_AI_ACCESS_AUD,
+      allowedEmails: baseEnv.PHOTO_AI_ALLOWED_EMAILS,
+      expectedEmailCount: 3,
+      accountHmacSecret: baseEnv.PHOTO_AI_ACCOUNT_HMAC_KEY,
+    };
+
+    expect(parseAccessConfig(baseEnv)).toEqual(parseAccessConfigFields(fields));
+  });
+});
+
+describe('deriveAccountKey', () => {
+  test('derives a deterministic lowercase 64-character HMAC-SHA256 hex key', async () => {
+    const first = await deriveAccountKey('alice@example.com', baseEnv.PHOTO_AI_ACCOUNT_HMAC_KEY);
+    const second = await deriveAccountKey('alice@example.com', baseEnv.PHOTO_AI_ACCOUNT_HMAC_KEY);
+
+    expect(first).toBe('841240d2a5b6654b3ae21fc4499db7b7867077cdd67c3e16cef1f9843e27d1fa');
+    expect(second).toBe(first);
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test.each([
+    'Alice@example.com',
+    ' alice@example.com',
+    'alice@example.com ',
+    'alice@example',
+  ])('fails closed for a non-normalized or invalid email: %s', async (email) => {
+    await expect(deriveAccountKey(email, baseEnv.PHOTO_AI_ACCOUNT_HMAC_KEY)).rejects.toThrow('Access denied');
+  });
+});
+
+describe('verifyAccessPrincipal', () => {
+  test('returns discriminated normalized user and official service principals', async () => {
+    const { fetcher, sign } = await fixture();
+    const config = parseAccessConfig(baseEnv);
+    const expiresAt = Math.floor(Date.now() / 1000) + 300;
+    const userToken = await sign({ sub: 'user-subject', email: 'Alice@Example.Com' }, { exp: expiresAt });
+    const serviceToken = await sign({ sub: '', common_name: 'text-preview-admin.access' }, { exp: expiresAt });
+
+    const user = await verifyAccessPrincipal(request(userToken), config, fetcher);
+    const service = await verifyAccessPrincipal(request(serviceToken), config, fetcher);
+
+    expect(user).toEqual({ kind: 'user', email: 'alice@example.com', expiresAt });
+    expect(service).toEqual({ kind: 'service', clientId: 'text-preview-admin.access', expiresAt });
+    expectTypeOf(user).toEqualTypeOf<VerifiedAccessPrincipal>();
+    expectTypeOf(service).toEqualTypeOf<VerifiedAccessPrincipal>();
+  });
+
+  test.each([
+    ['a non-empty sub', { sub: 'service-subject', common_name: 'text-preview-admin.access' }],
+    ['a missing sub', { common_name: 'text-preview-admin.access' }],
+  ])('rejects a service JWT with %s', async (_name, claims) => {
+    const { fetcher, sign } = await fixture();
+    const token = await sign(claims);
+
+    await expect(verifyAccessPrincipal(request(token), parseAccessConfig(baseEnv), fetcher)).rejects.toThrow('Access denied');
+  });
+});
+
 describe('verifyAccess', () => {
   test('returns only a stable HMAC account key and expiry for a permitted mixed-case email', async () => {
     const { fetcher, requestedUrls, sign } = await fixture();
@@ -86,10 +205,34 @@ describe('verifyAccess', () => {
     const token = await sign({ sub: 'user-123', email: 'Alice@Example.Com' }, { exp: expiresAt });
 
     await expect(verifyAccess(request(token), parseAccessConfig(baseEnv), fetcher)).resolves.toEqual({
-      accountKey: '8870f376de268ea42aabb3bae207e1696f98f0952560e9fc087579dc59dcbd97',
+      accountKey: '841240d2a5b6654b3ae21fc4499db7b7867077cdd67c3e16cef1f9843e27d1fa',
       expiresAt,
     });
     expect(requestedUrls).toEqual([`${issuer}/cdn-cgi/access/certs`]);
+  });
+
+  test('rejects a valid service principal at the photo user-only boundary', async () => {
+    const { fetcher, sign } = await fixture();
+    const serviceToken = await sign({ sub: '', common_name: 'photo-service.access' });
+
+    await expect(
+      verifyAccess(request(serviceToken), parseAccessConfig(baseEnv), fetcher),
+    ).rejects.toThrow('Access denied');
+  });
+
+  test('uses the normalized email rather than JWT sub as the stable account identity', async () => {
+    const { fetcher, sign } = await fixture();
+    const config = parseAccessConfig(baseEnv);
+    const mixedCase = await sign({ sub: 'first-subject', email: 'Alice@Example.Com' });
+    const lowercase = await sign({ sub: 'second-subject', email: 'alice@example.com' });
+
+    const [first, second] = await Promise.all([
+      verifyAccess(request(mixedCase), config, fetcher),
+      verifyAccess(request(lowercase), config, fetcher),
+    ]);
+
+    expect(first.accountKey).toBe(second.accountKey);
+    expect(first.accountKey).toMatch(/^[0-9a-f]{64}$/);
   });
 
   test.each([
@@ -125,7 +268,24 @@ describe('verifyAccess', () => {
     await expect(verifyAccess(request(await sign({ sub: 'user', email: 'mallory@example.com' })), parseAccessConfig(baseEnv), fetcher)).rejects.toThrow();
   });
 
-  test('reuses one remote JWKS fetch for sequential and concurrent valid tokens', async () => {
+  test('reuses exactly one completed remote JWKS fetch across sequential valid tokens', async () => {
+    const { fetcher, requestedUrls, sign } = await fixture();
+    const config = parseAccessConfig(baseEnv);
+    const [first, second, third] = await Promise.all([
+      sign({ sub: 'first', email: 'alice@example.com' }),
+      sign({ sub: 'second', email: 'alice@example.com' }),
+      sign({ sub: 'third', email: 'alice@example.com' }),
+    ]);
+
+    await verifyAccess(request(first), config, fetcher);
+    expect(requestedUrls).toEqual([`${issuer}/cdn-cgi/access/certs`]);
+
+    await verifyAccess(request(second), config, fetcher);
+    await verifyAccess(request(third), config, fetcher);
+    expect(requestedUrls).toEqual([`${issuer}/cdn-cgi/access/certs`]);
+  });
+
+  test('keeps cold concurrent JWKS fetches bounded by Cloudflare I/O-context safety and then stays warm', async () => {
     const { fetcher, requestedUrls, sign } = await fixture();
     const config = parseAccessConfig(baseEnv);
     const [first, second, third] = await Promise.all([
@@ -138,10 +298,16 @@ describe('verifyAccess', () => {
       verifyAccess(request(first), config, fetcher),
       verifyAccess(request(second), config, fetcher),
     ]);
-    expect(requestedUrls).toEqual([`${issuer}/cdn-cgi/access/certs`]);
+
+    // jose cannot share a pending fetch across Cloudflare I/O contexts, so its
+    // Workers-safe reload path deliberately performs one cold fetch per caller.
+    const expectedColdFetchCount = joseUsesIoContextSafeRemoteJwksReload() ? 2 : 1;
+    expect(requestedUrls).toEqual(
+      Array.from({ length: expectedColdFetchCount }, () => `${issuer}/cdn-cgi/access/certs`),
+    );
 
     await verifyAccess(request(third), config, fetcher);
-    expect(requestedUrls).toEqual([`${issuer}/cdn-cgi/access/certs`]);
+    expect(requestedUrls).toHaveLength(expectedColdFetchCount);
   });
 
   test('isolates remote key sets by fetcher identity and certificate URL', async () => {

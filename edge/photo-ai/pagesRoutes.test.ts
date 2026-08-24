@@ -215,7 +215,7 @@ describe('photo AI Pages routes', () => {
     expectJoseJwksRequest(networkInputs[0]!);
     expect(networkInputs[1]).toEqual({
       url: 'https://photo-ai-gateway.internal/session',
-      headers: { 'x-tiezheng-account-key': '8870f376de268ea42aabb3bae207e1696f98f0952560e9fc087579dc59dcbd97' },
+      headers: { 'x-tiezheng-account-key': '841240d2a5b6654b3ae21fc4499db7b7867077cdd67c3e16cef1f9843e27d1fa' },
     });
     for (const value of forbidden) expect(audit).not.toContain(value);
     expect(consoleLog).not.toHaveBeenCalled();
@@ -314,7 +314,7 @@ describe('photo AI Pages routes', () => {
       headers: {
         'content-length': String(uploadBytes.byteLength),
         'content-type': 'multipart/form-data; boundary=audit',
-        'x-tiezheng-account-key': '8870f376de268ea42aabb3bae207e1696f98f0952560e9fc087579dc59dcbd97',
+        'x-tiezheng-account-key': '841240d2a5b6654b3ae21fc4499db7b7867077cdd67c3e16cef1f9843e27d1fa',
       },
     }]);
     for (const value of uploadSecrets) expect(approvedPrivateBody).toContain(value);

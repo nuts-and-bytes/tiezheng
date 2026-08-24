@@ -5,6 +5,8 @@ export default defineWorkersConfig({
     include: [
       'workers/**/*.worker.test.ts',
       'edge/nutrition-ai/**/*.test.ts',
+      'edge/photo-ai/access.test.ts',
+      'edge/text-ai/access.test.ts',
       'edge/text-ai/pagesRequest.test.ts',
       'edge/text-ai/pagesProxy.test.ts',
       'edge/photo-ai/pagesProxy.test.ts',
