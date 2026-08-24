@@ -29,6 +29,7 @@ import type { GatewayEnv } from './env';
 import {
   GATEWAY_CHANNEL_POLICY,
   GATEWAY_LIMITS,
+  TEXT_SUCCESS_COMMIT_WINDOW_MS,
   arkCostMicros,
 } from './gatewayPolicy';
 
@@ -67,7 +68,6 @@ const LEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const MAX_IN_FLIGHT_RETRY_AFTER_MS = 60_000;
 const MAX_DATE_MS = 8_640_000_000_000_000;
-const BODY_READ_TIMEOUT_MS = TEXT_AI_LIMITS.timeoutMs;
 const PARSED_CANDIDATE_FIELDS = [
   'name',
   'preparation',
@@ -97,6 +97,82 @@ function jsonResponse(body: unknown, status: number): Response {
 
 function failure(code: TextAiErrorCode, status: number): Response {
   return jsonResponse({ ok: false, code, retryAt: null, resetAt: null }, status);
+}
+
+function inFlight(requestId: string, retryAfterMs = 0): Response {
+  return jsonResponse({
+    ok: true,
+    status: 'in-flight',
+    requestId,
+    retryAfterMs,
+  }, 202);
+}
+
+function createLifecycleDeadline(
+  callerSignal: AbortSignal,
+  durationMs: number,
+): {
+  signal: AbortSignal;
+  dispose(): void;
+} {
+  const controller = new AbortController();
+  let reason: 'caller' | 'deadline' | null = null;
+  let listenerAdded = false;
+  const abortOnce = (nextReason: 'caller' | 'deadline') => {
+    if (reason !== null) return;
+    reason = nextReason;
+    controller.abort();
+  };
+  const onCallerAbort = () => abortOnce('caller');
+  if (callerSignal.aborted) {
+    onCallerAbort();
+  } else {
+    callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    listenerAdded = true;
+    if (callerSignal.aborted) onCallerAbort();
+  }
+  const timer = reason === null
+    ? setTimeout(() => abortOnce('deadline'), durationMs)
+    : undefined;
+  return {
+    signal: controller.signal,
+    dispose() {
+      if (timer !== undefined) clearTimeout(timer);
+      if (listenerAdded) callerSignal.removeEventListener('abort', onCallerAbort);
+    },
+  };
+}
+
+async function raceLifecycleAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void operation.catch(() => undefined);
+    throw new TypeError('Text lifecycle aborted');
+  }
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new TypeError('Text lifecycle aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+async function immediateOutcome<T>(operation: Promise<T>): Promise<
+  | { acknowledged: true; value: T }
+  | { acknowledged: false }
+> {
+  return Promise.race([
+    operation.then(
+      (value) => ({ acknowledged: true as const, value }),
+      () => ({ acknowledged: false as const }),
+    ),
+    new Promise<{ acknowledged: false }>((resolve) => {
+      queueMicrotask(() => resolve({ acknowledged: false }));
+    }),
+  ]);
 }
 
 function coordinatorFailureStatus(code: CoordinatorFailureCode): number {
@@ -485,7 +561,10 @@ function normalizedParsedEstimate(value: unknown): ReturnType<typeof parseDoubao
   });
 }
 
-async function readBoundedRequestJson(request: Request): Promise<unknown> {
+async function readBoundedRequestJson(
+  request: Request,
+  signal: AbortSignal,
+): Promise<unknown> {
   const body = request.body;
   if (
     request.headers.get('content-type') !== 'application/json' ||
@@ -505,16 +584,14 @@ async function readBoundedRequestJson(request: Request): Promise<unknown> {
   }
   if (body === null) return invalidBody(body);
 
-  const signal = request.signal;
   if (signal.aborted) return invalidBody(body);
 
   const reader = body.getReader();
   const buffer = new Uint8Array(TEXT_AI_LIMITS.requestBytes);
   let byteLength = 0;
   let cancellationStarted = false;
-  let stopReason: 'caller' | 'timeout' | null = null;
+  let stoppedReading = false;
   let listenerAttached = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
   let resolveStopped!: (value: { kind: 'stopped' }) => void;
   const stopped = new Promise<{ kind: 'stopped' }>((resolve) => {
     resolveStopped = resolve;
@@ -529,18 +606,17 @@ async function readBoundedRequestJson(request: Request): Promise<unknown> {
       // Cancellation is best-effort and never changes the fixed public error.
     }
   };
-  const stop = (reason: 'caller' | 'timeout') => {
-    if (stopReason !== null) return;
-    stopReason = reason;
+  const stop = () => {
+    if (stoppedReading) return;
+    stoppedReading = true;
     cancelReaderOnce();
     resolveStopped({ kind: 'stopped' });
   };
-  const abortFromCaller = () => stop('caller');
+  const abortFromLifecycle = () => stop();
   try {
-    signal.addEventListener('abort', abortFromCaller, { once: true });
+    signal.addEventListener('abort', abortFromLifecycle, { once: true });
     listenerAttached = true;
-    timer = setTimeout(() => stop('timeout'), BODY_READ_TIMEOUT_MS);
-    if (signal.aborted) stop('caller');
+    if (signal.aborted) stop();
 
     while (true) {
       const read = reader.read().then(
@@ -568,10 +644,9 @@ async function readBoundedRequestJson(request: Request): Promise<unknown> {
     cancelReaderOnce();
     throw new TypeError('Invalid text request body');
   } finally {
-    if (timer !== null) clearTimeout(timer);
     if (listenerAttached) {
       try {
-        signal.removeEventListener('abort', abortFromCaller);
+        signal.removeEventListener('abort', abortFromLifecycle);
       } catch {
         // A hostile signal cannot change the fixed public error.
       }
@@ -651,6 +726,25 @@ export async function handleTextAiRequest(
     return failure('service-disabled', 503);
   }
 
+  let lifecycleStartedAt: number;
+  let commitDeadlineAt: number;
+  try {
+    lifecycleStartedAt = safeRuntimeNow(dependencies.now());
+    commitDeadlineAt = lifecycleStartedAt + TEXT_SUCCESS_COMMIT_WINDOW_MS;
+    if (!Number.isSafeInteger(commitDeadlineAt) || commitDeadlineAt > MAX_DATE_MS) {
+      throw new TypeError('Invalid text lifecycle deadline');
+    }
+  } catch {
+    cancelSilently(request.body);
+    return failure('service-disabled', 503);
+  }
+  const lifecycle = createLifecycleDeadline(
+    request.signal,
+    TEXT_SUCCESS_COMMIT_WINDOW_MS,
+  );
+  const lifecycleSignal = lifecycle.signal;
+  try {
+
   const accountKey = request.headers.get('x-tiezheng-account-key');
   if (accountKey === null || !ACCOUNT_KEY.test(accountKey)) {
     cancelSilently(request.body);
@@ -659,42 +753,64 @@ export async function handleTextAiRequest(
 
   let textRequest;
   try {
-    textRequest = parseTextAiEstimateRequest(await readBoundedRequestJson(request));
+    textRequest = parseTextAiEstimateRequest(await readBoundedRequestJson(
+      request,
+      lifecycleSignal,
+    ));
   } catch {
     return failure('invalid-estimate', 502);
   }
 
   let fingerprint: string;
   try {
-    fingerprint = await requestFingerprint(accountKey, textRequest);
+    fingerprint = await raceLifecycleAbort(
+      Promise.resolve().then(() => requestFingerprint(accountKey, textRequest)),
+      lifecycleSignal,
+    );
   } catch {
-    return failure('service-disabled', 503);
+    return lifecycleSignal.aborted
+      ? failure('provider-timeout', 504)
+      : failure('service-disabled', 503);
   }
   let coordinator;
   let reservation: ReserveResult;
-  let reserveNow: number;
   try {
-    reserveNow = safeRuntimeNow(dependencies.now());
     coordinator = env.PHOTO_AI_COORDINATOR.getByName('stage2');
-    reservation = normalizedReservation(await coordinator.reserve({
+  } catch {
+    return failure('service-disabled', 503);
+  }
+  if (lifecycleSignal.aborted) return failure('provider-timeout', 504);
+  let reserveOperation: Promise<unknown>;
+  try {
+    reserveOperation = Promise.resolve(coordinator.reserve({
       channel: 'text',
       accountKey,
       idempotencyKey: textRequest.idempotencyKey,
       fingerprint,
-      now: reserveNow,
+      now: lifecycleStartedAt,
       reserveMicros: dependencies.initialAttemptReserveMicros,
-    }));
+    }) as unknown);
   } catch {
-    return failure('service-disabled', 503);
+    return inFlight(textRequest.requestId);
+  }
+  try {
+    reservation = normalizedReservation(await raceLifecycleAbort(
+      reserveOperation,
+      lifecycleSignal,
+    ));
+  } catch {
+    if (!lifecycleSignal.aborted) return inFlight(textRequest.requestId);
+    const recovered = await immediateOutcome(reserveOperation);
+    if (!recovered.acknowledged) return inFlight(textRequest.requestId);
+    try {
+      reservation = normalizedReservation(recovered.value);
+    } catch {
+      return inFlight(textRequest.requestId);
+    }
   }
 
   if (reservation.kind === 'in-flight') {
-    return jsonResponse({
-      ok: true,
-      status: 'in-flight',
-      requestId: textRequest.requestId,
-      retryAfterMs: reservation.retryAfterMs,
-    }, 202);
+    return inFlight(textRequest.requestId, reservation.retryAfterMs);
   }
   if (reservation.kind === 'rejected') {
     const status = reservation.code === 'idempotency-conflict'
@@ -712,11 +828,14 @@ export async function handleTextAiRequest(
   }
   if (reservation.kind === 'cached') {
     try {
-      const cached = parseTextAiEstimateResponse(await dependencies.decryptCandidateCache(
-        reservation.cache,
-        fingerprint,
-        env.PHOTO_AI_CACHE_AES_KEY,
-        safeRuntimeNow(dependencies.now()),
+      const cached = parseTextAiEstimateResponse(await raceLifecycleAbort(
+        Promise.resolve().then(() => dependencies.decryptCandidateCache(
+          reservation.cache,
+          fingerprint,
+          env.PHOTO_AI_CACHE_AES_KEY,
+          safeRuntimeNow(dependencies.now()),
+        )),
+        lifecycleSignal,
       ));
       if (
         cached.ok !== true ||
@@ -726,22 +845,25 @@ export async function handleTextAiRequest(
       ) {
         return failure('provider-unavailable', 503);
       }
+      if (lifecycleSignal.aborted) return inFlight(textRequest.requestId);
       return jsonResponse(cached, 200);
     } catch {
-      return failure('provider-unavailable', 503);
+      return lifecycleSignal.aborted
+        ? inFlight(textRequest.requestId)
+        : failure('provider-unavailable', 503);
     }
   }
-  if (reservation.kind !== 'reserved') return failure('service-disabled', 503);
+  if (reservation.kind !== 'reserved') return inFlight(textRequest.requestId);
 
-  const lease: Omit<LeaseInput, 'now'> = {
+  const lease: Omit<LeaseInput<'text'>, 'now'> = {
     channel: 'text',
     accountKey,
     idempotencyKey: textRequest.idempotencyKey,
     fingerprint,
     leaseId: reservation.leaseId,
   };
-  const leaseAtNow = (): LeaseInput => {
-    let now = reserveNow;
+  const leaseAtNow = (): LeaseInput<'text'> => {
+    let now = lifecycleStartedAt;
     try {
       now = safeRuntimeNow(dependencies.now());
     } catch {
@@ -750,10 +872,21 @@ export async function handleTextAiRequest(
     return { ...lease, now };
   };
   let failureSettlementAttempted = false;
-  const settleFailure = async (
+  const acknowledgement = async (operation: Promise<void>): Promise<boolean> => {
+    try {
+      if (lifecycleSignal.aborted) {
+        return (await immediateOutcome(operation)).acknowledged;
+      }
+      await raceLifecycleAbort(operation, lifecycleSignal);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const trySettleFailure = async (
     errorCode: CoordinatorFailureCode,
     actualCostMicros: number | null,
-  ): Promise<Response> => {
+  ): Promise<{ code: CoordinatorFailureCode; acknowledged: boolean }> => {
     const safeCode = (() => {
       try {
         return coordinatorFailureCode(errorCode);
@@ -761,34 +894,44 @@ export async function handleTextAiRequest(
         return 'provider-unavailable' as const;
       }
     })();
-    if (!failureSettlementAttempted) {
-      failureSettlementAttempted = true;
-      try {
-        await coordinator.settleFailure({
-          ...leaseAtNow(),
-          errorCode: safeCode,
-          actualCostMicros,
-        });
-      } catch {
-        // Never expose coordinator state or attempt the failure settlement twice.
-      }
+    if (failureSettlementAttempted) return { code: safeCode, acknowledged: false };
+    failureSettlementAttempted = true;
+    let operation: Promise<void>;
+    try {
+      operation = Promise.resolve(coordinator.settleFailure({
+        ...leaseAtNow(),
+        errorCode: safeCode,
+        actualCostMicros,
+      }));
+    } catch {
+      return { code: safeCode, acknowledged: false };
     }
-    return failure(safeCode, coordinatorFailureStatus(safeCode));
+    return { code: safeCode, acknowledged: await acknowledgement(operation) };
+  };
+  const settleFailure = async (
+    errorCode: CoordinatorFailureCode,
+    actualCostMicros: number | null,
+  ): Promise<Response> => {
+    const settled = await trySettleFailure(errorCode, actualCostMicros);
+    return settled.acknowledged
+      ? failure(settled.code, coordinatorFailureStatus(settled.code))
+      : inFlight(textRequest.requestId);
   };
   const abortBeforeInvoke = async (
     code: 'provider-timeout' | 'service-disabled',
     status: number,
   ): Promise<Response> => {
+    let operation: Promise<void>;
     try {
-      await coordinator.abortBeforeInvoke(leaseAtNow());
+      operation = Promise.resolve(coordinator.abortBeforeInvoke(leaseAtNow()));
     } catch {
-      // If mark crossed the RPC boundary, a failure settlement can still close the lease.
-      await settleFailure('provider-unavailable', null);
+      return inFlight(textRequest.requestId);
     }
-    return failure(code, status);
+    const acknowledged = await acknowledgement(operation);
+    return acknowledged ? failure(code, status) : inFlight(textRequest.requestId);
   };
 
-  if (request.signal.aborted) return abortBeforeInvoke('provider-timeout', 504);
+  if (lifecycleSignal.aborted) return abortBeforeInvoke('provider-timeout', 504);
 
   let adapter: TextModelAdapter;
   try {
@@ -796,149 +939,207 @@ export async function handleTextAiRequest(
   } catch {
     return abortBeforeInvoke('service-disabled', 503);
   }
-  if (request.signal.aborted) return abortBeforeInvoke('provider-timeout', 504);
+  if (lifecycleSignal.aborted) return abortBeforeInvoke('provider-timeout', 504);
 
+  let markOperation: Promise<void>;
   try {
-    await coordinator.markInvoked(leaseAtNow());
+    markOperation = Promise.resolve(coordinator.markInvoked(leaseAtNow()));
   } catch {
-    return abortBeforeInvoke('service-disabled', 503);
+    return inFlight(textRequest.requestId);
   }
-  if (request.signal.aborted) {
-    try {
-      await coordinator.abortAfterMarkBeforeProvider(leaseAtNow());
-    } catch {
-      return settleFailure('provider-timeout', null);
-    }
-    return failure('provider-timeout', 504);
-  }
-
-  let retried = false;
-  let estimateValue: unknown;
   try {
-    estimateValue = await adapter.estimate(textRequest, request.signal);
-  } catch (error) {
-    if (request.signal.aborted) return settleFailure('provider-timeout', null);
-    const adapterError = normalizedAdapterError(error);
-    if (adapterError === null || !adapterError.retryable) {
-      return settleFailure(adapterError?.code ?? 'provider-unavailable', null);
-    }
-    try {
-      await coordinator.reserveRetryCost(leaseAtNow());
-    } catch {
-      return settleFailure('provider-unavailable', null);
-    }
-    if (request.signal.aborted) {
-      return settleFailure('provider-timeout', dependencies.initialAttemptReserveMicros);
-    }
-    retried = true;
-    try {
-      estimateValue = await adapter.estimate(textRequest, request.signal);
-    } catch (retryError) {
-      const adapterError = normalizedAdapterError(retryError);
-      const code = request.signal.aborted
-        ? 'provider-timeout'
-        : adapterError?.code ?? 'provider-unavailable';
-      return settleFailure(code, null);
-    }
-  }
-
-  let estimate: AdapterEstimate;
-  try {
-    estimate = normalizedAdapterEstimate(estimateValue);
+    await raceLifecycleAbort(markOperation, lifecycleSignal);
   } catch {
-    return settleFailure('invalid-estimate', null);
+    if (!lifecycleSignal.aborted) return inFlight(textRequest.requestId);
+    const recovered = await immediateOutcome(markOperation);
+    if (!recovered.acknowledged) return inFlight(textRequest.requestId);
+  }
+  if (lifecycleSignal.aborted) {
+    let operation: Promise<void>;
+    try {
+      operation = Promise.resolve(coordinator.abortAfterMarkBeforeProvider(leaseAtNow()));
+    } catch {
+      return inFlight(textRequest.requestId);
+    }
+    const acknowledged = await acknowledgement(operation);
+    return acknowledged
+      ? failure('provider-timeout', 504)
+      : inFlight(textRequest.requestId);
   }
 
-  let knownAttemptCost: number | null = null;
-  if (estimate.usage !== null) {
+  const providerSignal = lifecycleSignal;
+    let retried = false;
+    let estimateValue: unknown;
+    if (providerSignal.aborted) return await settleFailure('provider-timeout', null);
     try {
-      knownAttemptCost = arkCostMicros(
-        estimate.usage.inputTokens,
-        estimate.usage.outputTokens,
+      estimateValue = await raceLifecycleAbort(
+        adapter.estimate(textRequest, providerSignal),
+        providerSignal,
+      );
+    } catch (error) {
+      if (providerSignal.aborted) return await settleFailure('provider-timeout', null);
+      const adapterError = normalizedAdapterError(error);
+      if (adapterError === null || !adapterError.retryable) {
+        return await settleFailure(adapterError?.code ?? 'provider-unavailable', null);
+      }
+      try {
+        await raceLifecycleAbort(
+          Promise.resolve().then(() => coordinator.reserveRetryCost(leaseAtNow())),
+          providerSignal,
+        );
+      } catch {
+        return await settleFailure(
+          providerSignal.aborted ? 'provider-timeout' : 'provider-unavailable',
+          null,
+        );
+      }
+      if (providerSignal.aborted) {
+        return await settleFailure('provider-timeout', dependencies.initialAttemptReserveMicros);
+      }
+      retried = true;
+      try {
+        estimateValue = await raceLifecycleAbort(
+          adapter.estimate(textRequest, providerSignal),
+          providerSignal,
+        );
+      } catch (retryError) {
+        const adapterError = normalizedAdapterError(retryError);
+        const code = providerSignal.aborted
+          ? 'provider-timeout'
+          : adapterError?.code ?? 'provider-unavailable';
+        return await settleFailure(code, null);
+      }
+    }
+
+    if (providerSignal.aborted) return await settleFailure('provider-timeout', null);
+    let estimate: AdapterEstimate;
+    try {
+      estimate = normalizedAdapterEstimate(estimateValue);
+    } catch {
+      return await settleFailure('invalid-estimate', null);
+    }
+
+    if (providerSignal.aborted) return await settleFailure('provider-timeout', null);
+    let knownAttemptCost: number | null = null;
+    if (estimate.usage !== null) {
+      try {
+        knownAttemptCost = arkCostMicros(
+          estimate.usage.inputTokens,
+          estimate.usage.outputTokens,
+        );
+      } catch {
+        return await settleFailure('invalid-estimate', null);
+      }
+    }
+    const actualCostMicros = knownAttemptCost === null
+      ? (retried
+          ? dependencies.initialAttemptReserveMicros + dependencies.retryAttemptReserveMicros
+          : dependencies.initialAttemptReserveMicros)
+      : (retried ? dependencies.initialAttemptReserveMicros : 0) + knownAttemptCost;
+    const totalReservedMicros = dependencies.initialAttemptReserveMicros
+      + (retried ? dependencies.retryAttemptReserveMicros : 0);
+    if (!Number.isSafeInteger(actualCostMicros) || actualCostMicros > totalReservedMicros) {
+      return await settleFailure('invalid-estimate', null);
+    }
+
+    if (providerSignal.aborted) return await settleFailure('provider-timeout', actualCostMicros);
+    let parsedEstimate;
+    try {
+      parsedEstimate = normalizedParsedEstimate(
+        dependencies.parseDoubaoTextEstimate(estimate.raw),
       );
     } catch {
-      return settleFailure('invalid-estimate', null);
+      return await settleFailure(
+        'invalid-estimate',
+        knownAttemptCost === null ? null : actualCostMicros,
+      );
     }
-  }
-  const actualCostMicros = knownAttemptCost === null
-    ? (retried
-        ? dependencies.initialAttemptReserveMicros + dependencies.retryAttemptReserveMicros
-        : dependencies.initialAttemptReserveMicros)
-    : (retried ? dependencies.initialAttemptReserveMicros : 0) + knownAttemptCost;
-  const totalReservedMicros = dependencies.initialAttemptReserveMicros
-    + (retried ? dependencies.retryAttemptReserveMicros : 0);
-  if (!Number.isSafeInteger(actualCostMicros) || actualCostMicros > totalReservedMicros) {
-    return settleFailure('invalid-estimate', null);
-  }
+    if (providerSignal.aborted) return await settleFailure('provider-timeout', actualCostMicros);
+    if (parsedEstimate.status === 'uncertain') {
+      return await settleFailure('uncertain-food', actualCostMicros);
+    }
+    const candidate = parsedEstimate.candidate;
+    if (
+      candidate.catalogFoodId !== null ||
+      candidate.nutrientSource !== 'model-range' ||
+      candidate.energyKcalLow === null ||
+      candidate.energyKcalHigh === null ||
+      candidate.proteinGLow === null ||
+      candidate.proteinGHigh === null
+    ) {
+      return await settleFailure('invalid-estimate', actualCostMicros);
+    }
 
-  let parsedEstimate;
-  try {
-    parsedEstimate = normalizedParsedEstimate(
-      dependencies.parseDoubaoTextEstimate(estimate.raw),
-    );
-  } catch {
-    return settleFailure(
-      'invalid-estimate',
-      knownAttemptCost === null ? null : actualCostMicros,
-    );
+    const success: TextAiEstimateSuccess = {
+      ok: true,
+      status: 'complete',
+      requestId: textRequest.requestId,
+      requestFingerprint: fingerprint,
+      versions: { ...TEXT_AI_VERSIONS },
+      candidates: [{
+        id: 'text-candidate-1',
+        name: candidate.name,
+        preparation: candidate.preparation,
+        amountLow: candidate.amountLow,
+        amountHigh: candidate.amountHigh,
+        unit: candidate.unit,
+        catalogFoodId: null,
+        nutrientSource: 'model-range',
+        energyKcalLow: candidate.energyKcalLow,
+        energyKcalHigh: candidate.energyKcalHigh,
+        proteinGLow: candidate.proteinGLow,
+        proteinGHigh: candidate.proteinGHigh,
+        assumptions: [...candidate.assumptions],
+      }],
+    };
+    let cache: EncryptedCandidateCache;
+    try {
+      const cacheExpiresAt = safeRuntimeNow(dependencies.now()) + dependencies.resultCacheMs;
+      if (providerSignal.aborted) {
+        return await settleFailure('provider-timeout', actualCostMicros);
+      }
+      if (!Number.isSafeInteger(cacheExpiresAt)) {
+        return await settleFailure('invalid-estimate', actualCostMicros);
+      }
+      cache = normalizedCache(await raceLifecycleAbort(
+        Promise.resolve().then(() => dependencies.encryptCandidateCache(
+          success,
+          fingerprint,
+          env.PHOTO_AI_CACHE_AES_KEY,
+          cacheExpiresAt,
+        )),
+        providerSignal,
+      ));
+    } catch {
+      return await settleFailure(
+        providerSignal.aborted ? 'provider-timeout' : 'invalid-estimate',
+        knownAttemptCost === null ? null : actualCostMicros,
+      );
+    }
+    if (providerSignal.aborted) return await settleFailure('provider-timeout', actualCostMicros);
+    try {
+      await raceLifecycleAbort(
+        Promise.resolve().then(() => coordinator.settleSuccess({
+          ...leaseAtNow(),
+          cache,
+          actualCostMicros,
+          commitDeadlineAt,
+        })),
+        providerSignal,
+      );
+    } catch {
+      const code = providerSignal.aborted ? 'provider-timeout' : 'provider-unavailable';
+      const settled = await trySettleFailure(code, actualCostMicros);
+      if (settled.acknowledged) {
+        return failure(settled.code, coordinatorFailureStatus(settled.code));
+      }
+      return inFlight(textRequest.requestId);
+    }
+    if (providerSignal.aborted) return inFlight(textRequest.requestId);
+    return jsonResponse(success, 200);
+  } finally {
+    lifecycle.dispose();
   }
-  if (parsedEstimate.status === 'uncertain') {
-    return settleFailure('uncertain-food', actualCostMicros);
-  }
-  const candidate = parsedEstimate.candidate;
-  if (
-    candidate.catalogFoodId !== null ||
-    candidate.nutrientSource !== 'model-range' ||
-    candidate.energyKcalLow === null ||
-    candidate.energyKcalHigh === null ||
-    candidate.proteinGLow === null ||
-    candidate.proteinGHigh === null
-  ) {
-    return settleFailure('invalid-estimate', actualCostMicros);
-  }
-
-  const success: TextAiEstimateSuccess = {
-    ok: true,
-    status: 'complete',
-    requestId: textRequest.requestId,
-    requestFingerprint: fingerprint,
-    versions: { ...TEXT_AI_VERSIONS },
-    candidates: [{
-      id: 'text-candidate-1',
-      name: candidate.name,
-      preparation: candidate.preparation,
-      amountLow: candidate.amountLow,
-      amountHigh: candidate.amountHigh,
-      unit: candidate.unit,
-      catalogFoodId: null,
-      nutrientSource: 'model-range',
-      energyKcalLow: candidate.energyKcalLow,
-      energyKcalHigh: candidate.energyKcalHigh,
-      proteinGLow: candidate.proteinGLow,
-      proteinGHigh: candidate.proteinGHigh,
-      assumptions: [...candidate.assumptions],
-    }],
-  };
-  let cache: EncryptedCandidateCache;
-  try {
-    cache = normalizedCache(await dependencies.encryptCandidateCache(
-      success,
-      fingerprint,
-      env.PHOTO_AI_CACHE_AES_KEY,
-      safeRuntimeNow(dependencies.now()) + dependencies.resultCacheMs,
-    ));
-  } catch {
-    return settleFailure(
-      'invalid-estimate',
-      knownAttemptCost === null ? null : actualCostMicros,
-    );
-  }
-  try {
-    await coordinator.settleSuccess({ ...leaseAtNow(), cache, actualCostMicros });
-  } catch {
-    return settleFailure('provider-unavailable', actualCostMicros);
-  }
-  return jsonResponse(success, 200);
 }
 
 export async function handleTextSessionRequest(

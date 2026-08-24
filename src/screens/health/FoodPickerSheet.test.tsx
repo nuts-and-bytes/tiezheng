@@ -81,6 +81,23 @@ test('文字 AI 关闭时不影响手动添加入口', () => {
   expect(screen.getByRole('button', { name: '手动添加食物' })).toBeInTheDocument();
 });
 
+test('文字降级草稿仅预填手动名称、数量和单位，营养值仍留空', () => {
+  picker({
+    initialManualDraft: {
+      description: '晚餐牛肉面，少油',
+      amount: { value: 360, unit: 'mL' },
+    },
+  });
+
+  expect(screen.getByLabelText('食物名称')).toHaveValue('晚餐牛肉面，少油');
+  expect(screen.getByLabelText('原始单位')).toHaveValue('mL');
+  expect(screen.getByLabelText('实际毫升')).toHaveValue(360);
+  expect(screen.getByLabelText('原始能量')).toHaveValue(null);
+  expect(screen.getByLabelText('原始蛋白质（克）')).toHaveValue(null);
+  expect(screen.getByLabelText('处理方式')).toHaveValue('');
+  expect(screen.queryByRole('button', { name: /熟米饭/ })).toBeInTheDocument();
+});
+
 test('33 种基础食物全部使用独立本地图且无占位，搜索与单位提示可用且不发网络请求', async () => {
   const user = userEvent.setup();
   const fetchSpy = vi.spyOn(globalThis, 'fetch');

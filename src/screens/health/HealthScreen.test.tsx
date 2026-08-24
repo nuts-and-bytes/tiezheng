@@ -57,6 +57,7 @@ const photoClient = vi.hoisted(() => ({
 const textClient = vi.hoisted(() => ({
   session: vi.fn(),
   estimate: vi.fn(),
+  estimateWithOutcome: vi.fn(),
 }));
 
 vi.mock('../../lib/photoAiClient', () => ({
@@ -147,6 +148,12 @@ beforeEach(async () => {
       ...candidate,
       assumptions: [...candidate.assumptions],
     })),
+  }));
+  textClient.estimateWithOutcome.mockReset().mockImplementation(async (
+    input: { requestId: string },
+  ) => ({
+    terminal: true,
+    response: await textClient.estimate(input),
   }));
   sessionStorage.clear();
   await resetDb();
@@ -364,23 +371,64 @@ test('文字开关关闭时 resume 仍一次性清理 intent/query 且不能绕�
   expect(textClient.estimate).not.toHaveBeenCalled();
 });
 
-test('文字估算改用手动记录时清空草稿并回到原餐段 picker', async () => {
+test('文字估算改用手动记录时预填原餐段手动表单，关闭重开不残留', async () => {
   vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
   const user = userEvent.setup();
   renderHealth();
   const { dialog } = await openTextEstimate(user, '晚餐');
   const description = await within(dialog).findByLabelText('餐食描述');
   await user.type(description, '晚餐测试草稿');
+  await user.type(within(dialog).getByLabelText('大约重量'), '360');
+  await user.selectOptions(within(dialog).getByLabelText('重量单位'), 'mL');
 
   await user.click(within(dialog).getByRole('button', { name: '改用手动记录' }));
 
   const picker = await screen.findByRole('dialog', { name: '选择食物' });
   expect(within(picker).getByRole('button', { name: '加入晚餐' })).toBeInTheDocument();
   expect(screen.queryByRole('dialog', { name: 'AI 估算晚餐' })).not.toBeInTheDocument();
-  await user.click(within(picker).getByRole('button', { name: 'AI 估算餐食' }));
-  const reopened = await screen.findByRole('dialog', { name: 'AI 估算晚餐' });
-  expect(await within(reopened).findByLabelText('餐食描述')).toHaveValue('');
-  expect(within(reopened).getByLabelText('大约重量')).toHaveValue(null);
+  expect(within(picker).getByLabelText('食物名称')).toHaveValue('晚餐测试草稿');
+  expect(within(picker).getByLabelText('原始单位')).toHaveValue('mL');
+  expect(within(picker).getByLabelText('实际毫升')).toHaveValue(360);
+  expect(within(picker).getByLabelText('原始能量')).toHaveValue(null);
+  expect(within(picker).getByLabelText('原始蛋白质（克）')).toHaveValue(null);
+
+  await user.click(within(picker).getByRole('button', { name: '关闭选择食物' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '选择食物' })).toBeNull());
+  const dinner = screen.getByRole('region', { name: '晚餐' });
+  await user.click(within(dinner).getByRole('button', { name: '选择食物' }));
+  const reopened = await screen.findByRole('dialog', { name: '选择食物' });
+  expect(within(reopened).queryByLabelText('食物名称')).not.toBeInTheDocument();
+});
+
+test('文字手动降级没有 amount 时使用安全默认数量且保留名称', async () => {
+  vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
+  const user = userEvent.setup();
+  renderHealth();
+  const { dialog } = await openTextEstimate(user);
+  await user.type(await within(dialog).findByLabelText('餐食描述'), '无重量的早餐组合');
+
+  await user.click(within(dialog).getByRole('button', { name: '改用手动记录' }));
+
+  const picker = await screen.findByRole('dialog', { name: '选择食物' });
+  expect(within(picker).getByLabelText('食物名称')).toHaveValue('无重量的早餐组合');
+  expect(within(picker).getByLabelText('原始单位')).toHaveValue('g');
+  expect(within(picker).getByLabelText('实际克数')).toHaveValue(100);
+});
+
+test('文字权限检查离线后仍可带当前描述降级到手动表单', async () => {
+  vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
+  textClient.session.mockRejectedValueOnce(new TypeError('offline'));
+  const user = userEvent.setup();
+  renderHealth();
+  const { dialog } = await openTextEstimate(user);
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('离线');
+  await user.type(within(dialog).getByLabelText('餐食描述'), '离线时的饭团和豆浆');
+
+  await user.click(within(dialog).getByRole('button', { name: '改用手动记录' }));
+
+  const picker = await screen.findByRole('dialog', { name: '选择食物' });
+  expect(within(picker).getByLabelText('食物名称')).toHaveValue('离线时的饭团和豆浆');
+  expect(within(picker).getByLabelText('原始能量')).toHaveValue(null);
 });
 
 test('关闭文字面板和切换日期都会清空文字草稿与餐段状态', async () => {

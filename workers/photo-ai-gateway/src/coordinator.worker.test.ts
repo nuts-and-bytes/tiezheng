@@ -11,15 +11,69 @@ import {
   ensureCoordinatorSchema,
   type LeaseInput,
   type ReserveInput,
+  type SettleSuccessInput,
 } from './coordinator';
 import type { GatewayEnv } from './env';
-import { GATEWAY_CHANNEL_POLICY, type AiChannel } from './gatewayPolicy';
+import {
+  GATEWAY_CHANNEL_POLICY,
+  TEXT_SUCCESS_COMMIT_WINDOW_MS,
+  type AiChannel,
+} from './gatewayPolicy';
 import worker from './index';
+import {
+  TEXT_GATEWAY_RUNTIME,
+  handleTextAiRequest,
+} from './textHandler';
+import { TEXT_AI_VERSIONS } from '../../../src/lib/textAiContract';
+import {
+  textAiCandidateFixture,
+  textAiRequestFixture,
+} from '../../../src/test/textAiFixtures';
 
 const ACCOUNT_A = 'a'.repeat(64);
 const ACCOUNT_B = 'b'.repeat(64);
 const ACCOUNT_C = 'c'.repeat(64);
 const BASE_NOW = Date.UTC(2026, 7, 18, 4, 0, 0);
+
+const SUCCESS_SETTLEMENT_FIELDS = {
+  accountKey: ACCOUNT_A,
+  idempotencyKey: key(900),
+  fingerprint: fingerprint(900),
+  leaseId: '11111111-1111-4111-8111-111111111111',
+  now: BASE_NOW,
+  actualCostMicros: 0,
+  cache: {
+    ivBase64: 'aXY=',
+    ciphertextBase64: 'Y2lwaGVy',
+    expiresAt: BASE_NOW + 600_000,
+  },
+} as const;
+const VALID_TEXT_SUCCESS_SETTLEMENT: SettleSuccessInput = {
+  ...SUCCESS_SETTLEMENT_FIELDS,
+  channel: 'text',
+  commitDeadlineAt: BASE_NOW + 16_000,
+};
+const VALID_PHOTO_SUCCESS_SETTLEMENT: SettleSuccessInput = {
+  ...SUCCESS_SETTLEMENT_FIELDS,
+  channel: 'photo',
+};
+// @ts-expect-error Text success commits require the authoritative cutoff.
+const INVALID_TEXT_SUCCESS_SETTLEMENT: SettleSuccessInput = {
+  ...SUCCESS_SETTLEMENT_FIELDS,
+  channel: 'text',
+};
+// @ts-expect-error Photo success commits must not carry the text-only cutoff.
+const INVALID_PHOTO_SUCCESS_SETTLEMENT: SettleSuccessInput = {
+  ...SUCCESS_SETTLEMENT_FIELDS,
+  channel: 'photo',
+  commitDeadlineAt: BASE_NOW + 16_000,
+};
+void [
+  VALID_TEXT_SUCCESS_SETTLEMENT,
+  VALID_PHOTO_SUCCESS_SETTLEMENT,
+  INVALID_TEXT_SUCCESS_SETTLEMENT,
+  INVALID_PHOTO_SUCCESS_SETTLEMENT,
+];
 
 function key(index: number): string {
   return index.toString(16).padStart(32, '0');
@@ -45,7 +99,7 @@ function reserveInput(
   index: number,
   now = BASE_NOW,
   reserveMicros: number = GATEWAY_LIMITS.initialAttemptReserveMicros,
-): ReserveInput {
+): ReserveInput & { channel: 'photo' } {
   return {
     channel: 'photo',
     accountKey,
@@ -56,13 +110,13 @@ function reserveInput(
   };
 }
 
-function channelReserveInput(
-  channel: AiChannel,
+function channelReserveInput<Channel extends AiChannel>(
+  channel: Channel,
   accountKey: string,
   index: number,
   now = BASE_NOW,
   reserveMicros: number = GATEWAY_CHANNEL_POLICY[channel].initialAttemptReserveMicros,
-): ReserveInput & { channel: AiChannel } {
+): ReserveInput & { channel: Channel } {
   return {
     channel,
     accountKey,
@@ -73,7 +127,11 @@ function channelReserveInput(
   };
 }
 
-function leaseInput(input: ReserveInput, leaseId: string, now = input.now): LeaseInput {
+function leaseInput<Channel extends AiChannel>(
+  input: ReserveInput & { channel: Channel },
+  leaseId: string,
+  now = input.now,
+): LeaseInput<Channel> {
   return { ...input, leaseId, now };
 }
 
@@ -143,6 +201,96 @@ describe('private gateway entrypoint', () => {
       accountRemaining: expected.accountRemaining,
       globalRemaining: expected.globalRemaining,
       resetAt: expected.resetAt,
+    });
+  });
+
+  test('accepts the text handler cutoff in the real coordinator transaction', async () => {
+    const stub = coordinator();
+    await stub.setGlobalEnabled(true);
+    await stub.setTextGlobalEnabled(true);
+    await stub.setAccountEnabled(ACCOUNT_A, true);
+    const now = Date.now();
+    const { id: _id, ...candidate } = textAiCandidateFixture;
+    const realCoordinator = {
+      reserve: async (...args: Parameters<typeof stub.reserve>) => ({
+        ...await stub.reserve(...args),
+      }),
+      markInvoked: (...args: Parameters<typeof stub.markInvoked>) => stub.markInvoked(...args),
+      reserveRetryCost: (...args: Parameters<typeof stub.reserveRetryCost>) => (
+        stub.reserveRetryCost(...args)
+      ),
+      abortBeforeInvoke: (...args: Parameters<typeof stub.abortBeforeInvoke>) => (
+        stub.abortBeforeInvoke(...args)
+      ),
+      abortAfterMarkBeforeProvider: (
+        ...args: Parameters<typeof stub.abortAfterMarkBeforeProvider>
+      ) => stub.abortAfterMarkBeforeProvider(...args),
+      settleSuccess: (...args: Parameters<typeof stub.settleSuccess>) => stub.settleSuccess(...args),
+      settleFailure: (...args: Parameters<typeof stub.settleFailure>) => stub.settleFailure(...args),
+    };
+    const gatewayEnv = {
+      ...env,
+      TEXT_AI_GATEWAY_ENABLED: 'true',
+      TEXT_AI_MODEL: TEXT_AI_VERSIONS.model,
+      PHOTO_AI_GATEWAY_ENABLED: 'true',
+      PHOTO_AI_MODEL: 'doubao-seed-2-1-pro-260628',
+      PHOTO_AI_ALLOWED_ORIGINS: 'https://app.example.test',
+      PHOTO_AI_MONTHLY_BUDGET_MICROS: String(GATEWAY_LIMITS.monthlyBudgetMicros),
+      ARK_API_KEY: 'test-ark-key',
+      PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      PHOTO_AI_COORDINATOR: {
+        getByName: () => realCoordinator,
+      } as unknown as GatewayEnv['PHOTO_AI_COORDINATOR'],
+    } as GatewayEnv;
+    const response = await handleTextAiRequest(new Request(
+      'https://photo-ai-gateway.internal/text/estimate',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-tiezheng-account-key': ACCOUNT_A,
+        },
+        body: JSON.stringify(textAiRequestFixture),
+      },
+    ), gatewayEnv, {
+      ...TEXT_GATEWAY_RUNTIME,
+      createModelAdapter: () => ({
+        estimate: async () => ({
+          raw: {
+            status: 'complete',
+            candidate: { ...candidate, assumptions: [...candidate.assumptions] },
+          },
+          usage: { inputTokens: 100, outputTokens: 20 },
+        }),
+      }),
+      encryptCandidateCache: async (_success, _fingerprint, _key, expiresAt) => ({
+        ivBase64: 'aXY=',
+        ciphertextBase64: 'Y2lwaGVy',
+        expiresAt,
+      }),
+      now: () => now,
+    });
+
+    const body = await response.json();
+    const coordinatorStatus = await stub.status({
+      channel: 'text',
+      accountKey: ACCOUNT_A,
+      now,
+    });
+    expect(TEXT_SUCCESS_COMMIT_WINDOW_MS).toBe(16_000);
+    expect(response.status).toBe(200);
+    expect({ status: response.status, body }).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        status: 'complete',
+        requestId: textAiRequestFixture.requestId,
+      },
+    });
+    expect(coordinatorStatus).toMatchObject({
+      accountRemaining: 9,
+      budgetSpentMicros: arkCostMicros(100, 20),
+      budgetReservedMicros: 0,
     });
   });
 
@@ -1197,6 +1345,146 @@ describe('PhotoAiCoordinator', () => {
       resetAt: '2026-08-19T04:00:00.000Z',
     });
     expect((await stub.reserve({ ...input, now: BASE_NOW + 86_400_001 })).kind).toBe('reserved');
+  });
+
+  test('rejects an expired text success cutoff before spent, cache or success state is written', async () => {
+    const stub = coordinator();
+    await stub.setGlobalEnabled(true);
+    await stub.setTextGlobalEnabled(true);
+    await stub.setAccountEnabled(ACCOUNT_A, true);
+    const transactionNow = Date.now();
+    const leaseStartedAt = transactionNow - 20_000;
+    const input = channelReserveInput('text', ACCOUNT_A, 91, leaseStartedAt);
+    const result = await stub.reserve(input);
+    if (result.kind !== 'reserved') throw new Error('expected text lease');
+    const lease = leaseInput(input, result.leaseId, transactionNow);
+    await stub.markInvoked(lease);
+
+    await runInDurableObject(stub, async (instance) => {
+      await expect(instance.settleSuccess({
+        ...lease,
+        actualCostMicros: 123,
+        commitDeadlineAt: leaseStartedAt + 16_000,
+        cache: {
+          ivBase64: 'aXY=',
+          ciphertextBase64: 'Y2lwaGVy',
+          expiresAt: transactionNow + 600_000,
+        },
+      })).rejects.toThrow('Coordinator operation rejected');
+    });
+
+    const statusAfterSuccess = await stub.status({
+      channel: 'text',
+      accountKey: ACCOUNT_A,
+      now: transactionNow,
+    });
+    const replayAfterSuccess = await stub.reserve({ ...input, now: transactionNow + 1 });
+
+    await stub.settleFailure({
+      ...lease,
+      now: transactionNow + 1,
+      actualCostMicros: 0,
+      errorCode: 'provider-timeout',
+    });
+    const replayAfterFailure = await stub.reserve({ ...input, now: transactionNow + 2 });
+
+    expect(statusAfterSuccess).toMatchObject({
+      accountRemaining: 9,
+      budgetSpentMicros: 0,
+      budgetReservedMicros: GATEWAY_CHANNEL_POLICY.text.initialAttemptReserveMicros,
+    });
+    expect(replayAfterSuccess).toMatchObject({ kind: 'in-flight' });
+    expect(replayAfterFailure).toEqual({
+      kind: 'failed',
+      code: 'provider-timeout',
+    });
+  });
+
+  test('derives the text success cutoff from the persisted lease instead of trusting an extension', async () => {
+    const stub = coordinator();
+    await stub.setGlobalEnabled(true);
+    await stub.setTextGlobalEnabled(true);
+    await stub.setAccountEnabled(ACCOUNT_A, true);
+    const leaseStartedAt = Date.now();
+    const input = channelReserveInput('text', ACCOUNT_A, 92, leaseStartedAt);
+    const result = await stub.reserve(input);
+    if (result.kind !== 'reserved') throw new Error('expected text lease');
+    const lease = leaseInput(input, result.leaseId, leaseStartedAt);
+    const cache = {
+      ivBase64: 'aXY=',
+      ciphertextBase64: 'Y2lwaGVy',
+      expiresAt: leaseStartedAt + 600_000,
+    };
+    await stub.markInvoked(lease);
+
+    await runInDurableObject(stub, async (instance) => {
+      await expect(instance.settleSuccess({
+        ...lease,
+        actualCostMicros: 123,
+        commitDeadlineAt: leaseStartedAt + 16_001,
+        cache,
+      })).rejects.toThrow('Coordinator operation rejected');
+    });
+
+    expect(await stub.reserve({ ...input, now: leaseStartedAt + 1 })).toMatchObject({
+      kind: 'in-flight',
+    });
+    await stub.settleSuccess({
+      ...lease,
+      now: leaseStartedAt + 1,
+      actualCostMicros: 123,
+      commitDeadlineAt: leaseStartedAt + 16_000,
+      cache,
+    });
+    expect(await stub.reserve({ ...input, now: leaseStartedAt + 2 })).toEqual({
+      kind: 'cached',
+      cache,
+    });
+  });
+
+  test('does not let a future worker entry timestamp extend the persisted text commit window', async () => {
+    const stub = coordinator();
+    await stub.setGlobalEnabled(true);
+    await stub.setTextGlobalEnabled(true);
+    await stub.setAccountEnabled(ACCOUNT_A, true);
+    const transactionNow = Date.now();
+    const forgedFutureEntry = transactionNow + 60_000;
+    const input = channelReserveInput('text', ACCOUNT_A, 93, forgedFutureEntry);
+    const result = await stub.reserve(input);
+    if (result.kind !== 'reserved') throw new Error('expected text lease');
+    const lease = leaseInput(input, result.leaseId, transactionNow);
+    await stub.markInvoked(lease);
+
+    await runInDurableObject(stub, async (instance) => {
+      await expect(instance.settleSuccess({
+        ...lease,
+        actualCostMicros: 123,
+        commitDeadlineAt: forgedFutureEntry + TEXT_SUCCESS_COMMIT_WINDOW_MS,
+        cache: {
+          ivBase64: 'aXY=',
+          ciphertextBase64: 'Y2lwaGVy',
+          expiresAt: transactionNow + 600_000,
+        },
+      })).rejects.toThrow('Coordinator operation rejected');
+    });
+
+    expect(await stub.reserve({ ...input, now: transactionNow + 1 })).toMatchObject({
+      kind: 'in-flight',
+    });
+    expect(await stub.status({
+      channel: 'text',
+      accountKey: ACCOUNT_A,
+      now: transactionNow + 1,
+    })).toMatchObject({
+      budgetSpentMicros: 0,
+      budgetReservedMicros: GATEWAY_CHANNEL_POLICY.text.initialAttemptReserveMicros,
+    });
+    await stub.settleFailure({
+      ...lease,
+      now: transactionNow + 1,
+      actualCostMicros: 0,
+      errorCode: 'provider-timeout',
+    });
   });
 
   test('reopens pre-invoke work but replays invoked terminal failures without false in-flight state', async () => {

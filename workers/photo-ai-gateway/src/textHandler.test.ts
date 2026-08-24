@@ -14,7 +14,12 @@ import { TextModelAdapterError } from './doubaoTextAdapter';
 import type { DoubaoTextOutput } from './doubaoTextSchema';
 import type { ReserveResult } from './coordinator';
 import type { GatewayEnv } from './env';
-import { GATEWAY_CHANNEL_POLICY, GATEWAY_LIMITS, arkCostMicros } from './gatewayPolicy';
+import {
+  GATEWAY_CHANNEL_POLICY,
+  GATEWAY_LIMITS,
+  TEXT_SUCCESS_COMMIT_WINDOW_MS,
+  arkCostMicros,
+} from './gatewayPolicy';
 import {
   TEXT_GATEWAY_RUNTIME,
   handleTextAiRequest,
@@ -456,7 +461,7 @@ describe('text gateway configuration and JSON firewall', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  test('internal timeout wins a stalled body read and removes the caller listener', async () => {
+  test('the 16 second lifecycle deadline wins a stalled body read and removes the caller listener', async () => {
     vi.useFakeTimers();
     const tracked = trackedAbortSignal();
     const cancel = vi.fn(() => new Promise<void>(() => undefined));
@@ -465,27 +470,34 @@ describe('text gateway configuration and JSON firewall', () => {
     const pending = harness.run(request);
     await Promise.resolve();
 
-    await vi.advanceTimersByTimeAsync(TEXT_AI_LIMITS.timeoutMs);
-    const result = await Promise.race([pending, Promise.resolve(null)]);
+    try {
+      await vi.advanceTimersByTimeAsync(TEXT_SUCCESS_COMMIT_WINDOW_MS - 1);
+      expect(await Promise.race([pending, Promise.resolve(null)])).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await Promise.race([pending, Promise.resolve(null)]);
 
-    expect(result).toBeInstanceOf(Response);
-    expect((result as Response).status).toBe(502);
-    expect(await responseBody(result as Response)).toMatchObject({
-      ok: false,
-      code: 'invalid-estimate',
-    });
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(tracked.addEventListener).toHaveBeenCalledTimes(1);
-    expect(tracked.removeEventListener).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(0);
-    expect(request.body?.locked).toBe(false);
-    expect(harness.getByName).not.toHaveBeenCalled();
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).status).toBe(502);
+      expect(await responseBody(result as Response)).toMatchObject({
+        ok: false,
+        code: 'invalid-estimate',
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(tracked.addEventListener).toHaveBeenCalledTimes(1);
+      expect(tracked.removeEventListener).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(request.body?.locked).toBe(false);
+      expect(harness.getByName).not.toHaveBeenCalled();
 
-    tracked.abort();
-    expect(cancel).toHaveBeenCalledTimes(1);
+      tracked.abort();
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      await vi.advanceTimersByTimeAsync(TEXT_AI_LIMITS.timeoutMs);
+      await pending;
+    }
   });
 
-  test('bounded body success clears its timeout and removes its abort listener', async () => {
+  test('bounded request success clears its lifecycle timeout and caller listener', async () => {
     vi.useFakeTimers();
     const tracked = trackedAbortSignal();
     const harness = textHandlerHarness({
@@ -507,6 +519,221 @@ describe('text gateway configuration and JSON firewall', () => {
 });
 
 describe('text estimate coordination', () => {
+  test('shares one 16 second budget across a delayed body and provider work', async () => {
+    vi.useFakeTimers();
+    const tracked = trackedAbortSignal();
+    const harness = textHandlerHarness();
+    const serialized = new TextEncoder().encode(JSON.stringify(textAiRequestFixture));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        setTimeout(() => {
+          controller.enqueue(serialized);
+          controller.close();
+        }, 5_000);
+      },
+    });
+    const request = {
+      headers: new Headers({
+        'content-type': 'application/json',
+        'x-tiezheng-account-key': ACCOUNT_KEY,
+      }),
+      body,
+      signal: tracked.signal,
+    } as Request;
+    let providerStarted!: () => void;
+    const started = new Promise<void>((resolve) => { providerStarted = resolve; });
+    harness.adapter.estimate.mockImplementation(() => {
+      providerStarted();
+      return new Promise(() => undefined);
+    });
+    let response: Response | undefined;
+    const pending = harness.run(request);
+    void pending.then((value) => { response = value; });
+
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+      await started;
+      await vi.advanceTimersByTimeAsync(10_999);
+      expect(response).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(response?.status).toBe(504);
+      expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+      expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+      expect(tracked.removeEventListener).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      await pending;
+    } finally {
+      await vi.advanceTimersByTimeAsync(TEXT_SUCCESS_COMMIT_WINDOW_MS);
+      await pending;
+    }
+  });
+
+  test('ends at 16 seconds when fingerprinting stalls before any coordinator side effect', async () => {
+    vi.useFakeTimers();
+    const tracked = trackedAbortSignal();
+    const harness = textHandlerHarness();
+    let rejectDigest!: (reason: Error) => void;
+    let digestStarted!: () => void;
+    const started = new Promise<void>((resolve) => { digestStarted = resolve; });
+    vi.spyOn(crypto.subtle, 'digest').mockImplementation(() => {
+      digestStarted();
+      return new Promise((_resolve, reject) => { rejectDigest = reject; });
+    });
+    let response: Response | undefined;
+    const pending = harness.run(workerRequest(
+      textAiRequestFixture,
+      'application/json',
+      {},
+      tracked.signal,
+    ));
+    void pending.then((value) => { response = value; });
+
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(TEXT_SUCCESS_COMMIT_WINDOW_MS - 1);
+      expect(response).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(response?.status).toBe(504);
+      expect(await response?.json()).toEqual({
+        ok: false,
+        code: 'provider-timeout',
+        retryAt: null,
+        resetAt: null,
+      });
+      expect(harness.getByName).not.toHaveBeenCalled();
+      expect(harness.coordinator.reserve).not.toHaveBeenCalled();
+      expect(tracked.removeEventListener).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      rejectDigest(new Error('fingerprint completed too late'));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(response?.status).toBe(504);
+      await pending;
+    } finally {
+      rejectDigest?.(new Error('test cleanup'));
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+    }
+  });
+
+  test('returns the original request in-flight when reserve acknowledgement is unknown at 16 seconds', async () => {
+    vi.useFakeTimers();
+    const tracked = trackedAbortSignal();
+    const harness = textHandlerHarness();
+    let resolveReserve!: (value: ReserveResult) => void;
+    let reserveStarted!: () => void;
+    const started = new Promise<void>((resolve) => { reserveStarted = resolve; });
+    harness.coordinator.reserve.mockImplementation(() => {
+      reserveStarted();
+      return new Promise((resolve) => { resolveReserve = resolve; });
+    });
+    let response: Response | undefined;
+    const pending = harness.run(workerRequest(
+      textAiRequestFixture,
+      'application/json',
+      {},
+      tracked.signal,
+    ));
+    void pending.then((value) => { response = value; });
+
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(TEXT_SUCCESS_COMMIT_WINDOW_MS - 1);
+      expect(response).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(response?.status).toBe(202);
+      expect(await response?.json()).toEqual({
+        ok: true,
+        status: 'in-flight',
+        requestId: textAiRequestFixture.requestId,
+        retryAfterMs: 0,
+      });
+      expect(harness.coordinator.reserve).toHaveBeenCalledWith(expect.objectContaining({
+        idempotencyKey: textAiRequestFixture.idempotencyKey,
+        now: NOW,
+      }));
+      expect(harness.coordinator.markInvoked).not.toHaveBeenCalled();
+      expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+      expect(harness.coordinator.settleFailure).not.toHaveBeenCalled();
+      expect(tracked.removeEventListener).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      resolveReserve({ kind: 'reserved', leaseId: LEASE_ID });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(response?.status).toBe(202);
+      await pending;
+    } finally {
+      resolveReserve?.({ kind: 'reserved', leaseId: LEASE_ID });
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+    }
+  });
+
+  test('returns the original request in-flight when mark acknowledgement is unknown at 16 seconds', async () => {
+    vi.useFakeTimers();
+    const tracked = trackedAbortSignal();
+    const harness = textHandlerHarness();
+    let rejectMark!: (reason: Error) => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    harness.coordinator.markInvoked.mockImplementation(() => {
+      markStarted();
+      return new Promise((_resolve, reject) => { rejectMark = reject; });
+    });
+    let response: Response | undefined;
+    const pending = harness.run(workerRequest(
+      textAiRequestFixture,
+      'application/json',
+      {},
+      tracked.signal,
+    ));
+    void pending.then((value) => { response = value; });
+
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(TEXT_SUCCESS_COMMIT_WINDOW_MS - 1);
+      expect(response).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(response?.status).toBe(202);
+      expect(await response?.json()).toEqual({
+        ok: true,
+        status: 'in-flight',
+        requestId: textAiRequestFixture.requestId,
+        retryAfterMs: 0,
+      });
+      expect(harness.coordinator.reserve).toHaveBeenCalledWith(expect.objectContaining({
+        idempotencyKey: textAiRequestFixture.idempotencyKey,
+        now: NOW,
+      }));
+      expect(harness.coordinator.markInvoked).toHaveBeenCalledWith(expect.objectContaining({
+        idempotencyKey: textAiRequestFixture.idempotencyKey,
+        now: NOW,
+      }));
+      expect(harness.coordinator.abortBeforeInvoke).not.toHaveBeenCalled();
+      expect(harness.coordinator.abortAfterMarkBeforeProvider).not.toHaveBeenCalled();
+      expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+      expect(harness.coordinator.settleFailure).not.toHaveBeenCalled();
+      expect(tracked.removeEventListener).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      rejectMark(new Error('mark acknowledgement lost'));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(response?.status).toBe(202);
+      await pending;
+    } finally {
+      rejectMark?.(new Error('test cleanup'));
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+    }
+  });
+
   test('complete invokes once, fingerprints private input, encrypts once and settles once', async () => {
     const harness = textHandlerHarness({
       modelResults: [{
@@ -609,7 +836,7 @@ describe('text estimate coordination', () => {
       const value = Object.defineProperty({}, 'kind', { enumerable: true, get: accessor });
       return { value, accessor };
     }],
-  ])('fails closed on %s without trusting or leaking coordinator data', async (_label, makeFixture) => {
+  ])('keeps the original request recoverable on %s without trusting coordinator data', async (_label, makeFixture) => {
     const fixture = makeFixture();
     const harness = textHandlerHarness({
       reserveResult: fixture.value as ReserveResult,
@@ -618,15 +845,18 @@ describe('text estimate coordination', () => {
     const response = await harness.run();
     const serialized = await response.text();
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(202);
     expect(JSON.parse(serialized)).toEqual({
-      ok: false,
-      code: 'service-disabled',
-      retryAt: null,
-      resetAt: null,
+      ok: true,
+      status: 'in-flight',
+      requestId: textAiRequestFixture.requestId,
+      retryAfterMs: 0,
     });
     expect(serialized).not.toMatch(/private|secret/);
     if ('accessor' in fixture) expect(fixture.accessor).not.toHaveBeenCalled();
+    expect(harness.coordinator.reserve).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: textAiRequestFixture.idempotencyKey,
+    }));
     expect(harness.createModelAdapter).not.toHaveBeenCalled();
     expect(harness.decryptCandidateCache).not.toHaveBeenCalled();
     expect(harness.coordinator.markInvoked).not.toHaveBeenCalled();
@@ -852,6 +1082,216 @@ describe('text estimate coordination', () => {
     expect(harness.encryptCandidateCache).toHaveBeenCalledTimes(1);
   });
 
+  test('bounds both provider attempts to 16 seconds and settles the original lease only once', async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    const harness = textHandlerHarness();
+    const providerSignals: AbortSignal[] = [];
+    let attempt = 0;
+    let lateSuccess = false;
+    let resolveFirstAttemptStarted!: () => void;
+    const firstAttemptStarted = new Promise<void>((resolve) => {
+      resolveFirstAttemptStarted = resolve;
+    });
+    harness.adapter.estimate.mockImplementation((...args: unknown[]) => {
+      attempt += 1;
+      const currentAttempt = attempt;
+      if (currentAttempt === 1) resolveFirstAttemptStarted();
+      const signal = args[1] as AbortSignal;
+      providerSignals.push(signal);
+      return new Promise<ModelResult>((resolve, reject) => {
+        const delayMs = currentAttempt === 1 ? 12_000 : 8_000;
+        const onAbort = () => {
+          clearTimeout(timer);
+          signal.removeEventListener('abort', onAbort);
+          reject(new TextModelAdapterError('provider-timeout', false));
+        };
+        const timer = setTimeout(() => {
+          signal.removeEventListener('abort', onAbort);
+          if (currentAttempt === 1) {
+            reject(new TextModelAdapterError('provider-timeout', true));
+            return;
+          }
+          lateSuccess = true;
+          resolve({
+            raw: { status: 'complete', candidate: providerCandidate() },
+            usage: null,
+          });
+        }, delayMs);
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
+    });
+    let response: Response | undefined;
+    const pending = harness.run(workerRequest(
+      textAiRequestFixture,
+      'application/json',
+      {},
+      caller.signal,
+    ));
+    void pending.then((value) => { response = value; });
+
+    try {
+      await firstAttemptStarted;
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(harness.coordinator.reserveRetryCost).toHaveBeenCalledOnce();
+      expect(harness.adapter.estimate).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(3_999);
+      expect(response).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(response?.status).toBe(504);
+      expect(providerSignals).toHaveLength(2);
+      expect(providerSignals[0]).not.toBe(caller.signal);
+      expect(providerSignals[0]).toBe(providerSignals[1]);
+      expect(providerSignals[0]?.aborted).toBe(true);
+      expect(caller.signal.aborted).toBe(false);
+      expect(lateSuccess).toBe(false);
+      expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+      expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(lateSuccess).toBe(false);
+      expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+      expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.advanceTimersByTimeAsync(20_000);
+      await pending;
+    }
+  });
+
+  test('propagates caller abort through the provider deadline signal and clears its timer', async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    const harness = textHandlerHarness();
+    let providerSignal: AbortSignal | undefined;
+    let resolveProviderStarted!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      resolveProviderStarted = resolve;
+    });
+    harness.adapter.estimate.mockImplementation((...args: unknown[]) => {
+      providerSignal = args[1] as AbortSignal;
+      resolveProviderStarted();
+      return new Promise<ModelResult>((_resolve, reject) => {
+        const onAbort = () => reject(
+          new TextModelAdapterError('provider-timeout', false),
+        );
+        providerSignal?.addEventListener('abort', onAbort, { once: true });
+      });
+    });
+    const pending = harness.run(workerRequest(
+      textAiRequestFixture,
+      'application/json',
+      {},
+      caller.signal,
+    ));
+    await providerStarted;
+
+    expect(providerSignal).not.toBe(caller.signal);
+    caller.abort();
+    const response = await pending;
+    expect(response.status).toBe(504);
+    expect(providerSignal?.aborted).toBe(true);
+    expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+    expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('keeps the 16 second cutoff active when near-deadline provider success stalls in encryption', async () => {
+    vi.useFakeTimers();
+    const harness = textHandlerHarness();
+    let resolveProviderStarted!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      resolveProviderStarted = resolve;
+    });
+    harness.adapter.estimate.mockImplementation(() => {
+      resolveProviderStarted();
+      return new Promise<ModelResult>((resolve) => {
+        setTimeout(() => resolve({
+          raw: { status: 'complete', candidate: providerCandidate() },
+          usage: null,
+        }), 15_999);
+      });
+    });
+    harness.encryptCandidateCache.mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve(CACHE), 2);
+    }));
+    let response: Response | undefined;
+    const pending = harness.run();
+    void pending.then((value) => { response = value; });
+
+    try {
+      await providerStarted;
+      await vi.advanceTimersByTimeAsync(15_999);
+      expect(harness.encryptCandidateCache).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(response?.status).toBe(504);
+      expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+      expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+      expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.advanceTimersByTimeAsync(100);
+      await pending;
+    }
+  });
+
+  test('bounds an unresponsive success settlement and closes the lease as one terminal failure', async () => {
+    vi.useFakeTimers();
+    const harness = textHandlerHarness();
+    let resolveSettlement!: () => void;
+    let resolveSettlementStarted!: () => void;
+    const settlementStarted = new Promise<void>((resolve) => {
+      resolveSettlementStarted = resolve;
+    });
+    harness.coordinator.settleSuccess.mockImplementation(() => {
+      resolveSettlementStarted();
+      return new Promise<void>((resolve) => { resolveSettlement = resolve; });
+    });
+    let response: Response | undefined;
+    const pending = harness.run();
+    void pending.then((value) => { response = value; });
+
+    try {
+      await settlementStarted;
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      expect(response?.status).toBe(504);
+      expect(harness.coordinator.settleSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({ commitDeadlineAt: NOW + 16_000 }),
+      );
+      expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      resolveSettlement();
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+    }
+  });
+
+  test('returns in-flight when success may have committed but both RPC acknowledgements are lost', async () => {
+    const harness = textHandlerHarness();
+    harness.coordinator.settleSuccess.mockRejectedValue(new Error('success response lost'));
+    harness.coordinator.settleFailure.mockRejectedValue(new Error('lease already committed'));
+
+    const response = await harness.run();
+
+    expect(response.status).toBe(202);
+    expect(await responseBody(response)).toEqual({
+      ok: true,
+      status: 'in-flight',
+      requestId: textAiRequestFixture.requestId,
+      retryAfterMs: 0,
+    });
+    expect(harness.coordinator.settleSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({ commitDeadlineAt: NOW + 16_000 }),
+    );
+    expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+  });
+
   test('does not retry a non-retryable provider failure and settles once', async () => {
     const harness = textHandlerHarness({
       modelResults: [new TextModelAdapterError('provider-unavailable', false)],
@@ -965,11 +1405,51 @@ describe('text estimate coordination', () => {
     const response = await harness.run();
     const serialized = await response.text();
 
-    expect(response.status).toBe(502);
-    expect(JSON.parse(serialized)).toMatchObject({ ok: false, code: 'invalid-estimate' });
+    expect(response.status).toBe(202);
+    expect(JSON.parse(serialized)).toEqual({
+      ok: true,
+      status: 'in-flight',
+      requestId: textAiRequestFixture.requestId,
+      retryAfterMs: 0,
+    });
     expect(serialized).not.toContain('private coordinator state');
     expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
     expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+  });
+
+  test('bounds an unresponsive failure settlement and keeps the original request recoverable', async () => {
+    vi.useFakeTimers();
+    const harness = textHandlerHarness();
+    harness.adapter.estimate.mockResolvedValueOnce(null as never);
+    let resolveSettlementStarted!: () => void;
+    const settlementStarted = new Promise<void>((resolve) => {
+      resolveSettlementStarted = resolve;
+    });
+    harness.coordinator.settleFailure.mockImplementation(() => {
+      resolveSettlementStarted();
+      return new Promise<void>(() => undefined);
+    });
+    let response: Response | undefined;
+
+    try {
+      const pending = harness.run().then((value) => { response = value; });
+      await settlementStarted;
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      expect(response?.status).toBe(202);
+      expect(await response?.json()).toEqual({
+        ok: true,
+        status: 'in-flight',
+        requestId: textAiRequestFixture.requestId,
+        retryAfterMs: 0,
+      });
+      expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+      expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test.each([

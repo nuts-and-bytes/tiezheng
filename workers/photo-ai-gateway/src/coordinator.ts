@@ -4,6 +4,7 @@ import type { GatewayEnv } from './env';
 import {
   GATEWAY_CHANNEL_POLICY,
   GATEWAY_LIMITS,
+  TEXT_SUCCESS_COMMIT_WINDOW_MS,
   type AiChannel,
 } from './gatewayPolicy';
 
@@ -19,7 +20,6 @@ const OPERATION_REJECTED = 'Coordinator operation rejected';
 const GLOBAL_SCOPE = '$global';
 const MAX_DATE_MS = 8_640_000_000_000_000;
 const MAX_DERIVED_DATE_WINDOW_MS = 32 * 86_400_000 + 8 * 60 * 60_000;
-
 export interface StatusInput {
   channel: AiChannel;
   accountKey: string;
@@ -71,8 +71,8 @@ export type ReserveResult =
       resetAt: string | null;
     };
 
-export interface LeaseInput {
-  channel: AiChannel;
+export interface LeaseInput<Channel extends AiChannel = AiChannel> {
+  channel: Channel;
   accountKey: string;
   idempotencyKey: string;
   fingerprint: string;
@@ -80,10 +80,14 @@ export interface LeaseInput {
   now: number;
 }
 
-export interface SettleSuccessInput extends LeaseInput {
+interface SettleSuccessFields {
   cache: EncryptedCandidateCache;
   actualCostMicros: number;
 }
+
+export type SettleSuccessInput =
+  | (LeaseInput<'text'> & SettleSuccessFields & { commitDeadlineAt: number })
+  | (LeaseInput<'photo'> & SettleSuccessFields & { commitDeadlineAt?: never });
 
 export interface SettleFailureInput extends LeaseInput {
   actualCostMicros: number | null;
@@ -728,7 +732,10 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       }
 
       const newLeaseId = crypto.randomUUID();
-      const leaseExpiresAt = now + GATEWAY_LIMITS.leaseMs;
+      const leaseStartedAt = channel === 'text'
+        ? Math.min(now, safeTimestamp(Date.now()))
+        : now;
+      const leaseExpiresAt = leaseStartedAt + GATEWAY_LIMITS.leaseMs;
       const idempotencyExpiresAt = now + GATEWAY_LIMITS.idempotencyMs;
       this.changeDaily(scopes.account, day, 1, 0);
       this.changeDaily(scopes.global, day, 1, 0);
@@ -861,7 +868,20 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
   async settleSuccess(input: SettleSuccessInput): Promise<void> {
     const value = leaseInput(input);
     const cache = cacheValue(input.cache, value.now);
+    const commitDeadlineAt = value.channel === 'text'
+      ? safeTimestamp(input.commitDeadlineAt)
+      : null;
+    if (value.channel === 'photo' && input.commitDeadlineAt !== undefined) return invalid();
     this.ctx.storage.transactionSync(() => {
+      if (commitDeadlineAt !== null) {
+        const persistedLease = this.getLease(value);
+        const persistedStart = persistedLease.expires_at - GATEWAY_LIMITS.leaseMs;
+        const persistedDeadline = persistedStart + TEXT_SUCCESS_COMMIT_WINDOW_MS;
+        if (
+          commitDeadlineAt !== persistedDeadline
+          || Date.now() >= persistedDeadline
+        ) return rejectedOperation();
+      }
       const lease = this.settle(value, input.actualCostMicros);
       this.exec(
         `UPDATE idempotency SET state = 'succeeded', lease_id = NULL,

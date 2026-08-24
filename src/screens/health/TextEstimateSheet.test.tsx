@@ -2,7 +2,7 @@ import { StrictMode } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import type { TextAiClient } from '../../lib/textAiClient';
+import type { TextAiClient, TextAiEstimateInput } from '../../lib/textAiClient';
 import {
   textAiErrorCopy,
   type TextAiErrorCode,
@@ -21,6 +21,7 @@ import { TextEstimateSheet } from './TextEstimateSheet';
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const SECOND_REQUEST_ID = '22222222-2222-4222-8222-222222222222';
+const THIRD_REQUEST_ID = '33333333-3333-4333-8333-333333333333';
 const DESCRIPTION = '牛肉面一碗，少油';
 
 function failure(code: TextAiErrorCode): TextAiFailure {
@@ -33,20 +34,27 @@ interface RenderOptions {
   sessionResponse?: TextAiSessionResponse;
   initialDraft?: TextMealDraft;
   onLogin?: (draft: TextMealDraft) => void;
-  onUseManual?: () => void;
+  onUseManual?: (draft: TextMealDraft) => void;
   onConfirm?: (input: ConfirmTextEstimateInput) => Promise<void>;
   onClose?: () => void;
   strict?: boolean;
 }
 
 function renderSheet(options: RenderOptions = {}) {
+  const estimateResponse = options.estimateResponse
+    ?? structuredClone(textAiEstimateSuccessFixture);
+  const estimate = vi.fn(async (_input: TextAiEstimateInput) => estimateResponse);
   const client: TextAiClient = options.client ?? {
     session: vi.fn().mockResolvedValue(
       options.sessionResponse ?? structuredClone(textAiSessionSuccessFixture),
     ),
-    estimate: vi.fn().mockResolvedValue(
-      options.estimateResponse ?? structuredClone(textAiEstimateSuccessFixture),
-    ),
+    estimate,
+    estimateWithOutcome: vi.fn(async (input: TextAiEstimateInput) => {
+      const response = await estimate(input);
+      return response.ok && response.status === 'in-flight'
+        ? { terminal: false as const, response }
+        : { terminal: true as const, response };
+    }),
   };
   const onLogin = options.onLogin ?? vi.fn();
   const onUseManual = options.onUseManual ?? vi.fn();
@@ -66,6 +74,39 @@ function renderSheet(options: RenderOptions = {}) {
   );
   const view = render(options.strict ? <StrictMode>{sheet}</StrictMode> : sheet);
   return { ...view, client, onLogin, onUseManual, onConfirm, onClose };
+}
+
+function outcomeAwareClient(outcomes: Array<{
+  terminal: boolean;
+  response: TextAiEstimateResponse;
+}>) {
+  const outcomeQueue = structuredClone(outcomes);
+  const estimate = vi.fn(async (_input: TextAiEstimateInput) => {
+    throw new Error('UI must use the outcome-aware estimate path');
+  });
+  const estimateWithOutcome = vi.fn(async (_input: TextAiEstimateInput) => {
+    const next = outcomeQueue.shift();
+    if (next === undefined) throw new Error('unexpected outcome estimate');
+    return next;
+  });
+  const client = {
+    session: vi.fn().mockResolvedValue(structuredClone(textAiSessionSuccessFixture)),
+    estimate,
+    estimateWithOutcome,
+  } as unknown as TextAiClient;
+  const calls = () => estimateWithOutcome.mock.calls;
+  return { client, calls };
+}
+
+function terminalOutcomeEstimate(
+  estimate: TextAiClient['estimate'],
+): TextAiClient['estimateWithOutcome'] {
+  return async (input) => {
+    const response = await estimate(input);
+    return response.ok && response.status === 'in-flight'
+      ? { terminal: false, response }
+      : { terminal: true, response };
+  };
 }
 
 async function enterDraft(
@@ -509,6 +550,10 @@ test('session reject 可重试且保留恢复前输入', async () => {
   const client: TextAiClient = {
     session,
     estimate: vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture)),
+    estimateWithOutcome: vi.fn().mockResolvedValue({
+      terminal: true,
+      response: structuredClone(textAiEstimateSuccessFixture),
+    }),
   };
   renderSheet({ client });
 
@@ -521,38 +566,113 @@ test('session reject 可重试且保留恢复前输入', async () => {
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
-test('estimate reject 后新请求使用新 UUID/key，旧输入保持不变', async () => {
+test('本地超时后的下一次动作先用同 UUID/key 恢复隐藏成功', async () => {
   vi.mocked(globalThis.crypto.randomUUID)
     .mockReturnValueOnce(REQUEST_ID)
     .mockReturnValueOnce(SECOND_REQUEST_ID);
   const user = userEvent.setup();
-  const estimate = vi
-    .fn()
-    .mockRejectedValueOnce(new Error('provider crashed'))
-    .mockResolvedValueOnce({
-      ...structuredClone(textAiEstimateSuccessFixture),
-      requestId: SECOND_REQUEST_ID,
-    });
-  const client: TextAiClient = {
-    session: vi.fn().mockResolvedValue(structuredClone(textAiSessionSuccessFixture)),
-    estimate,
-  };
+  const { client, calls } = outcomeAwareClient([
+    { terminal: false, response: failure('provider-timeout') },
+    { terminal: true, response: structuredClone(textAiEstimateSuccessFixture) },
+  ]);
   renderSheet({ client });
   await enterDraft(user);
   await user.click(screen.getByRole('button', { name: '开始估算' }));
   expect(await screen.findByRole('alert')).toHaveTextContent(
-    textAiErrorCopy('provider-unavailable'),
+    textAiErrorCopy('provider-timeout'),
   );
 
   await user.click(screen.getByRole('button', { name: '重新估算' }));
   await screen.findByText('560–780 kcal');
-  expect(estimate).toHaveBeenCalledTimes(2);
-  expect(estimate.mock.calls.map(([input]) => [input.requestId, input.idempotencyKey]))
+  expect(calls().map(([input]) => [input.requestId, input.idempotencyKey]))
     .toEqual([
       [REQUEST_ID, '11111111111141118111111111111111'],
-      [SECOND_REQUEST_ID, '22222222222242228222222222222222'],
+      [REQUEST_ID, '11111111111141118111111111111111'],
     ]);
   expect(screen.getByText(DESCRIPTION)).toBeInTheDocument();
+});
+
+test('连续本地超时始终恢复原请求且绝不生成新 key', async () => {
+  vi.mocked(globalThis.crypto.randomUUID)
+    .mockReturnValueOnce(REQUEST_ID)
+    .mockReturnValueOnce(SECOND_REQUEST_ID)
+    .mockReturnValueOnce(THIRD_REQUEST_ID);
+  const user = userEvent.setup();
+  const { client, calls } = outcomeAwareClient([
+    { terminal: false, response: failure('provider-timeout') },
+    { terminal: false, response: failure('offline') },
+    { terminal: false, response: structuredClone(textAiEstimateInFlightFixture) },
+  ]);
+  renderSheet({ client });
+  await enterDraft(user);
+  await user.click(screen.getByRole('button', { name: '开始估算' }));
+  await screen.findByRole('alert');
+  await user.click(screen.getByRole('button', { name: '重新估算' }));
+  await waitFor(() => expect(calls()).toHaveLength(2));
+  await user.click(screen.getByRole('button', { name: '重新估算' }));
+  await waitFor(() => expect(calls()).toHaveLength(3));
+
+  expect(calls().map(([input]) => input.requestId)).toEqual([
+    REQUEST_ID,
+    REQUEST_ID,
+    REQUEST_ID,
+  ]);
+  expect(globalThis.crypto.randomUUID).toHaveBeenCalledTimes(1);
+});
+
+test('编辑草稿时先按原 fingerprint 恢复，确定失败后的下一次才用新 key', async () => {
+  vi.mocked(globalThis.crypto.randomUUID)
+    .mockReturnValueOnce(REQUEST_ID)
+    .mockReturnValueOnce(SECOND_REQUEST_ID)
+    .mockReturnValueOnce(THIRD_REQUEST_ID);
+  const user = userEvent.setup();
+  const editedDescription = '编辑后的鸡肉饭';
+  const { client, calls } = outcomeAwareClient([
+    { terminal: false, response: failure('provider-timeout') },
+    { terminal: true, response: failure('provider-unavailable') },
+    {
+      terminal: true,
+      response: {
+        ...structuredClone(textAiEstimateSuccessFixture),
+        requestId: SECOND_REQUEST_ID,
+      },
+    },
+  ]);
+  renderSheet({ client });
+  await enterDraft(user);
+  await user.click(screen.getByRole('button', { name: '开始估算' }));
+  await screen.findByRole('alert');
+  await user.clear(screen.getByLabelText('餐食描述'));
+  await user.type(screen.getByLabelText('餐食描述'), editedDescription);
+
+  await user.click(screen.getByRole('button', { name: '重新估算' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    textAiErrorCopy('provider-unavailable'),
+  );
+  await user.click(screen.getByRole('button', { name: '重新估算' }));
+  await screen.findByText('560–780 kcal');
+
+  expect(calls().map(([input]) => ({
+    requestId: input.requestId,
+    idempotencyKey: input.idempotencyKey,
+    description: input.description,
+  }))).toEqual([
+    {
+      requestId: REQUEST_ID,
+      idempotencyKey: '11111111111141118111111111111111',
+      description: DESCRIPTION,
+    },
+    {
+      requestId: REQUEST_ID,
+      idempotencyKey: '11111111111141118111111111111111',
+      description: DESCRIPTION,
+    },
+    {
+      requestId: SECOND_REQUEST_ID,
+      idempotencyKey: '22222222222242228222222222222222',
+      description: editedDescription,
+    },
+  ]);
 });
 
 test.each([
@@ -650,7 +770,7 @@ test('做法可为空且验证上限内的确认数据可以保存', async () =>
   expect(onConfirm.mock.calls[0]?.[0].candidate.confirmedPreparation).toBe('');
 });
 
-test('关闭和手动路径都不确认，uncertain 后仍保留输入', async () => {
+test('关闭和手动路径都不确认，uncertain 后把完整草稿安全传给手动记录', async () => {
   const user = userEvent.setup();
   const onConfirm = vi.fn();
   const onClose = vi.fn();
@@ -667,6 +787,10 @@ test('关闭和手动路径都不确认，uncertain 后仍保留输入', async (
   expect(screen.getByLabelText('餐食描述')).toHaveValue(DESCRIPTION);
   await user.click(screen.getByRole('button', { name: '改用手动记录' }));
   expect(onUseManual).toHaveBeenCalledOnce();
+  expect(onUseManual).toHaveBeenCalledWith({
+    description: DESCRIPTION,
+    amount: { value: 500, unit: 'g' },
+  });
   expect(onConfirm).not.toHaveBeenCalled();
   first.unmount();
 
@@ -689,6 +813,7 @@ test('估算重复点击只发一个请求，关闭后晚到成功不得污染�
   const client: TextAiClient = {
     session: vi.fn().mockResolvedValue(structuredClone(textAiSessionSuccessFixture)),
     estimate,
+    estimateWithOutcome: terminalOutcomeEstimate(estimate),
   };
   renderSheet({ client, onClose });
   await enterDraft(user);
@@ -713,6 +838,10 @@ test('卸载后 session reject 被消费且不会更新已卸载组件', async (
   const client: TextAiClient = {
     session,
     estimate: vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture)),
+    estimateWithOutcome: vi.fn().mockResolvedValue({
+      terminal: true,
+      response: structuredClone(textAiEstimateSuccessFixture),
+    }),
   };
   const view = renderSheet({ client });
   await waitFor(() => expect(session).toHaveBeenCalledOnce());

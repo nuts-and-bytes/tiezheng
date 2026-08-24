@@ -55,6 +55,7 @@ export function HealthScreen() {
   const [photoSlot, setPhotoSlot] = useState<MealSlot>();
   const [textSlot, setTextSlot] = useState<MealSlot>();
   const [textDraft, setTextDraft] = useState<TextMealDraft>();
+  const [manualPickerDraft, setManualPickerDraft] = useState<TextMealDraft>();
   const [textSheetVersion, setTextSheetVersion] = useState(0);
   const [editingPlan, setEditingPlan] = useState(false);
   const targetsEnabled = autoNutritionTargetsEnabled();
@@ -102,6 +103,7 @@ export function HealthScreen() {
     const textIntent = resumeText ? takeTextAiIntent() : undefined;
     if (textsEnabled && textIntent !== undefined) {
       setPickerSlot(undefined);
+      setManualPickerDraft(undefined);
       setPhotoSlot(undefined);
       setEditingPlan(false);
       setDate(textIntent.date);
@@ -113,6 +115,7 @@ export function HealthScreen() {
       setTextSlot(textIntent.slot);
     } else if (photosEnabled && photoIntent !== undefined) {
       setPickerSlot(undefined);
+      setManualPickerDraft(undefined);
       setTextSlot(undefined);
       setTextDraft(undefined);
       setEditingPlan(false);
@@ -148,6 +151,7 @@ export function HealthScreen() {
   ]);
 
   function openPicker(slot: MealSlot) {
+    setManualPickerDraft(undefined);
     setPhotoSlot(undefined);
     setTextSlot(undefined);
     setTextDraft(undefined);
@@ -157,6 +161,7 @@ export function HealthScreen() {
 
   function openPhoto(slot: MealSlot) {
     setPickerSlot(undefined);
+    setManualPickerDraft(undefined);
     setTextSlot(undefined);
     setTextDraft(undefined);
     setEditingPlan(false);
@@ -166,6 +171,7 @@ export function HealthScreen() {
   function openText(slot: MealSlot) {
     if (!textsEnabled) return;
     setPickerSlot(undefined);
+    setManualPickerDraft(undefined);
     setPhotoSlot(undefined);
     setEditingPlan(false);
     setTextDraft(undefined);
@@ -175,6 +181,7 @@ export function HealthScreen() {
 
   function changeDate(nextDate: string) {
     setPickerSlot(undefined);
+    setManualPickerDraft(undefined);
     setPhotoSlot(undefined);
     setTextSlot(undefined);
     setTextDraft(undefined);
@@ -252,6 +259,7 @@ export function HealthScreen() {
                 targetsEnabled={targetsEnabled}
                 onEdit={() => {
                   setPickerSlot(undefined);
+                  setManualPickerDraft(undefined);
                   setPhotoSlot(undefined);
                   setTextSlot(undefined);
                   setTextDraft(undefined);
@@ -303,8 +311,12 @@ export function HealthScreen() {
               slot={pickerSlot}
               foods={data.foods}
               textAiEnabled={textsEnabled}
+              initialManualDraft={manualPickerDraft}
               onEstimateMeal={openText}
-              onClose={() => setPickerSlot(undefined)}
+              onClose={() => {
+                setPickerSlot(undefined);
+                setManualPickerDraft(undefined);
+              }}
               onCreateCustomFood={saveCustomFood}
               onSave={async ({ operationId, food, amount }) => {
                 const saveSnapshot = {
@@ -359,12 +371,17 @@ export function HealthScreen() {
                   return;
                 }
               }}
-              onUseManual={() => {
+              onUseManual={(draft) => {
                 const slot = textSlot;
+                const snapshot: TextMealDraft = {
+                  description: draft.description,
+                  amount: draft.amount === null ? null : { ...draft.amount },
+                };
                 setTextSlot(undefined);
                 setTextDraft(undefined);
                 setPhotoSlot(undefined);
                 setEditingPlan(false);
+                setManualPickerDraft(snapshot);
                 setPickerSlot(slot);
               }}
               onConfirm={async (input) => {

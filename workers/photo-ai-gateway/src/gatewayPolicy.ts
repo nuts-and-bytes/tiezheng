@@ -1,5 +1,7 @@
 export type AiChannel = 'photo' | 'text';
 
+export const TEXT_SUCCESS_COMMIT_WINDOW_MS = 16_000;
+
 export const GATEWAY_CHANNEL_POLICY = Object.freeze({
   photo: Object.freeze({
     accountDaily: 10,

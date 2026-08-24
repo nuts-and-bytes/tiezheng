@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Button } from '../../components/Button';
 import { PRESET_FOOD_IMAGE_MANIFEST } from '../../data/presetFoodImageManifest.generated';
+import type { TextMealDraft } from '../../lib/textAiContract';
 import type { Food, MealSlot } from '../../lib/nutritionTypes';
 import type { SaveCustomFoodInput } from '../../repos/foodRepo';
 import { MEAL_LABELS } from './MealSection';
@@ -15,6 +16,7 @@ export interface FoodPickerSheetProps {
   slot: MealSlot;
   foods: Food[];
   textAiEnabled: boolean;
+  initialManualDraft?: TextMealDraft;
   onEstimateMeal(slot: MealSlot): void;
   onClose(): void;
   onCreateCustomFood(operationId: string, input: SaveCustomFoodInput): Promise<Food>;
@@ -30,15 +32,46 @@ function initialOperationId(ref: { current: string | null }): string {
   return ref.current;
 }
 
+interface InitialManualValues {
+  name: string;
+  unit: 'g' | 'mL';
+  amount: string;
+}
+
+function initialManualValues(draft: TextMealDraft | undefined): InitialManualValues | undefined {
+  if (draft === undefined) return undefined;
+  const amount = draft.amount;
+  if (
+    amount === null ||
+    !Number.isFinite(amount.value) ||
+    Object.is(amount.value, -0) ||
+    amount.value < MIN_AMOUNT ||
+    amount.value > MAX_AMOUNT ||
+    (amount.unit !== 'g' && amount.unit !== 'mL')
+  ) {
+    return { name: draft.description, unit: 'g', amount: '100' };
+  }
+  return {
+    name: draft.description,
+    unit: amount.unit,
+    amount: String(amount.value),
+  };
+}
+
 export function FoodPickerSheet({
   slot,
   foods,
   textAiEnabled,
+  initialManualDraft,
   onEstimateMeal,
   onClose,
   onCreateCustomFood,
   onSave,
 }: FoodPickerSheetProps) {
+  const initialManualRef = useRef<InitialManualValues | undefined>(
+    initialManualValues(initialManualDraft),
+  );
+  const initialManual = initialManualRef.current;
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocusTrap(dialogRef, onClose);
   const operationIdRef = useRef<string | null>(null);
@@ -47,9 +80,9 @@ export function FoodPickerSheet({
   const mounted = useRef(true);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string>();
-  const [manual, setManual] = useState(false);
-  const [manualUnit, setManualUnit] = useState<'g' | 'mL'>('g');
-  const [amount, setAmount] = useState('100');
+  const [manual, setManual] = useState(initialManual !== undefined);
+  const [manualUnit, setManualUnit] = useState<'g' | 'mL'>(initialManual?.unit ?? 'g');
+  const [amount, setAmount] = useState(initialManual?.amount ?? '100');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -311,7 +344,13 @@ export function FoodPickerSheet({
               </legend>
               <label className="grid gap-1">
                 食物名称
-                <input name="name" aria-label="食物名称" required className={CONTROL_CLASS} />
+                <input
+                  name="name"
+                  aria-label="食物名称"
+                  defaultValue={initialManual?.name ?? ''}
+                  required
+                  className={CONTROL_CLASS}
+                />
               </label>
               <label className="grid gap-1">
                 生熟状态

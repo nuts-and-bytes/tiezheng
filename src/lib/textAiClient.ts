@@ -16,9 +16,14 @@ export interface TextAiEstimateInput extends TextMealDraft {
   idempotencyKey: string;
 }
 
+export type TextAiEstimateOutcome =
+  | { terminal: true; response: TextAiEstimateResponse }
+  | { terminal: false; response: TextAiEstimateResponse };
+
 export interface TextAiClient {
   session(): Promise<TextAiSessionResponse>;
   estimate(input: TextAiEstimateInput): Promise<TextAiEstimateResponse>;
+  estimateWithOutcome(input: TextAiEstimateInput): Promise<TextAiEstimateOutcome>;
 }
 
 const SESSION_URL = '/api/nutrition/text/session';
@@ -124,22 +129,15 @@ function abortError(): DOMException {
   return new DOMException('Text AI request aborted', 'AbortError');
 }
 
-async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
-  if (body === null) return;
+function cancelSilently(
+  target: { cancel(reason?: unknown): unknown } | null,
+): void {
+  if (target === null) return;
   try {
-    await body.cancel();
+    const cancellation = target.cancel();
+    void Promise.resolve(cancellation).catch(() => undefined);
   } catch {
-    // The response remains invalid even when its source refuses cancellation.
-  }
-}
-
-async function cancelReader(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-): Promise<void> {
-  try {
-    await reader.cancel();
-  } catch {
-    // Preserve the validation or read failure that required cancellation.
+    // Cancellation is best effort; the fixed validation result wins.
   }
 }
 
@@ -164,7 +162,7 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
   try {
     const contentType = response.headers.get('content-type');
     if (contentType === null || !/^application\/json(?:;|$)/i.test(contentType)) {
-      await cancelBody(response.body);
+      cancelSilently(response.body);
       return invalidResponse();
     }
 
@@ -176,7 +174,7 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
         Number(declaredLength) > TEXT_AI_LIMITS.requestBytes
       )
     ) {
-      await cancelBody(response.body);
+      cancelSilently(response.body);
       return invalidResponse();
     }
     if (response.body === null) return invalidResponse();
@@ -187,7 +185,7 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
     let onAbort: (() => void) | undefined;
     const aborted = new Promise<never>((_resolve, reject) => {
       onAbort = () => {
-        void reader.cancel().catch(() => undefined);
+        cancelSilently(reader);
         reject(abortError());
       };
       signal.addEventListener('abort', onAbort, { once: true });
@@ -199,14 +197,14 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
         if (done) break;
         length += value.byteLength;
         if (length > TEXT_AI_LIMITS.requestBytes) {
-          await cancelReader(reader);
+          cancelSilently(reader);
           return invalidResponse();
         }
         chunks.push(value);
       }
     } catch (error) {
       if (!signal.aborted && !(error instanceof InvalidTextAiResponse)) {
-        await cancelReader(reader);
+        cancelSilently(reader);
       }
       throw error;
     } finally {
@@ -323,9 +321,12 @@ async function abortableDefaultDelay(
   });
 }
 
-async function withTimeout<T>(
+async function withTimeoutOutcome<T>(
   operation: (signal: AbortSignal) => Promise<T>,
-): Promise<T | TextAiFailure> {
+): Promise<{
+  locallyCompleted: boolean;
+  response: T | TextAiFailure;
+}> {
   const controller = new AbortController();
   const timedOut = Symbol('text-ai-timeout');
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -344,55 +345,77 @@ async function withTimeout<T>(
 
   const result = await Promise.race([pending, timeout]);
   if (timer !== undefined) clearTimeout(timer);
-  if (result === timedOut) return failure('provider-timeout');
+  if (result === timedOut) {
+    return { locallyCompleted: false, response: failure('provider-timeout') };
+  }
   if ('error' in result) {
     if (controller.signal.aborted || isAbortError(result.error)) {
-      return failure('provider-timeout');
+      return { locallyCompleted: false, response: failure('provider-timeout') };
     }
     if (result.error instanceof InvalidTextAiResponse) {
-      return failure('invalid-estimate');
+      return { locallyCompleted: false, response: failure('invalid-estimate') };
     }
-    return failure('offline');
+    return { locallyCompleted: false, response: failure('offline') };
   }
-  return result.value;
+  return { locallyCompleted: true, response: result.value };
+}
+
+async function withTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T | TextAiFailure> {
+  return (await withTimeoutOutcome(operation)).response;
 }
 
 export function createTextAiClient(
   fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
   delay: Delay = defaultDelay,
 ): TextAiClient {
+  const estimateWithOutcome = async (
+    rawInput: TextAiEstimateInput,
+  ): Promise<TextAiEstimateOutcome> => {
+    const request = snapshotTextAiRequest(rawInput);
+    const body = JSON.stringify(request);
+    const outcome = await withTimeoutOutcome(async (signal) => {
+      const first = await sendJson(
+        fetcher,
+        'estimate',
+        signal,
+        body,
+        request.requestId,
+      );
+      if (!first.ok || first.status !== 'in-flight') return first;
+
+      const waitMs = Math.min(first.retryAfterMs, MAX_RETRY_DELAY_MS);
+      if (delay === defaultDelay) {
+        await abortableDefaultDelay(waitMs, signal);
+      } else {
+        await raceWithAbort(Promise.resolve().then(() => delay(waitMs)), signal);
+      }
+      return sendJson(
+        fetcher,
+        'estimate',
+        signal,
+        body,
+        request.requestId,
+      );
+    });
+    const response = outcome.response;
+    const terminal = outcome.locallyCompleted
+      && (!response.ok || response.status === 'complete');
+    return terminal
+      ? { terminal: true, response }
+      : { terminal: false, response };
+  };
+
   return {
     async session() {
       return withTimeout((signal) => sendJson(fetcher, 'session', signal));
     },
 
     async estimate(rawInput) {
-      const request = snapshotTextAiRequest(rawInput);
-      const body = JSON.stringify(request);
-      return withTimeout(async (signal) => {
-        const first = await sendJson(
-          fetcher,
-          'estimate',
-          signal,
-          body,
-          request.requestId,
-        );
-        if (!first.ok || first.status !== 'in-flight') return first;
-
-        const waitMs = Math.min(first.retryAfterMs, MAX_RETRY_DELAY_MS);
-        if (delay === defaultDelay) {
-          await abortableDefaultDelay(waitMs, signal);
-        } else {
-          await raceWithAbort(Promise.resolve().then(() => delay(waitMs)), signal);
-        }
-        return sendJson(
-          fetcher,
-          'estimate',
-          signal,
-          body,
-          request.requestId,
-        );
-      });
+      return (await estimateWithOutcome(rawInput)).response;
     },
+
+    estimateWithOutcome,
   };
 }

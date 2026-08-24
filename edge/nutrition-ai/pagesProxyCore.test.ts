@@ -117,16 +117,267 @@ function crossRealmBytes(values: readonly number[]): Uint8Array {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 describe('proxyBoundedJson', () => {
+  test('starts the 18 second text deadline before reading a stalled POST body', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    let close!: () => void;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{'));
+        close = () => controller.close();
+      },
+      cancel,
+    });
+    const fetcher = vi.fn(async () => json({ ok: true }));
+    let outcome: 'resolved' | 'rejected' | undefined;
+    const pending = proxyBoundedJson(
+      streamingRequest(stream, { 'content-type': 'application/json' }),
+      binding(fetcher),
+      ACCOUNT_KEY,
+      textEstimateDefinition,
+    );
+    void pending.then(
+      () => { outcome = 'resolved'; },
+      () => { outcome = 'rejected'; },
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(18_000);
+      expect(outcome).toBe('rejected');
+      await expect(pending).rejects.toThrow('Invalid service response');
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(stream.locked).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      if (outcome === undefined) close();
+      await vi.runAllTimersAsync();
+      await pending.catch(() => undefined);
+    }
+  });
+
+  test.each([
+    ['throws synchronously', () => { throw new Error('cancel failed'); }],
+    ['rejects', () => Promise.reject(new Error('cancel failed'))],
+  ])('pre-aborted text POST releases its body when reader cancellation %s', async (
+    _label,
+    cancelImplementation,
+  ) => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    caller.abort();
+    let close!: () => void;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        close = () => controller.close();
+      },
+    });
+    const request = streamingRequest(stream, { 'content-type': 'application/json' });
+    Object.defineProperty(request, 'signal', { configurable: true, value: caller.signal });
+    const cancelReader = vi.spyOn(ReadableStreamDefaultReader.prototype, 'cancel')
+      .mockImplementation(cancelImplementation);
+    const fetcher = vi.fn();
+    let outcome: 'resolved' | 'rejected' | undefined;
+    const pending = proxyBoundedJson(
+      request,
+      binding(fetcher),
+      ACCOUNT_KEY,
+      textEstimateDefinition,
+    );
+    void pending.then(
+      () => { outcome = 'resolved'; },
+      () => { outcome = 'rejected'; },
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toBe('rejected');
+      await expect(pending).rejects.toThrow('Invalid service response');
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(cancelReader).toHaveBeenCalledTimes(1);
+      expect(stream.locked).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      cancelReader.mockRestore();
+      if (outcome === undefined) close();
+      await vi.runAllTimersAsync();
+      await pending.catch(() => undefined);
+    }
+  });
+
+  test('aborts and unlocks a stalled text binding response at the same 18 second deadline', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    let close!: () => void;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        close = () => controller.close();
+      },
+      cancel,
+    });
+    const fetcher = vi.fn(async () => new Response(stream, {
+      headers: { 'content-type': 'application/json' },
+    }));
+    const pending = proxyBoundedJson(
+      new Request('https://app.example.test/api/nutrition/text/session'),
+      binding(fetcher),
+      ACCOUNT_KEY,
+      sessionDefinition,
+    );
+    void pending.catch(() => undefined);
+
+    try {
+      await vi.advanceTimersByTimeAsync(18_000);
+      await expect(pending).rejects.toThrow('Invalid service response');
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(stream.locked).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      if (stream.locked) close();
+      await Promise.resolve();
+    }
+  });
+
+  test('gives text service bindings an 18 second deadline below the 20 second client ceiling', async () => {
+    vi.useFakeTimers();
+    let forwardedSignal: AbortSignal | undefined;
+    const fetcher = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      forwardedSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        forwardedSignal?.addEventListener('abort', () => {
+          reject(new DOMException('binding aborted', 'AbortError'));
+        }, { once: true });
+      });
+    });
+    const pending = proxyBoundedJson(
+      new Request('https://app.example.test/api/nutrition/text/session'),
+      binding(fetcher),
+      ACCOUNT_KEY,
+      sessionDefinition,
+    );
+    let settled = false;
+    void pending.finally(() => { settled = true; }).catch(() => undefined);
+
+    await vi.advanceTimersByTimeAsync(17_999);
+    expect(settled).toBe(false);
+    expect(forwardedSignal).toBeInstanceOf(AbortSignal);
+    expect(forwardedSignal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).rejects.toThrow('Invalid service response');
+    expect(forwardedSignal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('propagates a caller abort through a distinct text binding signal and cleans listeners', async () => {
+    let callerAborted = false;
+    const callerListeners = new Set<EventListenerOrEventListenerObject>();
+    const callerSignal = {
+      get aborted() { return callerAborted; },
+      addEventListener: vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+        if (type === 'abort') callerListeners.add(listener);
+      }),
+      removeEventListener: vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+        if (type === 'abort') callerListeners.delete(listener);
+      }),
+    } as unknown as AbortSignal;
+    const request = new Request('https://app.example.test/api/nutrition/text/session');
+    Object.defineProperty(request, 'signal', { configurable: true, value: callerSignal });
+    let forwardedSignal: AbortSignal | undefined;
+    let rejectBinding!: (error: unknown) => void;
+    const fetcher = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      forwardedSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        rejectBinding = reject;
+        forwardedSignal?.addEventListener('abort', () => {
+          reject(new DOMException('binding aborted', 'AbortError'));
+        }, { once: true });
+      });
+    });
+    const pending = proxyBoundedJson(
+      request,
+      binding(fetcher),
+      ACCOUNT_KEY,
+      sessionDefinition,
+    );
+
+    try {
+      await Promise.resolve();
+      expect(forwardedSignal).not.toBe(callerSignal);
+      callerAborted = true;
+      for (const listener of [...callerListeners]) {
+        if (typeof listener === 'function') listener.call(callerSignal, new Event('abort'));
+        else listener.handleEvent(new Event('abort'));
+      }
+      await expect(pending).rejects.toThrow('Invalid service response');
+      expect(forwardedSignal?.aborted).toBe(true);
+      expect(callerSignal.addEventListener).toHaveBeenCalledWith(
+        'abort',
+        expect.any(Function),
+        { once: true },
+      );
+      expect(callerSignal.removeEventListener).toHaveBeenCalledWith(
+        'abort',
+        expect.any(Function),
+      );
+    } finally {
+      rejectBinding(new DOMException('test cleanup', 'AbortError'));
+      await pending.catch(() => undefined);
+    }
+  });
+
+  test('does not start a text binding when the caller is already aborted', async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    caller.abort();
+    const fetcher = vi.fn(async () => json({ ok: true }));
+    const request = new Request('https://app.example.test/api/nutrition/text/session');
+    Object.defineProperty(request, 'signal', {
+      configurable: true,
+      value: caller.signal,
+    });
+
+    await expect(proxyBoundedJson(
+      request,
+      binding(fetcher),
+      ACCOUNT_KEY,
+      sessionDefinition,
+    )).rejects.toThrow('Invalid service response');
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('does not add a text deadline signal to the shared photo binding', async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeUndefined();
+      return json({ ok: true });
+    });
+    const request = new Request('https://app.example.test/api/nutrition/photo/estimate', {
+      method: 'POST',
+      headers: { 'content-type': 'multipart/form-data; boundary=safe' },
+      body: 'abc',
+    });
+
+    await expect(proxyBoundedJson(
+      request,
+      binding(fetcher),
+      ACCOUNT_KEY,
+      photoEstimateDefinition,
+    )).resolves.toEqual({ body: { ok: true }, status: 200 });
+  });
+
   test('uses only the fixed internal target, method and validated account header', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe('https://photo-ai-gateway.internal/text/session');
       expect(init?.method).toBe('GET');
       expect(init?.redirect).toBe('manual');
-      expect(new Request(String(input), init).redirect).toBe('manual');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       expect(init?.body).toBeUndefined();
       expect(headerRecord(init?.headers)).toEqual({
         'x-tiezheng-account-key': ACCOUNT_KEY,
@@ -170,7 +421,7 @@ describe('proxyBoundedJson', () => {
     });
     let forwarded: Request | null = null;
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      forwarded = new Request(String(input), init);
+      forwarded = new Request(String(input), { ...init, signal: undefined });
       return downstream;
     });
 

@@ -294,6 +294,7 @@ describe('text AI Pages service proxy', () => {
 
   test.each([
     ['in-flight', textAiEstimateInFlightFixture, 202],
+    ['terminal gateway failure', textAiFailureFixture, 503],
     ['conflict', { ...textAiFailureFixture, code: 'idempotency-conflict', retryAt: null }, 409],
     ['rate limit', { ...textAiFailureFixture, code: 'rate-limited' }, 429],
   ])('preserves an approved %s response and status', async (_case, body, status) => {
@@ -319,7 +320,10 @@ describe('text AI Pages service proxy', () => {
     ['invalid schema', json({ stack: 'private stack' }, 500)],
     ['status mismatch', json(textAiEstimateSuccessFixture, 201)],
     ['photo schema', json({ ...textAiEstimateSuccessFixture, requestId: 'photo-request-001' })],
-  ])('maps an invalid downstream %s response without leaking it', async (_case, downstream) => {
+  ])('maps an indeterminate downstream %s response to a fixed empty transport failure', async (
+    _case,
+    downstream,
+  ) => {
     const fetcher = vi.fn(async () => downstream);
     const response = await proxyTextAiRequest(
       new Request(`${ORIGIN}/api/nutrition/text/estimate`, {
@@ -333,15 +337,12 @@ describe('text AI Pages service proxy', () => {
     );
 
     const serialized = await response.text();
-    expect(response.status).toBe(503);
-    expect(JSON.parse(serialized)).toEqual({
-      ok: false,
-      code: 'provider-unavailable',
-      retryAt: null,
-      resetAt: null,
-    });
+    expect(response.status).toBe(502);
+    expect(serialized).toBe('');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-type')).toBeNull();
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect(serialized).not.toMatch(/private stack|photo-request-001/);
-    expectSecure(response);
   });
 
   test('does not accept a photo multipart request on the text estimate wrapper', async () => {
@@ -413,15 +414,13 @@ describe('text AI Pages Function routes', () => {
     ));
     const serialized = await response.text();
 
-    expect(response.status).toBe(503);
-    expect(JSON.parse(serialized)).toEqual({
-      ok: false,
-      code: 'provider-unavailable',
-      retryAt: null,
-      resetAt: null,
-    });
+    expect(response.status).toBe(502);
+    expect(serialized).toBe('');
     expect(serialized).not.toContain('private downstream body');
-    expectSecure(response);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-type')).toBeNull();
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(response.headers.get('access-control-allow-origin')).toBeNull();
   });
 
   test('serves only logout and never calls the gateway', async () => {

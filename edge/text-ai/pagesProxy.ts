@@ -11,6 +11,7 @@ import {
 } from '../photo-ai/access';
 import type { PhotoAiPagesEnv } from '../photo-ai/pagesProxy';
 import {
+  isIndeterminateServiceResponse,
   proxyBoundedJson,
   type JsonProxyDefinition,
 } from '../nutrition-ai/pagesProxyCore';
@@ -33,6 +34,11 @@ export interface AuthorizedTextAiPagesRequest {
 const SECURITY_HEADERS = {
   'cache-control': 'no-store',
   'content-type': 'application/json; charset=utf-8',
+  'x-content-type-options': 'nosniff',
+} as const;
+
+const TRANSPORT_FAILURE_HEADERS = {
+  'cache-control': 'no-store',
   'x-content-type-options': 'nosniff',
 } as const;
 
@@ -134,7 +140,10 @@ export async function proxyTextAiRequest(
       ? await proxyBoundedJson(request, env.PHOTO_AI_GATEWAY, accountKey, TEXT_SESSION_PROXY)
       : await proxyBoundedJson(request, env.PHOTO_AI_GATEWAY, accountKey, TEXT_ESTIMATE_PROXY);
     return textAiPagesJson(result.body, result.status);
-  } catch {
+  } catch (error) {
+    if (route === 'estimate' && isIndeterminateServiceResponse(error)) {
+      return new Response(null, { status: 502, headers: TRANSPORT_FAILURE_HEADERS });
+    }
     return textAiPagesFailure('provider-unavailable', 503);
   }
 }

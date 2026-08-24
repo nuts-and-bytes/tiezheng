@@ -207,14 +207,14 @@ export async function handlePhotoAiRequest(
     }
   }
 
-  const lease: Omit<LeaseInput, 'now'> = {
+  const lease: Omit<LeaseInput<'photo'>, 'now'> = {
     channel: 'photo',
     accountKey,
     idempotencyKey: upload.metadata.idempotencyKey,
     fingerprint,
     leaseId: reservation.leaseId,
   };
-  const leaseAtNow = (): LeaseInput => ({ ...lease, now: dependencies.now() });
+  const leaseAtNow = (): LeaseInput<'photo'> => ({ ...lease, now: dependencies.now() });
   const coordinator = env.PHOTO_AI_COORDINATOR.getByName('stage2');
   const abortBeforeInvoke = async (
     code: 'decode-failed' | 'provider-timeout' | 'service-disabled',

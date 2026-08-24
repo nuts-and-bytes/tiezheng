@@ -12,6 +12,9 @@ export default defineConfig({
     VitePWA({
       registerType: 'prompt',
       includeAssets: ['logo.svg', 'apple-touch-icon-180x180.png'],
+      workbox: {
+        globPatterns: ['**/*.{js,wasm,css,html}', 'food-presets/*.webp'],
+      },
       manifest: {
         name: '铁证 IRONPROOF',
         short_name: '铁证',

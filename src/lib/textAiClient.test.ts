@@ -63,6 +63,8 @@ describe('text AI same-origin client', () => {
   test('exports the exact public client types', () => {
     expectTypeOf<TextAiClient['session']>().returns.resolves.toMatchTypeOf<TextAiSessionResponse>();
     expectTypeOf<TextAiClient['estimate']>().returns.resolves.toMatchTypeOf<TextAiEstimateResponse>();
+    expectTypeOf<TextAiClient['estimateWithOutcome']>()
+      .returns.resolves.toMatchTypeOf<{ terminal: boolean; response: TextAiEstimateResponse }>();
   });
 
   test('session only reads the fixed same-origin JSON endpoint', async () => {
@@ -287,6 +289,54 @@ describe('text AI same-origin client', () => {
     expect(response.body?.locked).toBe(false);
   });
 
+  test('does not await a provider-controlled cancellation that never settles', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn(() => new Promise<void>(() => undefined));
+    const response = new Response(new ReadableStream<Uint8Array>({ cancel }), {
+      headers: { 'content-type': 'text/plain' },
+    });
+    let settled: TextAiSessionResponse | undefined;
+    const pending = createTextAiClient(fetchMock(async () => response)).session();
+    void pending.then((value) => { settled = value; });
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toEqual(failure('invalid-estimate'));
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(response.body?.locked).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.advanceTimersByTimeAsync(TEXT_AI_LIMITS.timeoutMs);
+      await pending;
+    }
+  });
+
+  test.each<[
+    string,
+    () => unknown,
+  ]>([
+    ['throws synchronously', () => { throw new Error('cancel failed'); }],
+    ['rejects', () => Promise.reject(new Error('cancel failed'))],
+  ])('absorbs body cancellation that %s', async (_label, cancelImplementation) => {
+    vi.useFakeTimers();
+    const response = new Response(new ReadableStream<Uint8Array>(), {
+      headers: { 'content-type': 'text/plain' },
+    });
+    const cancel = vi.fn(cancelImplementation);
+    Object.defineProperty(response.body, 'cancel', {
+      configurable: true,
+      value: cancel,
+    });
+
+    const pending = createTextAiClient(fetchMock(async () => response)).session();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(pending).resolves.toEqual(failure('invalid-estimate'));
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(response.body?.locked).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   test.each([
     ['wrong content type', jsonResponse(textAiSessionSuccessFixture, {
       headers: { 'content-type': 'text/plain' },
@@ -363,6 +413,52 @@ describe('text AI same-origin client', () => {
     expect(signal?.aborted).toBe(true);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('internally distinguishes local timeout ambiguity from a valid terminal gateway failure', async () => {
+    vi.useFakeTimers();
+    type OutcomeClient = TextAiClient & {
+      estimateWithOutcome(input: TextAiEstimateInput): Promise<{
+        terminal: boolean;
+        response: TextAiEstimateResponse;
+      }>;
+    };
+    const stalled = createTextAiClient(fetchMock((_url, init) => new Promise<Response>((
+      _resolve,
+      reject,
+    ) => {
+      init?.signal?.addEventListener('abort', () => {
+        reject(new DOMException('local timeout', 'AbortError'));
+      }, { once: true });
+    }))) as OutcomeClient;
+    const timeoutPending = stalled.estimateWithOutcome(estimateInput());
+    await vi.advanceTimersByTimeAsync(TEXT_AI_LIMITS.timeoutMs);
+
+    await expect(timeoutPending).resolves.toEqual({
+      terminal: false,
+      response: failure('provider-timeout'),
+    });
+
+    const terminal = createTextAiClient(fetchMock(async () => jsonResponse(
+      failure('provider-unavailable'),
+      { status: 503 },
+    ))) as OutcomeClient;
+    await expect(terminal.estimateWithOutcome(estimateInput())).resolves.toEqual({
+      terminal: true,
+      response: failure('provider-unavailable'),
+    });
+
+    const transport = createTextAiClient(fetchMock(async () => new Response(null, {
+      status: 502,
+      headers: {
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      },
+    }))) as OutcomeClient;
+    await expect(transport.estimateWithOutcome(estimateInput())).resolves.toEqual({
+      terminal: false,
+      response: failure('invalid-estimate'),
+    });
   });
 
   test('keeps the timeout active while a response body stalls', async () => {

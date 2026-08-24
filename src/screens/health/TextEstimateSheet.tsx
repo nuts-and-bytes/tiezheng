@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../../components/Button';
-import type { TextAiClient } from '../../lib/textAiClient';
+import type {
+  TextAiClient,
+  TextAiEstimateInput,
+  TextAiEstimateOutcome,
+} from '../../lib/textAiClient';
 import {
   textAiErrorCopy,
   type TextAiErrorCode,
@@ -56,12 +60,13 @@ export interface TextEstimateSheetProps {
   initialDraft?: TextMealDraft;
   client: TextAiClient;
   onLogin(draft: TextMealDraft): void;
-  onUseManual(): void;
+  onUseManual(draft: TextMealDraft): void;
   onConfirm(input: ConfirmTextEstimateInput): Promise<void>;
   onClose(): void;
 }
 
 type DraftField = 'description' | 'amount' | 'unit';
+type EstimateAttempt = TextAiEstimateInput;
 type ConfirmationField =
   | 'name'
   | 'preparation'
@@ -99,6 +104,7 @@ type TextFlowErrorState =
       code: TextAiErrorCode;
       message: string;
       requestId: string | null;
+      ambiguousAttempt: EstimateAttempt | null;
     }
   | {
       step: 'error';
@@ -150,6 +156,38 @@ function cloneDraft(draft: TextMealDraft): TextMealDraft {
     description: draft.description,
     amount: draft.amount === null ? null : { ...draft.amount },
   };
+}
+
+function cloneAttempt(attempt: EstimateAttempt): EstimateAttempt {
+  return {
+    requestId: attempt.requestId,
+    idempotencyKey: attempt.idempotencyKey,
+    ...cloneDraft(attempt),
+  };
+}
+
+function snapshotEstimateOutcome(value: unknown): TextAiEstimateOutcome | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const keys = Reflect.ownKeys(value);
+  if (
+    keys.length !== 2
+    || !keys.includes('terminal')
+    || !keys.includes('response')
+  ) return null;
+  const terminal = Object.getOwnPropertyDescriptor(value, 'terminal');
+  const response = Object.getOwnPropertyDescriptor(value, 'response');
+  if (
+    terminal === undefined
+    || response === undefined
+    || !('value' in terminal)
+    || !('value' in response)
+    || typeof terminal.value !== 'boolean'
+  ) return null;
+  return terminal.value
+    ? { terminal: true, response: response.value as TextAiEstimateOutcome['response'] }
+    : { terminal: false, response: response.value as TextAiEstimateOutcome['response'] };
 }
 
 function numberValue(value: number | undefined): number | '' {
@@ -415,6 +453,7 @@ export function TextEstimateSheet({
     recovery: 'session' | 'estimate',
     requestId: string | null = null,
     message: string = textAiErrorCopy(code),
+    ambiguousAttempt: EstimateAttempt | null = null,
   ): void {
     if (code === 'auth-required' || code === 'auth-expired') {
       setState({ step: 'error', recovery: 'login', draft, code, message });
@@ -424,7 +463,15 @@ export function TextEstimateSheet({
       setState({ step: 'error', recovery, draft, code, message });
       return;
     }
-    setState({ step: 'error', recovery, draft, code, message, requestId });
+    setState({
+      step: 'error',
+      recovery,
+      draft,
+      code,
+      message,
+      requestId,
+      ambiguousAttempt: ambiguousAttempt === null ? null : cloneAttempt(ambiguousAttempt),
+    });
   }
 
   function inputError(draft: TextMealDraft, failure: FieldFailure<DraftField>): void {
@@ -559,7 +606,7 @@ export function TextEstimateSheet({
   }
 
   function useManual(): void {
-    invalidateAnd(onUseManual);
+    invalidateAnd(() => onUseManual(cloneDraft(draft)));
   }
 
   function login(draft: TextMealDraft): void {
@@ -581,82 +628,147 @@ export function TextEstimateSheet({
     }
   }
 
-  async function startEstimate(draft: TextMealDraft): Promise<void> {
+  async function startEstimate(
+    draft: TextMealDraft,
+    recoveryAttempt: EstimateAttempt | null = null,
+  ): Promise<void> {
     if (estimateLatch.current || closed.current) return;
     const snapshot = cloneDraft(draft);
-    const failure = estimateDraftFailure(snapshot);
-    if (failure !== null) {
-      inputError(snapshot, failure);
-      return;
+    let attempt: EstimateAttempt;
+    if (recoveryAttempt === null) {
+      const draftFailure = estimateDraftFailure(snapshot);
+      if (draftFailure !== null) {
+        inputError(snapshot, draftFailure);
+        return;
+      }
+      let requestId: string;
+      try {
+        const randomUUID = globalThis.crypto?.randomUUID;
+        if (typeof randomUUID !== 'function') throw new Error('randomUUID unavailable');
+        requestId = randomUUID.call(globalThis.crypto);
+      } catch {
+        remoteError(
+          snapshot,
+          'invalid-estimate',
+          'estimate',
+          null,
+          '无法创建估算请求，请重试',
+        );
+        return;
+      }
+      if (!UUID_PATTERN.test(requestId)) {
+        remoteError(
+          snapshot,
+          'invalid-estimate',
+          'estimate',
+          null,
+          '无法创建估算请求，请重试',
+        );
+        return;
+      }
+      attempt = {
+        requestId,
+        idempotencyKey: requestId.replaceAll('-', '').toLowerCase(),
+        ...cloneDraft(snapshot),
+      };
+    } else {
+      attempt = cloneAttempt(recoveryAttempt);
     }
-    let requestId: string;
-    try {
-      const randomUUID = globalThis.crypto?.randomUUID;
-      if (typeof randomUUID !== 'function') throw new Error('randomUUID unavailable');
-      requestId = randomUUID.call(globalThis.crypto);
-    } catch {
-      remoteError(
-        snapshot,
-        'invalid-estimate',
-        'estimate',
-        null,
-        '无法创建估算请求，请重试',
-      );
-      return;
-    }
-    if (!UUID_PATTERN.test(requestId)) {
-      remoteError(
-        snapshot,
-        'invalid-estimate',
-        'estimate',
-        null,
-        '无法创建估算请求，请重试',
-      );
-      return;
-    }
-    const idempotencyKey = requestId.replaceAll('-', '').toLowerCase();
     const generation = estimateGeneration.current + 1;
     estimateGeneration.current = generation;
     estimateLatch.current = true;
-    setState({ step: 'estimating', draft: snapshot, requestId });
+    setState({ step: 'estimating', draft: snapshot, requestId: attempt.requestId });
     try {
-      const response = await client.estimate({
-        requestId,
-        idempotencyKey,
-        ...cloneDraft(snapshot),
-      });
+      const outcome = snapshotEstimateOutcome(
+        await client.estimateWithOutcome(cloneAttempt(attempt)),
+      );
       if (!active({ kind: 'estimate', value: generation })) return;
+      if (outcome === null) {
+        remoteError(
+          snapshot,
+          'invalid-estimate',
+          'estimate',
+          attempt.requestId,
+          textAiErrorCopy('invalid-estimate'),
+          attempt,
+        );
+        return;
+      }
+      const response = outcome.response;
       if (typeof response !== 'object' || response === null || !('ok' in response)) {
-        remoteError(snapshot, 'invalid-estimate', 'estimate', requestId);
+        remoteError(
+          snapshot,
+          'invalid-estimate',
+          'estimate',
+          attempt.requestId,
+          textAiErrorCopy('invalid-estimate'),
+          attempt,
+        );
       } else if (!response.ok) {
         const code = knownFailureCode(response) ?? 'invalid-estimate';
-        remoteError(snapshot, code, 'estimate', requestId);
+        remoteError(
+          snapshot,
+          code,
+          'estimate',
+          attempt.requestId,
+          textAiErrorCopy(code),
+          outcome.terminal ? null : attempt,
+        );
       } else if (response.status === 'in-flight') {
-        remoteError(snapshot, 'provider-timeout', 'estimate', requestId);
+        remoteError(
+          snapshot,
+          outcome.terminal ? 'invalid-estimate' : 'provider-timeout',
+          'estimate',
+          attempt.requestId,
+          textAiErrorCopy(outcome.terminal ? 'invalid-estimate' : 'provider-timeout'),
+          attempt,
+        );
       } else if (
+        !outcome.terminal ||
         response.status !== 'complete' ||
-        response.requestId !== requestId ||
+        response.requestId !== attempt.requestId ||
         !Array.isArray(response.candidates) ||
         response.candidates.length !== 1 ||
         response.candidates[0] === undefined
       ) {
-        remoteError(snapshot, 'invalid-estimate', 'estimate', requestId);
+        remoteError(
+          snapshot,
+          'invalid-estimate',
+          'estimate',
+          attempt.requestId,
+          textAiErrorCopy('invalid-estimate'),
+          attempt,
+        );
       } else {
         const candidate = confirmationDraft(response.candidates[0]);
         if (candidate === null) {
-          remoteError(snapshot, 'invalid-estimate', 'estimate', requestId);
+          remoteError(
+            snapshot,
+            'invalid-estimate',
+            'estimate',
+            attempt.requestId,
+            textAiErrorCopy('invalid-estimate'),
+            attempt,
+          );
         } else {
           setState({
             step: 'confirming',
-            draft: snapshot,
-            requestId,
+            draft: cloneDraft(attempt),
+            requestId: attempt.requestId,
             candidate,
           });
         }
       }
     } catch {
       if (active({ kind: 'estimate', value: generation })) {
-        remoteError(snapshot, 'provider-unavailable', 'estimate', requestId);
+        remoteError(
+          snapshot,
+          'provider-unavailable',
+          'estimate',
+          attempt.requestId,
+          textAiErrorCopy('provider-unavailable'),
+          attempt,
+        );
       }
     } finally {
       if (estimateGeneration.current === generation) estimateLatch.current = false;
@@ -829,7 +941,14 @@ export function TextEstimateSheet({
       return <Button fullWidth onClick={() => login(state.draft)}>登录后继续</Button>;
     }
     if (state.recovery === 'estimate') {
-      return <Button fullWidth onClick={() => void startEstimate(state.draft)}>重新估算</Button>;
+      return (
+        <Button
+          fullWidth
+          onClick={() => void startEstimate(state.draft, state.ambiguousAttempt)}
+        >
+          重新估算
+        </Button>
+      );
     }
     if (state.recovery === 'input') {
       return <Button fullWidth onClick={() => void startEstimate(state.draft)}>开始估算</Button>;
