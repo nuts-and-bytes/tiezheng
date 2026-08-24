@@ -48,9 +48,9 @@
 
 - [x] Install the formal patch into `/Users/ericlu/Documents/ChatGPT/铁证优化/tiezheng/node_modules`.
 - [x] Run `npm run test:edge` from the real Unicode path and require 610/610.
-- [ ] Run `npm test`, `npm run typecheck`, `npm run typecheck:edge`, `npm run build`, and `git diff --check`.
+- [x] Run `npm test`, `npm run typecheck`, `npm run typecheck:edge`, `npm run build`, and `git diff --check`.
 - [x] Review the focused diff and confirm no tracked dependency files or unrelated user changes were touched.
-- [ ] Commit the follow-up fix on `codex/food-catalog-text-ai`.
-- [ ] Fast-forward local `main`, rerun the critical checks there, and leave the branch unpushed.
+- [x] Commit the follow-up fix on `codex/food-catalog-text-ai`.
+- [x] Fast-forward local `main`, rerun the critical checks there, and leave the branch unpushed.
 
 Expected final state: the Edge suite passes from the real Chinese path, the installer is idempotent, local `main` is clean and ahead of `origin/main`, and no push or deployment occurs.
