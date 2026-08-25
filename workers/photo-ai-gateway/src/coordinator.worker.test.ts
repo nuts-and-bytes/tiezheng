@@ -499,6 +499,54 @@ describe('PhotoAiCoordinator', () => {
     });
   });
 
+  test('replays delete-account without deleting recreated state or housekeeping expired leases', async () => {
+    const stub = coordinator();
+    await stub.setTextGlobalEnabled(true);
+    await stub.setAccountEnabled(ACCOUNT_A, true);
+    const deleteInput = textAdminInput('delete-account', 120);
+    expect(await stub.applyTextAdminOperation(deleteInput))
+      .toMatchObject({ kind: 'applied', status: { accountEnabled: false } });
+
+    await stub.setAccountEnabled(ACCOUNT_A, true);
+    const expiredText = channelReserveInput(
+      'text',
+      ACCOUNT_A,
+      121,
+      BASE_NOW - GATEWAY_LIMITS.leaseMs - 1,
+    );
+    expect((await stub.reserve(expiredText)).kind).toBe('reserved');
+
+    expect(await stub.applyTextAdminOperation(deleteInput)).toMatchObject({
+      kind: 'applied',
+      status: {
+        accountEnabled: true,
+        accountRemaining: 9,
+        budgetReservedMicros: GATEWAY_CHANNEL_POLICY.text.initialAttemptReserveMicros,
+      },
+    });
+    await runInDurableObject(stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM active_leases WHERE account_key = ?',
+        ACCOUNT_A,
+      ).toArray()).toEqual([{ count: 1 }]);
+      expect(sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM idempotency WHERE account_key = ?',
+        ACCOUNT_A,
+      ).toArray()).toEqual([{ count: 1 }]);
+      expect(sql.exec<{ pending: number; consumed: number }>(
+        'SELECT pending, consumed FROM daily_counters WHERE scope = ? AND bucket = ?',
+        `text:${ACCOUNT_A}`,
+        '2026-08-18',
+      ).toArray()).toEqual([{ pending: 1, consumed: 0 }]);
+      expect(sql.exec<{ value: number }>(
+        "SELECT value FROM settings WHERE key = 'reserved:2026-08'",
+      ).toArray()).toEqual([{
+        value: GATEWAY_CHANNEL_POLICY.text.initialAttemptReserveMicros,
+      }]);
+    });
+  });
+
   test('allows a changed operation id exactly at its 24-hour expiry but not one millisecond before', async () => {
     const stub = coordinator();
     const firstInput = textAdminInput('enable-text-global', 104);
@@ -609,6 +657,7 @@ describe('PhotoAiCoordinator', () => {
     await stub.setGlobalEnabled(true);
     await stub.applyTextAdminOperation(textAdminInput('enable-text-global', 115));
     await stub.applyTextAdminOperation(textAdminInput('enable-account', 116));
+    await stub.applyTextAdminOperation(textAdminInput('enable-account', 122, ACCOUNT_B));
 
     const settledPhoto = channelReserveInput('photo', ACCOUNT_A, 117);
     const settledPhotoResult = await stub.reserve(settledPhoto);
@@ -648,6 +697,8 @@ describe('PhotoAiCoordinator', () => {
         budgetSpentMicros: 123,
         budgetReservedMicros: 0,
       });
+    expect(await stub.status({ channel: 'text', accountKey: ACCOUNT_B, now: BASE_NOW + 60_000 }))
+      .toMatchObject({ enabled: true, accountEnabled: true, accountRemaining: 10 });
 
     await runInDurableObject(stub, async (_instance, state) => {
       const sql = state.storage.sql;
@@ -673,7 +724,7 @@ describe('PhotoAiCoordinator', () => {
       ).toArray().map((row) => row.count)).toEqual([0, 0, 0, 0, 0]);
       expect(sql.exec<{ count: number }>(
         'SELECT COUNT(*) AS count FROM text_admin_operations',
-      ).toArray()).toEqual([{ count: 3 }]);
+      ).toArray()).toEqual([{ count: 4 }]);
     });
   });
 

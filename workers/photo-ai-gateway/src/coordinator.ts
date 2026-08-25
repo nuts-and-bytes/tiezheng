@@ -668,7 +668,6 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
   }
 
   private textStatusSnapshot(account: string, now: number): TextAiAdminStatus {
-    this.cleanup(now);
     const day = dayBucket(now);
     const month = monthBucket(now);
     const scopes = channelScopes('text', account);
