@@ -22,6 +22,8 @@ const SERVICE_CLIENT_ID = 'text-preview-admin.access';
 const HMAC_SECRET = '0123456789abcdef0123456789abcdef';
 const OPERATION_ID = '1'.repeat(32);
 const ACCOUNT_KEY = 'a'.repeat(64);
+const BOB_ACCOUNT_KEY = '0f03a80a5bb45cb698165b3a48abad4fe7183d604b79e6bb198aa8b354f296e9';
+const ADMIN_DEADLINE_MS = 18_000;
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const jwk = publicKey.export({ format: 'jwk' });
 jwk.kid = 'text-admin-pages-test-key';
@@ -169,6 +171,7 @@ function headerRecord(init?: HeadersInit): Record<string, string> {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -397,6 +400,145 @@ describe('text admin Pages Function route', () => {
       expect(JSON.parse(serialized)).toEqual({ ok: false, code: 'service-disabled' });
       expect(serialized).not.toContain('@');
       expectSecure(response);
+    }
+  });
+
+  test.each([
+    ['administrator', token()],
+    ['service principal', serviceToken()],
+  ])('derives Bob account key from the target for an authenticated %s', async (
+    _principal,
+    accessToken,
+  ) => {
+    installJwks();
+    const gatewayFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(INTERNAL_URL);
+      expect(headerRecord(init?.headers)).toEqual({
+        'content-length': expect.any(String),
+        'content-type': 'application/json',
+        'x-tiezheng-account-key': BOB_ACCOUNT_KEY,
+      });
+      const serialized = await new Response(init?.body).text();
+      expect(JSON.parse(serialized)).toEqual({
+        schemaVersion: 1,
+        operationId: OPERATION_ID,
+        operation: 'status',
+        accountKey: BOB_ACCOUNT_KEY,
+      });
+      expect(serialized).not.toMatch(/@|alice|bob|cf-access/i);
+      expect(JSON.stringify(headerRecord(init?.headers))).not.toMatch(/@|alice|bob|cf-access/i);
+      return json(successBody);
+    });
+    const source = request({
+      accessToken,
+      body: JSON.stringify({ ...adminBody, targetEmail: 'bob@example.com' }),
+    });
+
+    const response = await textAdminAccountRoute(context(source, env(gatewayFetch)));
+
+    expect(response.status).toBe(200);
+    expect(gatewayFetch).toHaveBeenCalledTimes(1);
+    expectSecure(response);
+  });
+
+  test('times out and cancels a stalled request body before Access or binding', async () => {
+    vi.useFakeTimers();
+    const authFetch = installJwks();
+    const gatewayFetch = vi.fn();
+    const cancel = vi.fn();
+    let close!: () => void;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        close = () => controller.close();
+      },
+      cancel,
+    });
+    let response: Response | undefined;
+    const pending = Promise.resolve(textAdminAccountRoute(context(
+      request({ body: stream }),
+      env(gatewayFetch),
+    )));
+    void pending.then((value) => { response = value; });
+
+    try {
+      await vi.advanceTimersByTimeAsync(ADMIN_DEADLINE_MS);
+      expect(response?.status).toBe(503);
+      expect(await response?.json()).toEqual({ ok: false, code: 'service-disabled' });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(stream.locked).toBe(false);
+      expect(authFetch).not.toHaveBeenCalled();
+      expect(gatewayFetch).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      if (response === undefined) close();
+      await vi.runAllTimersAsync();
+      await pending;
+    }
+  });
+
+  test('aborts and returns fixed 503 when the private binding never resolves', async () => {
+    vi.useFakeTimers();
+    installJwks();
+    let forwardedSignal: AbortSignal | undefined;
+    let resolveBinding!: (response: Response) => void;
+    const gatewayFetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      forwardedSignal = init?.signal ?? undefined;
+      return new Promise<Response>((resolve) => {
+        resolveBinding = resolve;
+      });
+    });
+    let response: Response | undefined;
+    const pending = Promise.resolve(textAdminAccountRoute(context(request(), env(gatewayFetch))));
+    void pending.then((value) => { response = value; });
+
+    try {
+      await vi.advanceTimersByTimeAsync(ADMIN_DEADLINE_MS - 1);
+      expect(gatewayFetch).toHaveBeenCalledTimes(1);
+      expect(response).toBeUndefined();
+      expect(forwardedSignal).toBeInstanceOf(AbortSignal);
+      expect(forwardedSignal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(response?.status).toBe(503);
+      expect(await response?.json()).toEqual({ ok: false, code: 'service-disabled' });
+      expect(forwardedSignal?.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      resolveBinding(json(successBody));
+      await vi.runAllTimersAsync();
+      await pending;
+    }
+  });
+
+  test('cancels a stalled downstream response stream at the same fixed deadline', async () => {
+    vi.useFakeTimers();
+    installJwks();
+    const cancel = vi.fn();
+    let close!: () => void;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        close = () => controller.close();
+      },
+      cancel,
+    });
+    const gatewayFetch = vi.fn(async () => new Response(stream, {
+      headers: { 'content-type': 'application/json' },
+    }));
+    let response: Response | undefined;
+    const pending = Promise.resolve(textAdminAccountRoute(context(request(), env(gatewayFetch))));
+    void pending.then((value) => { response = value; });
+
+    try {
+      await vi.advanceTimersByTimeAsync(ADMIN_DEADLINE_MS);
+      expect(response?.status).toBe(503);
+      expect(await response?.json()).toEqual({ ok: false, code: 'service-disabled' });
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(stream.locked).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      if (response === undefined) close();
+      await vi.runAllTimersAsync();
+      await pending;
     }
   });
 });
