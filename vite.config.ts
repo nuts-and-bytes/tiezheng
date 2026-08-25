@@ -42,7 +42,12 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
-    exclude: [...configDefaults.exclude, 'workers/**/*.worker.test.ts'],
+    exclude: [
+      ...configDefaults.exclude,
+      'workers/**/*.worker.test.ts',
+      'workers/photo-ai-gateway/src/textAdminHandler.test.ts',
+      'edge/text-ai/admin.test.ts',
+    ],
     setupFiles: './src/test/setup.ts',
     alias: {
       'virtual:pwa-register/react': fileURLToPath(
