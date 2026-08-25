@@ -213,6 +213,7 @@ function reconciliationResults({
   apps = [],
   projectBefore = projectResult(),
   projectAfter = projectBefore,
+  patchProject = projectAfter,
   extra = [],
 } = {}) {
   const base = preflightResults([
@@ -228,7 +229,7 @@ function reconciliationResults({
     }],
     [`POST /access/apps/${USER_APP_ID}/policies`, ({ body }) => policyResult('user-policy-id', body)],
     [`POST /access/apps/${ADMIN_APP_ID}/policies`, ({ body }) => policyResult(`admin-${body.decision}-policy-id`, body)],
-    ['PATCH /pages/projects/tiezheng', projectAfter],
+    ['PATCH /pages/projects/tiezheng', patchProject],
     ...extra,
   ]);
   return base;
@@ -676,6 +677,107 @@ test('configure fails before every write on duplicate/fuzzy apps, unknown polici
   }
 });
 
+test('configure fails before writes when another Access app occupies either exact target domain', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const fullPreview = expectedPagesPatch(config).deployment_configs.preview;
+  const unrelatedOccupant = appResult('unrelated-id', 'unrelated-aud', {
+    ...USER_APP_PAYLOAD,
+    name: 'unrelated-application',
+  });
+  const swappedUser = appResult(USER_APP_ID, USER_AUDIENCE, {
+    ...USER_APP_PAYLOAD,
+    domain: ADMIN_APP_PAYLOAD.domain,
+  });
+  const swappedAdmin = appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, {
+    ...ADMIN_APP_PAYLOAD,
+    domain: USER_APP_PAYLOAD.domain,
+  });
+  const cases = [
+    reconciliationResults({
+      apps: [unrelatedOccupant],
+      projectAfter: projectWithPreview(fullPreview),
+    }),
+    reconciliationResults({
+      apps: [swappedUser, swappedAdmin],
+      projectAfter: projectWithPreview(fullPreview),
+      extra: [
+        [`GET /access/apps/${USER_APP_ID}/policies`, [
+          policyResult('user-policy-id', userPolicyPayload()),
+        ]],
+        [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+          policyResult('admin-human-policy-id', adminHumanPolicyPayload()),
+          policyResult('admin-service-policy-id', adminServicePolicyPayload()),
+        ]],
+      ],
+    }),
+  ];
+
+  for (const results of cases) {
+    const fake = createFakeClient(results);
+    await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+    assert.equal(fake.calls.some(({ method }) => method !== 'GET'), false);
+  }
+});
+
+test('configure stops after a create response that does not match every desired app field', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const fullProject = projectWithPreview(expectedPagesPatch(config).deployment_configs.preview);
+  const staleResponses = [
+    { domain: 'stale.example.test/api/nutrition/text' },
+    { type: 'saas' },
+    { session_duration: '1h' },
+    { app_launcher_visible: true },
+  ];
+
+  for (const stale of staleResponses) {
+    const fake = createFakeClient(reconciliationResults({
+      projectAfter: fullProject,
+      extra: [[
+        'POST /access/apps',
+        appResult(USER_APP_ID, USER_AUDIENCE, { ...USER_APP_PAYLOAD, ...stale }),
+      ]],
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+
+    assert.deepEqual(fake.calls.filter(({ method }) => method !== 'GET'), [
+      { method: 'POST', path: '/access/apps', body: USER_APP_PAYLOAD },
+    ]);
+  }
+});
+
+test('configure stops after an update response that remains stale before policy or Pages writes', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const staleUser = appResult(USER_APP_ID, USER_AUDIENCE, {
+    ...USER_APP_PAYLOAD,
+    domain: 'stale.example.test/api/nutrition/text',
+  });
+  const adminApp = appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, ADMIN_APP_PAYLOAD);
+  const fake = createFakeClient(reconciliationResults({
+    apps: [staleUser, adminApp],
+    projectAfter: projectWithPreview(expectedPagesPatch(config).deployment_configs.preview),
+    extra: [
+      [`GET /access/apps/${USER_APP_ID}/policies`, [
+        policyResult('user-policy-id', userPolicyPayload()),
+      ]],
+      [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+        policyResult('admin-human-policy-id', adminHumanPolicyPayload()),
+        policyResult('admin-service-policy-id', adminServicePolicyPayload()),
+      ]],
+      [`PUT /access/apps/${USER_APP_ID}`, appResult(USER_APP_ID, USER_AUDIENCE, {
+        ...USER_APP_PAYLOAD,
+        domain: 'still-stale.example.test/api/nutrition/text',
+      })],
+    ],
+  }));
+
+  await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+
+  assert.deepEqual(fake.calls.filter(({ method }) => method !== 'GET'), [
+    { method: 'PUT', path: `/access/apps/${USER_APP_ID}`, body: USER_APP_PAYLOAD },
+  ]);
+});
+
 test('configure detects production deployment drift after patch without ever sending production config', async () => {
   const config = loadTextPreviewConfig(validEnv());
   const beforeProduction = projectResult().deployment_configs.production;
@@ -699,6 +801,83 @@ test('configure detects production deployment drift after patch without ever sen
   ));
   assert.equal(pagesPatches.length, 1);
   assert.deepEqual(Object.keys(pagesPatches[0].body.deployment_configs), ['preview']);
+});
+
+test('configure rejects an incomplete PATCH response before the final Pages GET', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const fullProject = projectWithPreview(expectedPagesPatch(config).deployment_configs.preview);
+  const fake = createFakeClient(reconciliationResults({
+    patchProject: projectWithPreview({ env_vars: {}, services: {} }),
+    projectAfter: fullProject,
+  }));
+
+  await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+
+  const pageCalls = fake.calls.filter(({ path }) => path === '/pages/projects/tiezheng');
+  assert.deepEqual(pageCalls.map(({ method }) => method), ['GET', 'PATCH']);
+  assert.deepEqual(Object.keys(pageCalls[1].body.deployment_configs), ['preview']);
+});
+
+test('configure rejects incomplete or stale final Preview state after a valid PATCH response', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const expectedPreview = expectedPagesPatch(config).deployment_configs.preview;
+  const patchProject = projectWithPreview(expectedPreview);
+  const stalePlain = structuredClone(expectedPreview);
+  stalePlain.env_vars.PHOTO_AI_TEAM_DOMAIN.value = 'stale-team';
+  const badBinding = structuredClone(expectedPreview);
+  badBinding.services.PHOTO_AI_GATEWAY.service = 'wrong-worker';
+  const badSecretType = structuredClone(expectedPreview);
+  badSecretType.env_vars.TEXT_AI_ACCESS_AUD.type = 'plain_text';
+  const cases = [
+    { env_vars: {}, services: {} },
+    stalePlain,
+    badBinding,
+    badSecretType,
+  ];
+
+  for (const preview of cases) {
+    const fake = createFakeClient(reconciliationResults({
+      patchProject,
+      projectAfter: projectWithPreview(preview),
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+
+    const patches = fake.calls.filter(({ method, path }) => (
+      method === 'PATCH' && path === '/pages/projects/tiezheng'
+    ));
+    assert.equal(patches.length, 1);
+    assert.deepEqual(Object.keys(patches[0].body.deployment_configs), ['preview']);
+    assert.equal(
+      fake.calls.filter(({ method, path }) => method === 'GET' && path === '/pages/projects/tiezheng').length,
+      2,
+    );
+  }
+});
+
+test('configure accepts complete secret_text entries when Cloudflare omits or redacts secret values', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const preview = structuredClone(expectedPagesPatch(config).deployment_configs.preview);
+  const secretNames = [
+    'PHOTO_AI_ACCOUNT_HMAC_KEY',
+    'TEXT_AI_ACCESS_AUD',
+    'TEXT_AI_ALLOWED_EMAILS',
+    'TEXT_AI_ADMIN_ACCESS_AUD',
+    'TEXT_AI_ADMIN_EMAIL',
+    'TEXT_AI_ADMIN_SERVICE_CLIENT_ID',
+  ];
+  for (const [index, name] of secretNames.entries()) {
+    if (index % 3 === 0) delete preview.env_vars[name].value;
+    if (index % 3 === 1) preview.env_vars[name].value = null;
+    if (index % 3 === 2) preview.env_vars[name].value = '[redacted]';
+  }
+  const project = projectWithPreview(preview);
+  const fake = createFakeClient(reconciliationResults({
+    patchProject: project,
+    projectAfter: project,
+  }));
+
+  await assert.doesNotReject(() => reconcileTextPreview(config, fake.client));
 });
 
 test('production redacted hash ignores only secret_text value rotation while preserving structure checks', async () => {

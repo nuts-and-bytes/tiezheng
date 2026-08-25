@@ -17,6 +17,8 @@ const ADMIN_APP_NAME = 'tiezheng-text-ai-preview-admin';
 const DEDICATED_APP_PREFIX = 'tiezheng-text-ai-preview-';
 const PREVIEW_HOST = 'text-ai-preview.tiezheng.pages.dev';
 const PREVIEW_ORIGIN = `https://${PREVIEW_HOST}`;
+const USER_APP_DOMAIN = `${PREVIEW_HOST}/api/nutrition/text`;
+const ADMIN_APP_DOMAIN = `${PREVIEW_HOST}/api/nutrition/text-admin`;
 const EXPECTED_PREVIEW_ENV_NAMES = new Set([
   'PHOTO_AI_TEAM_DOMAIN',
   'PHOTO_AI_ALLOWED_ORIGINS',
@@ -369,7 +371,7 @@ export async function preflightTextPreview(config, client) {
 function desiredUserApp() {
   return Object.freeze({
     name: USER_APP_NAME,
-    domain: `${PREVIEW_HOST}/api/nutrition/text`,
+    domain: USER_APP_DOMAIN,
     type: 'self_hosted',
     session_duration: '30m',
     app_launcher_visible: false,
@@ -379,7 +381,7 @@ function desiredUserApp() {
 function desiredAdminApp() {
   return Object.freeze({
     name: ADMIN_APP_NAME,
-    domain: `${PREVIEW_HOST}/api/nutrition/text-admin`,
+    domain: ADMIN_APP_DOMAIN,
     type: 'self_hosted',
     session_duration: '30m',
     app_launcher_visible: false,
@@ -408,7 +410,15 @@ function scanDedicatedApps(value) {
     const snapshot = snapshotRecord(item);
     const id = snapshot.get('id');
     const name = snapshot.get('name');
+    const domain = snapshot.get('domain');
     if (!safeIdentifier(id) || typeof name !== 'string') fail();
+    if (domain !== undefined && typeof domain !== 'string') fail();
+    if (
+      (domain === USER_APP_DOMAIN && name !== USER_APP_NAME)
+      || (domain === ADMIN_APP_DOMAIN && name !== ADMIN_APP_NAME)
+    ) {
+      fail();
+    }
     if (name.startsWith(DEDICATED_APP_PREFIX) && !matches.has(name)) fail();
     if (matches.has(name)) matches.get(name).push(item);
   }
@@ -433,6 +443,12 @@ function appMatches(app, desired) {
     && app.snapshot.get('session_duration') === desired.session_duration
     && app.snapshot.get('app_launcher_visible') === desired.app_launcher_visible
   );
+}
+
+function parseWrittenApp(value, desired) {
+  const app = parseDedicatedApp(value, desired.name);
+  if (!appMatches(app, desired)) fail();
+  return app;
 }
 
 function desiredUserPolicy(config, otpProviderId) {
@@ -930,6 +946,7 @@ function inspectPreviewProject(project) {
     const snapshot = snapshotRecord(entry);
     if (typeof snapshot.get('service') !== 'string' || typeof snapshot.get('environment') !== 'string') fail();
   }
+  return Object.freeze({ envVars, services });
 }
 
 function redactedCanonical(value, parentIsSecret = false) {
@@ -985,16 +1002,56 @@ function desiredPagesPatch(config, userAudience, adminAudience) {
   };
 }
 
+function inspectExpectedPreviewProject(project, desiredPreview) {
+  const actual = inspectPreviewProject(project);
+  const desired = snapshotRecord(desiredPreview);
+  const desiredEnvVars = snapshotRecord(desired.get('env_vars'));
+  const desiredServices = snapshotRecord(desired.get('services'));
+  if (
+    actual.envVars.size !== EXPECTED_PREVIEW_ENV_NAMES.size
+    || actual.services.size !== EXPECTED_PREVIEW_SERVICE_NAMES.size
+    || desiredEnvVars.size !== EXPECTED_PREVIEW_ENV_NAMES.size
+    || desiredServices.size !== EXPECTED_PREVIEW_SERVICE_NAMES.size
+  ) {
+    fail();
+  }
+  for (const name of EXPECTED_PREVIEW_ENV_NAMES) {
+    if (!actual.envVars.has(name) || !desiredEnvVars.has(name)) fail();
+    const actualEntry = snapshotRecord(actual.envVars.get(name));
+    const desiredEntry = snapshotRecord(desiredEnvVars.get(name));
+    const desiredType = desiredEntry.get('type');
+    if (actualEntry.get('type') !== desiredType) fail();
+    if (desiredType === 'plain_text') {
+      if (!actualEntry.has('value') || actualEntry.get('value') !== desiredEntry.get('value')) fail();
+    } else if (desiredType === 'secret_text') {
+      if (actualEntry.has('value') && actualEntry.get('value') !== '[redacted]') fail();
+    } else {
+      fail();
+    }
+  }
+  for (const name of EXPECTED_PREVIEW_SERVICE_NAMES) {
+    if (!actual.services.has(name) || !desiredServices.has(name)) fail();
+    const actualBinding = snapshotRecord(actual.services.get(name));
+    const desiredBinding = snapshotRecord(desiredServices.get(name));
+    if (
+      actualBinding.get('service') !== desiredBinding.get('service')
+      || actualBinding.get('environment') !== desiredBinding.get('environment')
+    ) {
+      fail();
+    }
+  }
+}
+
 async function writeApp(client, existing, desired) {
   if (existing === undefined) {
     return {
-      app: parseDedicatedApp(await client.post('/access/apps', desired), desired.name),
+      app: parseWrittenApp(await client.post('/access/apps', desired), desired),
       created: true,
     };
   }
   if (!appMatches(existing, desired)) {
     return {
-      app: parseDedicatedApp(await client.put(`/access/apps/${existing.id}`, desired), desired.name),
+      app: parseWrittenApp(await client.put(`/access/apps/${existing.id}`, desired), desired),
       created: false,
     };
   }
@@ -1065,10 +1122,10 @@ export async function reconcileTextPreview(config, client) {
 
     const pagesPatch = desiredPagesPatch(config, writtenUser.app.aud, writtenAdmin.app.aud);
     const patchResult = parsePagesProject(await patch('/pages/projects/tiezheng', pagesPatch));
-    inspectPreviewProject(patchResult);
+    inspectExpectedPreviewProject(patchResult, pagesPatch.deployment_configs.preview);
     if (productionHash(patchResult) !== beforeProductionHash) fail();
     const afterProject = parsePagesProject(await get('/pages/projects/tiezheng'));
-    inspectPreviewProject(afterProject);
+    inspectExpectedPreviewProject(afterProject, pagesPatch.deployment_configs.preview);
     if (productionHash(afterProject) !== beforeProductionHash) fail();
 
     return {
