@@ -2,10 +2,10 @@ import {
   authorizeTextAiPagesRequest,
   proxyTextAiRequest,
   textAiPagesFailure,
-  type PhotoAiPagesEnv,
+  type TextAiPagesEnv,
 } from '../../../../edge/text-ai/pagesProxy';
 
-export const onRequestPost: PagesFunction<PhotoAiPagesEnv> = async ({ request, env }) => {
+export const onRequestPost: PagesFunction<TextAiPagesEnv> = async ({ request, env }) => {
   let authorized;
   try {
     authorized = await authorizeTextAiPagesRequest(request, env, ['estimate']);

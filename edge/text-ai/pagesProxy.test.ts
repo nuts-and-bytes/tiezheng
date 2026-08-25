@@ -16,24 +16,28 @@ import {
   textAiPagesFailure,
   textAiPagesJson,
   textAiPagesResumeRedirect,
+  type TextAiPagesEnv,
 } from './pagesProxy';
-import type { PhotoAiPagesEnv } from '../photo-ai/pagesProxy';
 
 const ORIGIN = 'https://app.example.test';
 const ISSUER = 'https://team-alpha.cloudflareaccess.com';
-const AUDIENCE = 'photo-ai-audience';
+const AUDIENCE = 'text-user-audience';
 const ACCOUNT_KEY = 'a'.repeat(64);
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const jwk = publicKey.export({ format: 'jwk' });
 jwk.kid = 'text-pages-route-test-key';
 
-function env(fetcher?: Fetcher['fetch']): PhotoAiPagesEnv {
+function env(fetcher?: Fetcher['fetch']): TextAiPagesEnv {
   return {
     PHOTO_AI_TEAM_DOMAIN: 'team-alpha',
-    PHOTO_AI_ACCESS_AUD: AUDIENCE,
-    PHOTO_AI_ALLOWED_EMAILS: 'alice@example.com,bob@example.com,carol@example.com',
     PHOTO_AI_ACCOUNT_HMAC_KEY: '0123456789abcdef0123456789abcdef',
     PHOTO_AI_ALLOWED_ORIGINS: ORIGIN,
+    TEXT_AI_ACCESS_AUD: AUDIENCE,
+    TEXT_AI_ALLOWED_EMAILS: 'alice@example.com,bob@example.com',
+    TEXT_AI_ALLOWED_EMAIL_COUNT: '2',
+    TEXT_AI_ADMIN_ACCESS_AUD: 'text-admin-audience',
+    TEXT_AI_ADMIN_EMAIL: 'alice@example.com',
+    TEXT_AI_ADMIN_SERVICE_CLIENT_ID: 'text-preview-admin.access',
     PHOTO_AI_GATEWAY: fetcher === undefined ? undefined : { fetch: fetcher } as Fetcher,
   };
 }
@@ -102,7 +106,7 @@ function sameOriginHeaders(accessToken = token()): HeadersInit {
   };
 }
 
-function context(request: Request, routeEnv: PhotoAiPagesEnv): Parameters<typeof sessionRoute>[0] {
+function context(request: Request, routeEnv: TextAiPagesEnv): Parameters<typeof sessionRoute>[0] {
   return {
     request,
     env: routeEnv,
@@ -178,6 +182,45 @@ describe('text AI Pages authorization', () => {
       origin: ORIGIN,
       route: 'session',
     });
+  });
+
+  test.each(['alice@example.com', 'bob@example.com'])(
+    'allows configured text user %s to reach the private binding',
+    async (email) => {
+      installJwks();
+      const gatewayFetch = vi.fn(async () => json(textAiSessionSuccessFixture));
+
+      const response = await sessionRoute(context(
+        new Request(`${ORIGIN}/api/nutrition/text/session`, {
+          headers: {
+            'cf-access-jwt-assertion': token(email),
+            'sec-fetch-site': 'same-origin',
+          },
+        }),
+        env(gatewayFetch),
+      ));
+
+      expect(response.status).toBe(200);
+      expect(gatewayFetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test('rejects a third email that remains valid only for the photo profile', async () => {
+    installJwks();
+    const gatewayFetch = vi.fn();
+
+    const response = await sessionRoute(context(
+      new Request(`${ORIGIN}/api/nutrition/text/session`, {
+        headers: {
+          'cf-access-jwt-assertion': token('carol@example.com'),
+          'sec-fetch-site': 'same-origin',
+        },
+      }),
+      env(gatewayFetch),
+    ));
+
+    expect(response.status).toBe(401);
+    expect(gatewayFetch).not.toHaveBeenCalled();
   });
 });
 

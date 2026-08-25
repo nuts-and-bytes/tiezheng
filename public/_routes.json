@@ -3,7 +3,8 @@
   "include": [
     "/api/nutrition/photo/*",
     "/api/nutrition/photo-admin/*",
-    "/api/nutrition/text/*"
+    "/api/nutrition/text/*",
+    "/api/nutrition/text-admin/*"
   ],
   "exclude": []
 }

@@ -6,10 +6,8 @@ import {
   type TextAiSessionResponse,
 } from '../../src/lib/textAiContract';
 import {
-  parseAccessConfig,
   verifyAccess,
 } from '../photo-ai/access';
-import type { PhotoAiPagesEnv } from '../photo-ai/pagesProxy';
 import {
   isIndeterminateServiceResponse,
   proxyBoundedJson,
@@ -20,8 +18,15 @@ import {
   validateTextPagesRequest,
   type TextPagesRoute,
 } from './pagesRequest';
+import {
+  parseTextUserAccessConfig,
+  type TextAccessEnv,
+} from './access';
 
-export type { PhotoAiPagesEnv } from '../photo-ai/pagesProxy';
+export interface TextAiPagesEnv extends TextAccessEnv {
+  PHOTO_AI_ALLOWED_ORIGINS: string;
+  PHOTO_AI_GATEWAY?: Fetcher;
+}
 
 export type TextAiProxyRoute = 'session' | 'estimate';
 
@@ -80,7 +85,7 @@ export function textAiPagesResumeRedirect(origin: string): Response {
 
 export async function authorizeTextAiPagesRequest(
   request: Request,
-  env: PhotoAiPagesEnv,
+  env: TextAiPagesEnv,
   allowedRoutes: readonly TextPagesRoute[],
 ): Promise<AuthorizedTextAiPagesRequest> {
   const pagesConfig = parseTextPagesRequestConfig({
@@ -88,7 +93,7 @@ export async function authorizeTextAiPagesRequest(
   });
   const { route } = validateTextPagesRequest(request, pagesConfig);
   if (!allowedRoutes.includes(route)) throw new TypeError('Invalid Pages route');
-  const identity = await verifyAccess(request, parseAccessConfig(env));
+  const identity = await verifyAccess(request, parseTextUserAccessConfig(env));
   return { accountKey: identity.accountKey, origin: pagesConfig.origin, route };
 }
 
@@ -123,7 +128,7 @@ const TEXT_ESTIMATE_PROXY: JsonProxyDefinition<TextAiEstimateResponse> = {
 
 export async function proxyTextAiRequest(
   request: Request,
-  env: PhotoAiPagesEnv,
+  env: TextAiPagesEnv,
   accountKey: string,
   route: TextAiProxyRoute,
 ): Promise<Response> {

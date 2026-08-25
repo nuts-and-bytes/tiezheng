@@ -9,6 +9,7 @@ export default defineWorkersConfig({
       'edge/text-ai/access.test.ts',
       'edge/text-ai/pagesRequest.test.ts',
       'edge/text-ai/pagesProxy.test.ts',
+      'edge/text-ai/admin.test.ts',
       'edge/photo-ai/pagesProxy.test.ts',
       'edge/photo-ai/pagesRoutes.test.ts',
       'workers/photo-ai-gateway/src/doubaoTextSchema.test.ts',

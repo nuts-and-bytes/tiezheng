@@ -3,10 +3,10 @@ import {
   proxyTextAiRequest,
   textAiPagesFailure,
   textAiPagesResumeRedirect,
-  type PhotoAiPagesEnv,
+  type TextAiPagesEnv,
 } from '../../../../edge/text-ai/pagesProxy';
 
-export const onRequestGet: PagesFunction<PhotoAiPagesEnv> = async ({ request, env }) => {
+export const onRequestGet: PagesFunction<TextAiPagesEnv> = async ({ request, env }) => {
   let authorized;
   try {
     authorized = await authorizeTextAiPagesRequest(request, env, ['session', 'resume']);

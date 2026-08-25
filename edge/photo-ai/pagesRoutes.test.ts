@@ -477,6 +477,7 @@ describe('photo AI Pages routes', () => {
         '/api/nutrition/photo/*',
         '/api/nutrition/photo-admin/*',
         '/api/nutrition/text/*',
+        '/api/nutrition/text-admin/*',
       ],
       exclude: [],
     });
@@ -487,6 +488,7 @@ describe('photo AI Pages routes', () => {
     '/api/nutrition/text/session',
     '/api/nutrition/text/estimate',
     '/api/nutrition/text/logout',
+    '/api/nutrition/text-admin/account',
   ])('makes the deployed text Function reachable: %s', (path) => {
     expect(routes.include.some((pattern) => (
       pattern.endsWith('*') && path.startsWith(pattern.slice(0, -1))

@@ -2,10 +2,10 @@ import {
   authorizeTextAiPagesRequest,
   textAiPagesFailure,
   textAiPagesJson,
-  type PhotoAiPagesEnv,
+  type TextAiPagesEnv,
 } from '../../../../edge/text-ai/pagesProxy';
 
-export const onRequestPost: PagesFunction<PhotoAiPagesEnv> = async ({ request, env }) => {
+export const onRequestPost: PagesFunction<TextAiPagesEnv> = async ({ request, env }) => {
   try {
     await authorizeTextAiPagesRequest(request, env, ['logout']);
   } catch {
