@@ -17,6 +17,7 @@
     "workers/**/*.ts",
     "src/lib/photoAiContract.ts",
     "src/lib/photoAiCandidate.ts",
+    "src/lib/textAiAdminContract.ts",
     "vitest.edge.config.ts"
   ]
 }
