@@ -15,6 +15,7 @@
     "pretest:edge": "npm run patch:cloudflare-vitest",
     "test:edge": "vitest run --config vitest.edge.config.ts",
     "typecheck:edge": "tsc --noEmit -p tsconfig.edge.json",
+    "test:text-preview-control": "node --test scripts/cloudflare-api.test.mjs scripts/text-ai-preview-control.test.mjs scripts/verify-text-ai-preview-workflow.test.mjs",
     "dev:photo-worker": "wrangler dev --config workers/photo-ai-gateway/wrangler.jsonc",
     "deploy:photo-worker": "wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc",
     "food-assets:prepare": "node scripts/prepare-preset-food-images.mjs",
