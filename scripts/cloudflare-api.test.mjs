@@ -149,6 +149,59 @@ test('rejects invalid account identifiers, secrets, and fetchers with one fixed 
   }
 });
 
+test('rejects non-primitive account identifiers without coercion or fetch', () => {
+  let fetchCalls = 0;
+  const fetcher = async () => {
+    fetchCalls += 1;
+    return successResponse();
+  };
+  const candidates = [
+    () => {
+      let calls = 0;
+      return {
+        accountId: {
+          toString() {
+            calls += 1;
+            return calls === 1 ? ACCOUNT_ID : 'ID/../../zones';
+          },
+        },
+        coercions: () => calls,
+      };
+    },
+    () => {
+      let calls = 0;
+      const accountId = new String(ACCOUNT_ID);
+      accountId.toString = () => {
+        calls += 1;
+        return ACCOUNT_ID;
+      };
+      return { accountId, coercions: () => calls };
+    },
+    () => {
+      let calls = 0;
+      return {
+        accountId: {
+          toString() {
+            calls += 1;
+            return '[object Object]';
+          },
+        },
+        coercions: () => calls,
+      };
+    },
+  ];
+
+  for (const createCandidate of candidates) {
+    const candidate = createCandidate();
+    assert.throws(
+      () => createCloudflareClient({ accountId: candidate.accountId, apiToken: API_TOKEN, fetcher }),
+      (error) => error?.constructor === Error && error.message === FAILURE_MESSAGE,
+    );
+    assert.equal(candidate.coercions(), 0);
+  }
+  assert.equal(fetchCalls, 0);
+});
+
 test('rejects paths that could escape or alter the fixed account scope before fetch', async () => {
   let calls = 0;
   const fetcher = async () => {

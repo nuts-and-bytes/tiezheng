@@ -119,13 +119,19 @@ export function createCloudflareClient(options) {
     if (!isOrdinaryObject(options)) {
       fail();
     }
-    accountId = options.accountId;
+    const candidateAccountId = options.accountId;
     apiToken = options.apiToken;
     fetcher = options.fetcher === undefined ? globalThis.fetch : options.fetcher;
 
-    if (!ACCOUNT_ID_PATTERN.test(accountId) || !isValidSecret(apiToken) || typeof fetcher !== 'function') {
+    if (
+      typeof candidateAccountId !== 'string'
+      || !ACCOUNT_ID_PATTERN.test(candidateAccountId)
+      || !isValidSecret(apiToken)
+      || typeof fetcher !== 'function'
+    ) {
       fail();
     }
+    accountId = candidateAccountId;
   } catch {
     fail();
   }
