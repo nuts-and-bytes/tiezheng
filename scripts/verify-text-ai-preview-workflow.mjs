@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 const MAX_WORKFLOW_BYTES = 1_048_576;
+const EXPECTED_DISPATCH_SHA256 = 'cbbbf0a476cb1ac996e710f9a38f8966374296da1fd5d4a10eddf2c23cf200b4';
 const OPERATION_CHOICES = Object.freeze([
   'preflight',
   'deploy-disabled',
@@ -534,6 +536,9 @@ function verifyJobAndSteps(lines, source) {
   );
   verifyExactMapping(dispatchEnvEntries, EXPECTED_DISPATCH_ENV);
   const dispatch = blockRun(lines, steps[10], ['env', 'run']);
+  if (createHash('sha256').update(dispatch, 'utf8').digest('hex') !== EXPECTED_DISPATCH_SHA256) {
+    fail();
+  }
 
   const runScripts = [
     'npm ci',

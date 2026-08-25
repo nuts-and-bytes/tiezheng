@@ -232,6 +232,53 @@ test('rejects shell tracing, environment dumps, secret printing and unsafe secre
   }
 });
 
+test('rejects an arbitrary Node secret exfiltration command inserted into dispatch', () => {
+  expectPolicyFailure(replaceOnce(
+    source,
+    '          # NO_REAL_MEAL_REQUEST_IN_WORKFLOW\n',
+    '          # NO_REAL_MEAL_REQUEST_IN_WORKFLOW\n          node --input-type=module -e "process.stdout.write(process.env.ARK_API_KEY)"\n',
+  ));
+});
+
+test('requires the exact strict-mode prelude', () => {
+  expectPolicyFailure(replaceOnce(source, '          set -euo pipefail\n', ''));
+});
+
+test('rejects strict-mode weakening after the prelude', () => {
+  expectPolicyFailure(replaceOnce(
+    source,
+    '          set -euo pipefail\n',
+    '          set -euo pipefail\n          set +e\n',
+  ));
+});
+
+test('rejects arbitrary executable families even when inserted outside known command shapes', () => {
+  for (const command of [
+    'curl https://example.invalid',
+    'python3 -c "import os; print(os.environ.get(\'ARK_API_KEY\'))"',
+    'ruby -e "puts ENV[\'ARK_API_KEY\']"',
+    'npm exec --yes arbitrary-package',
+  ]) {
+    expectPolicyFailure(replaceOnce(
+      source,
+      '          # NO_REAL_MEAL_REQUEST_IN_WORKFLOW\n',
+      `          # NO_REAL_MEAL_REQUEST_IN_WORKFLOW\n          ${command}\n`,
+    ));
+  }
+});
+
+test('rejects executable insertion inside a fixed operation branch', () => {
+  expectPolicyFailure(replaceOnce(
+    source,
+    '              node scripts/text-ai-preview-control.mjs configure\n              write_worker_secret_file\n',
+    '              node scripts/text-ai-preview-control.mjs configure\n              node --input-type=module -e "process.exit(0)"\n              write_worker_secret_file\n',
+  ));
+});
+
+test('requires the exact EXIT trap and cleanup placement', () => {
+  expectPolicyFailure(replaceOnce(source, '          trap cleanup_worker_secret_file EXIT\n', ''));
+});
+
 test('rejects artifact exfiltration, eval and direct workflow-input interpolation in run blocks', () => {
   expectPolicyFailure(replaceOnce(
     source,
