@@ -11,3 +11,8 @@ dev-dist/
 
 # Cloudflare Worker local state
 .wrangler/
+.dev.vars
+workers/**/.dev.vars
+text-ai-preview-evidence/
+text-ai-preview-access-export*.json
+text-ai-preview-secrets*.json

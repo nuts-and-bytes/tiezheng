@@ -1,0 +1,194 @@
+name: Text AI Preview Control
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Fixed preview control operation
+        type: choice
+        required: true
+        options:
+          - preflight
+          - deploy-disabled
+          - enable-admin-preview
+          - status
+          - enable-second-account
+          - disable-account
+          - disable-all
+          - delete-account
+      target:
+        description: Fixed preview account slot
+        type: choice
+        required: true
+        default: user-1
+        options:
+          - user-1
+          - user-2
+      confirmation:
+        description: Fixed phrase for protected operations
+        type: string
+        required: false
+
+jobs:
+  text-ai-preview:
+    environment: text-ai-preview
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Edge typecheck
+        run: npm run typecheck:edge
+      - name: Edge tests
+        run: npm run test:edge
+      - name: Build text-only preview
+        run: npm run build
+        env:
+          VITE_ENABLE_TEXT_AI: 'true'
+          VITE_ENABLE_PHOTO_AI: 'false'
+      - name: Verify preview workflow policy
+        run: npm run verify:text-preview-workflow
+      - name: Worker dry-run
+        run: |
+          ./node_modules/.bin/wrangler deploy --dry-run --config workers/photo-ai-gateway/wrangler.jsonc --outdir "$RUNNER_TEMP/text-ai-worker-dry-run" --var "TEXT_AI_ADMIN_ENABLED:false" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+      - name: Dispatch fixed operation
+        env:
+          TEXT_AI_OPERATION: ${{ inputs.operation }}
+          TEXT_AI_TARGET: ${{ inputs.target }}
+          TEXT_AI_CONFIRMATION: ${{ inputs.confirmation }}
+          TEXT_AI_SECRET_FILE: ${{ runner.temp }}/text-ai-preview-secrets-${{ github.run_id }}-${{ github.run_attempt }}.json
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TEXT_AI_TEAM_DOMAIN: ${{ vars.TEXT_AI_TEAM_DOMAIN }}
+          TEXT_AI_ALLOWED_EMAIL_COUNT: '2'
+          TEXT_AI_USER_1_EMAIL: ${{ secrets.TEXT_AI_USER_1_EMAIL }}
+          TEXT_AI_USER_2_EMAIL: ${{ secrets.TEXT_AI_USER_2_EMAIL }}
+          TEXT_AI_ADMIN_EMAIL: ${{ secrets.TEXT_AI_ADMIN_EMAIL }}
+          TEXT_AI_CF_ACCESS_CLIENT_ID: ${{ secrets.TEXT_AI_CF_ACCESS_CLIENT_ID }}
+          TEXT_AI_CF_ACCESS_CLIENT_SECRET: ${{ secrets.TEXT_AI_CF_ACCESS_CLIENT_SECRET }}
+          PHOTO_AI_ACCOUNT_HMAC_KEY: ${{ secrets.PHOTO_AI_ACCOUNT_HMAC_KEY }}
+          ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+          PHOTO_AI_CACHE_AES_KEY: ${{ secrets.PHOTO_AI_CACHE_AES_KEY }}
+        run: |
+          set -euo pipefail
+          # REAL_TEXT_AI_REQUEST_BUDGET: 1
+          # NO_REAL_MEAL_REQUEST_IN_WORKFLOW
+
+          cleanup_worker_secret_file() {
+            node --input-type=module <<'NODE'
+          import { rm } from 'node:fs/promises';
+          const path = process.env.TEXT_AI_SECRET_FILE;
+          if (typeof path !== 'string' || path.length === 0) throw new Error('invalid secret path');
+          await rm(path, { force: true });
+          NODE
+          }
+
+          write_worker_secret_file() {
+            node --input-type=module <<'NODE'
+          import { chmod, writeFile } from 'node:fs/promises';
+          const path = process.env.TEXT_AI_SECRET_FILE;
+          if (typeof path !== 'string' || path.length === 0) throw new Error('invalid secret path');
+          const secretNames = Object.freeze(['ARK_API_KEY', 'PHOTO_AI_CACHE_AES_KEY']);
+          const secretFile = {};
+          for (const name of secretNames) {
+            const value = process.env[name];
+            if (
+              typeof value !== 'string'
+              || value.length === 0
+              || value.length > 4096
+              || /[\u0000-\u001f\u007f]/u.test(value)
+            ) {
+              throw new Error('missing worker secret');
+            }
+            secretFile[name] = value;
+          }
+          await writeFile(path, `${JSON.stringify(secretFile)}\n`, { flag: 'wx', mode: 0o600 });
+          await chmod(path, 0o600);
+          NODE
+          }
+
+          deploy_worker_disabled() {
+            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+          }
+
+          deploy_worker_enabled() {
+            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:true" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+          }
+
+          deploy_pages_preview() {
+            ./node_modules/.bin/wrangler pages deploy dist --project-name=tiezheng --branch=text-ai-preview --commit-hash="$GITHUB_SHA"
+          }
+
+          trap cleanup_worker_secret_file EXIT
+          node scripts/text-ai-preview-control.mjs preflight
+
+          case "$TEXT_AI_OPERATION" in
+            preflight)
+              :
+              ;;
+            deploy-disabled)
+              node scripts/text-ai-preview-control.mjs configure
+              write_worker_secret_file
+              deploy_worker_disabled
+              deploy_pages_preview
+              ;;
+            enable-admin-preview)
+              if [ "$TEXT_AI_TARGET" != 'user-1' ] || [ "$TEXT_AI_CONFIRMATION" != 'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT' ]; then
+                exit 1
+              fi
+              node scripts/text-ai-preview-control.mjs configure
+              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1
+              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1
+              write_worker_secret_file
+              deploy_worker_enabled
+              ;;
+            status)
+              case "$TEXT_AI_TARGET" in
+                user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-1 ;;
+                user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2 ;;
+                *) exit 1 ;;
+              esac
+              ;;
+            enable-second-account)
+              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-2
+              ;;
+            disable-account)
+              case "$TEXT_AI_TARGET" in
+                user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-1 ;;
+                user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-2 ;;
+                *) exit 1 ;;
+              esac
+              ;;
+            disable-all)
+              node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-text-global --target=user-1
+              write_worker_secret_file
+              deploy_worker_disabled
+              node scripts/text-ai-preview-control.mjs disable-access
+              ;;
+            delete-account)
+              if [ "$TEXT_AI_CONFIRMATION" != 'DELETE_TEXT_PREVIEW_ACCOUNT_STATE' ]; then
+                exit 1
+              fi
+              case "$TEXT_AI_TARGET" in
+                user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-1 ;;
+                user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-2 ;;
+                *) exit 1 ;;
+              esac
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
