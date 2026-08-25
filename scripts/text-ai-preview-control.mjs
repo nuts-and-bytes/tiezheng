@@ -73,6 +73,12 @@ const MAX_ADMIN_RESPONSE_BYTES = 65_536;
 const ADMIN_DEADLINE_MS = 20_000;
 const CLOUDFLARE_DEFAULT_PAGE_SIZE = 20;
 const ACCOUNT_PERMISSION_SCOPE = 'com.cloudflare.api.account';
+const KNOWN_PERMISSION_SCOPES = Object.freeze([
+  ACCOUNT_PERMISSION_SCOPE,
+  'com.cloudflare.api.account.zone',
+  'com.cloudflare.api.user',
+  'com.cloudflare.edge.r2.bucket',
+]);
 const REQUIRED_TOKEN_CAPABILITY_ALIASES = Object.freeze([
   Object.freeze(['Account API Tokens Read']),
   Object.freeze(['Workers Scripts Edit', 'Workers Scripts Write']),
@@ -402,12 +408,25 @@ function parsePermissionGroupCatalog(value) {
       !safeIdentifier(id)
       || !validPermissionName(name)
       || catalog.has(id)
-      || scopes.length !== 1
-      || scopes[0] !== ACCOUNT_PERMISSION_SCOPE
+      || scopes.length === 0
     ) {
       fail();
     }
-    catalog.set(id, name);
+    const observedScopes = new Set();
+    for (const scope of scopes) {
+      if (
+        typeof scope !== 'string'
+        || !KNOWN_PERMISSION_SCOPES.includes(scope)
+        || observedScopes.has(scope)
+      ) {
+        fail();
+      }
+      observedScopes.add(scope);
+    }
+    catalog.set(id, Object.freeze({
+      name,
+      scopes: Object.freeze([...observedScopes]),
+    }));
   }
   if (catalog.size === 0) fail();
   return catalog;
@@ -461,7 +480,14 @@ function parseTokenDetails(value, tokenId, accountId, permissionCatalog) {
         fail();
       }
       observedPermissionGroupIds.add(id);
-      const name = permissionCatalog.get(id);
+      const permission = permissionCatalog.get(id);
+      if (
+        permission.scopes.length !== 1
+        || permission.scopes[0] !== ACCOUNT_PERMISSION_SCOPE
+      ) {
+        fail();
+      }
+      const { name } = permission;
       for (let index = 0; index < REQUIRED_TOKEN_CAPABILITY_ALIASES.length; index += 1) {
         if (REQUIRED_TOKEN_CAPABILITY_ALIASES[index].includes(name)) capabilities.add(index);
       }

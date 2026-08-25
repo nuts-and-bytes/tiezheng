@@ -527,6 +527,73 @@ test('preflight accepts only the documented account permission aliases resolved 
   ));
 });
 
+test('preflight and configure allow unused known non-account and multi-scope catalog entries', async () => {
+  const catalog = permissionGroupCatalog();
+  catalog.push(
+    {
+      id: 'unused-zone-permission-id',
+      name: 'DNS Write',
+      scopes: ['com.cloudflare.api.account.zone'],
+    },
+    {
+      id: 'unused-r2-permission-id',
+      name: 'Workers R2 Data Catalog Write',
+      scopes: ['com.cloudflare.edge.r2.bucket'],
+    },
+    {
+      id: 'unused-multi-scope-permission-id',
+      name: 'Unrelated multi-scope permission',
+      scopes: ['com.cloudflare.api.account.zone', 'com.cloudflare.api.user'],
+    },
+  );
+
+  const preflightFake = createFakeClient(preflightResults([
+    ['GET /tokens/permission_groups', catalog],
+  ]));
+  await assert.doesNotReject(() => preflightTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    preflightFake.client,
+  ));
+
+  const config = loadTextPreviewConfig(validEnv());
+  const projectAfter = projectWithPreview(expectedPagesPatch(config).deployment_configs.preview);
+  const configureFake = createFakeClient(reconciliationResults({
+    projectAfter,
+    extra: [['GET /tokens/permission_groups', catalog]],
+  }));
+  await assert.doesNotReject(() => reconcileTextPreview(config, configureFake.client));
+});
+
+test('configure rejects every non-account or mixed-scope permission actually referenced by the token', async () => {
+  const cases = [
+    ['referenced-zone-permission-id', ['com.cloudflare.api.account.zone']],
+    ['referenced-r2-permission-id', ['com.cloudflare.edge.r2.bucket']],
+    [
+      'referenced-mixed-permission-id',
+      ['com.cloudflare.api.account', 'com.cloudflare.api.user'],
+    ],
+  ];
+
+  for (const [id, scopes] of cases) {
+    const catalog = permissionGroupCatalog();
+    catalog.push({ id, name: 'Unrelated referenced permission', scopes });
+    const detail = tokenDetail();
+    detail.policies[0].permission_groups.push({ id });
+    const fake = createFakeClient(reconciliationResults({
+      extra: [
+        [`GET /tokens/${TOKEN_ID}`, detail],
+        ['GET /tokens/permission_groups', catalog],
+      ],
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(
+      loadTextPreviewConfig(validEnv()),
+      fake.client,
+    ));
+    assert.equal(fake.calls.some(({ method }) => method !== 'GET'), false);
+  }
+});
+
 test('configure fails before every write on token capability, account scope, or ID drift', async () => {
   const missingCapability = tokenDetail();
   missingCapability.policies[0].permission_groups.pop();
@@ -592,11 +659,17 @@ test('configure fails before every write on malformed permission-group catalogs'
   const missingScopes = permissionGroupCatalog();
   delete missingScopes[0].scopes;
 
-  const wrongScope = permissionGroupCatalog();
-  wrongScope[0].scopes = ['com.cloudflare.api.zone'];
+  const emptyScopes = permissionGroupCatalog();
+  emptyScopes[0].scopes = [];
 
-  const mixedScope = permissionGroupCatalog();
-  mixedScope[0].scopes = ['com.cloudflare.api.account', 'com.cloudflare.api.zone'];
+  const duplicateScopes = permissionGroupCatalog();
+  duplicateScopes[0].scopes = [
+    'com.cloudflare.api.account',
+    'com.cloudflare.api.account',
+  ];
+
+  const unknownScope = permissionGroupCatalog();
+  unknownScope[0].scopes = ['com.cloudflare.api.unknown'];
 
   const duplicateId = permissionGroupCatalog();
   duplicateId.push({ ...duplicateId[0] });
@@ -614,8 +687,9 @@ test('configure fails before every write on malformed permission-group catalogs'
   for (const catalog of [
     missingName,
     missingScopes,
-    wrongScope,
-    mixedScope,
+    emptyScopes,
+    duplicateScopes,
+    unknownScope,
     duplicateId,
     accessorEntry,
   ]) {
