@@ -1323,6 +1323,7 @@ describe('text estimate coordination', () => {
 
   test('does not retry a non-retryable provider failure and settles once', async () => {
     const harness = textHandlerHarness({
+      maxProviderAttempts: 2,
       modelResults: [new TextModelAdapterError('provider-unavailable', false)],
     });
     const response = await harness.run();
@@ -1386,7 +1387,7 @@ describe('text estimate coordination', () => {
     })],
   ])('normalizes %s to one fixed non-retryable settlement', async (_label, makeFixture) => {
     const fixture = makeFixture();
-    const harness = textHandlerHarness();
+    const harness = textHandlerHarness({ maxProviderAttempts: 2 });
     harness.adapter.estimate.mockRejectedValueOnce(fixture.error);
 
     const response = await harness.run();
