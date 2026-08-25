@@ -26,6 +26,20 @@ const MAX_BODY_BYTES = 2_048;
 const MAX_DATE_MS = 8_640_000_000_000_000;
 const MAX_DERIVED_DATE_WINDOW_MS = 32 * 86_400_000 + 8 * 60 * 60_000;
 
+function hasQueryDelimiter(rawUrl: string): boolean {
+  const queryIndex = rawUrl.indexOf('?');
+  if (queryIndex === -1) return false;
+  const fragmentIndex = rawUrl.indexOf('#');
+  return fragmentIndex === -1 || queryIndex < fragmentIndex;
+}
+
+export function isExactTextAdminRoute(request: Request, url: URL): boolean {
+  return request.method === 'POST'
+    && url.pathname === ADMIN_PATH
+    && url.search === ''
+    && !hasQueryDelimiter(request.url);
+}
+
 function jsonResponse(body: TextAiAdminResponse, status: number): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -142,9 +156,7 @@ export async function handleTextAdminRequest(
   try {
     const url = new URL(request.url);
     if (
-      request.method !== 'POST'
-      || url.pathname !== ADMIN_PATH
-      || url.search !== ''
+      !isExactTextAdminRoute(request, url)
       || request.headers.get('content-type') !== 'application/json'
       || request.headers.has('content-encoding')
       || request.headers.has('transfer-encoding')

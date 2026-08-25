@@ -175,6 +175,8 @@ describe('internal text admin request firewall', () => {
   test.each([
     ['wrong method', () => adminRequest(null, { method: 'GET' })],
     ['wrong path', () => adminRequest(JSON.stringify(ADMIN_BODY), { url: `${ADMIN_URL}/` })],
+    ['encoded path', () => adminRequest(JSON.stringify(ADMIN_BODY), { url: 'https://photo-ai-gateway.internal/internal/%74ext-admin' })],
+    ['empty query delimiter', () => adminRequest(JSON.stringify(ADMIN_BODY), { url: `${ADMIN_URL}?` })],
     ['query string', () => adminRequest(JSON.stringify(ADMIN_BODY), { url: `${ADMIN_URL}?x=1` })],
     ['missing content type', () => adminRequest(JSON.stringify(ADMIN_BODY), { contentType: null })],
     ['content type with charset', () => adminRequest(JSON.stringify(ADMIN_BODY), { contentType: 'application/json; charset=utf-8' })],
@@ -239,6 +241,32 @@ describe('internal text admin request firewall', () => {
     );
     expect(rejected.getByName).not.toHaveBeenCalled();
     expect(rejected.applyTextAdminOperation).not.toHaveBeenCalled();
+  });
+
+  test('rejects 2049 streamed bytes split across two individually bounded chunks', async () => {
+    const serialized = JSON.stringify(ADMIN_BODY);
+    const bytes = new TextEncoder().encode(
+      `${serialized}${' '.repeat(2049 - new TextEncoder().encode(serialized).byteLength)}`,
+    );
+    const first = bytes.slice(0, 1024);
+    const second = bytes.slice(1024);
+    expect([first.byteLength, second.byteLength]).toEqual([1024, 1025]);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(first);
+        controller.enqueue(second);
+        controller.close();
+      },
+    });
+    const { gatewayEnv, getByName, applyTextAdminOperation } = coordinatorHarness();
+
+    await expectFixedJson(
+      await handleTextAdminRequest(adminRequest(stream), gatewayEnv, DEPENDENCIES),
+      400,
+      { ok: false, code: 'invalid-request' },
+    );
+    expect(getByName).not.toHaveBeenCalled();
+    expect(applyTextAdminOperation).not.toHaveBeenCalled();
   });
 });
 
@@ -363,6 +391,8 @@ describe('internal text admin worker route', () => {
       ['GET', ADMIN_URL],
       ['PUT', ADMIN_URL],
       ['POST', `${ADMIN_URL}/`],
+      ['POST', 'https://photo-ai-gateway.internal/internal/%74ext-admin'],
+      ['POST', `${ADMIN_URL}?`],
       ['POST', `${ADMIN_URL}?x=1`],
       ['POST', 'https://photo-ai-gateway.internal/text/admin'],
     ] as const) {
@@ -381,6 +411,19 @@ describe('internal text admin worker route', () => {
       expect(rejected.getByName).not.toHaveBeenCalled();
       expect(rejected.applyTextAdminOperation).not.toHaveBeenCalled();
     }
+  });
+
+  test('does not mistake a question mark inside the fragment for a query delimiter', async () => {
+    const fragment = coordinatorHarness();
+    await expectFixedJson(
+      await worker.fetch(
+        adminRequest(JSON.stringify(ADMIN_BODY), { url: `${ADMIN_URL}#audit?x=1` }),
+        fragment.gatewayEnv,
+      ),
+      200,
+      { ok: true, operationId: OPERATION_ID, status: STATUS },
+    );
+    expect(fragment.applyTextAdminOperation).toHaveBeenCalledTimes(1);
   });
 
   test('keeps malformed exact admin requests inside the admin handler', async () => {
