@@ -182,6 +182,7 @@ interface TextHandlerHarnessOptions {
   modelResults?: Array<ModelResult | TextModelAdapterError>;
   cachedSuccess?: TextAiEstimateSuccess;
   decryptError?: Error;
+  maxProviderAttempts?: 1 | 2;
 }
 
 function textHandlerHarness(options: TextHandlerHarnessOptions = {}) {
@@ -204,6 +205,7 @@ function textHandlerHarness(options: TextHandlerHarnessOptions = {}) {
     : vi.fn().mockRejectedValue(options.decryptError);
   const getByName = vi.fn(() => coordinator);
   const env = configuredEnv({
+    TEXT_AI_MAX_PROVIDER_ATTEMPTS: String(options.maxProviderAttempts ?? 1),
     PHOTO_AI_COORDINATOR: { getByName } as unknown as GatewayEnv['PHOTO_AI_COORDINATOR'],
   });
   const createModelAdapter = vi.fn(() => adapter);
@@ -224,6 +226,7 @@ function textHandlerHarness(options: TextHandlerHarnessOptions = {}) {
       parseDoubaoTextEstimate: parseTextEstimate,
       encryptCandidateCache,
       decryptCandidateCache,
+      maxProviderAttempts: options.maxProviderAttempts ?? 1,
       now: () => NOW,
     }),
   };
@@ -294,6 +297,29 @@ describe('text gateway configuration and JSON firewall', () => {
     expect(getByName).not.toHaveBeenCalled();
     expect(createModelAdapter).not.toHaveBeenCalled();
   });
+
+  test.each(['2', '01', '1 ', '1.0', ''])
+    ('fails closed with zero provider or coordinator side effects for attempts env %#', async (attempts) => {
+      expect(TEXT_GATEWAY_RUNTIME.maxProviderAttempts).toBe(1);
+      const env = configuredEnv({ TEXT_AI_MAX_PROVIDER_ATTEMPTS: attempts });
+      const getByName = env.PHOTO_AI_COORDINATOR.getByName;
+      const createModelAdapter = vi.fn();
+
+      const response = await handleTextAiRequest(workerRequest(), env, {
+        ...TEXT_GATEWAY_RUNTIME,
+        createModelAdapter,
+      });
+
+      expect(response.status).toBe(503);
+      expect(await responseBody(response)).toEqual({
+        ok: false,
+        code: 'service-disabled',
+        retryAt: null,
+        resetAt: null,
+      });
+      expect(getByName).not.toHaveBeenCalled();
+      expect(createModelAdapter).not.toHaveBeenCalled();
+    });
 
   test('text configuration is independent of the photo flag, Images binding and Pages origin', () => {
     const env = configuredEnv({
@@ -1039,6 +1065,7 @@ describe('text estimate coordination', () => {
 
   test('retries one retryable failure only after reserving retry cost, then succeeds', async () => {
     const harness = textHandlerHarness({
+      maxProviderAttempts: 2,
       modelResults: [
         new TextModelAdapterError('provider-unavailable', true),
         {
@@ -1087,7 +1114,7 @@ describe('text estimate coordination', () => {
   test('bounds both provider attempts to 16 seconds and settles the original lease only once', async () => {
     vi.useFakeTimers();
     const caller = new AbortController();
-    const harness = textHandlerHarness();
+    const harness = textHandlerHarness({ maxProviderAttempts: 2 });
     const providerSignals: AbortSignal[] = [];
     let attempt = 0;
     let lateSuccess = false;
@@ -1309,6 +1336,29 @@ describe('text estimate coordination', () => {
     expect(harness.encryptCandidateCache).not.toHaveBeenCalled();
   });
 
+  test('maxProviderAttempts=1 settles a retryable provider failure after one attempt', async () => {
+    const harness = textHandlerHarness({
+      maxProviderAttempts: 1,
+      modelResults: [new TextModelAdapterError('provider-unavailable', true)],
+    });
+
+    const response = await harness.run();
+
+    expect(response.status).toBe(503);
+    expect(await responseBody(response)).toMatchObject({
+      ok: false,
+      code: 'provider-unavailable',
+    });
+    expect(harness.adapter.estimate).toHaveBeenCalledTimes(1);
+    expect(harness.coordinator.reserveRetryCost).not.toHaveBeenCalled();
+    expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
+    expect(harness.coordinator.settleFailure).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: 'provider-unavailable',
+      actualCostMicros: null,
+    }));
+    expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
+  });
+
   test.each([
     ['unknown provider code', () => {
       const error = new TextModelAdapterError('provider-unavailable', true);
@@ -1500,6 +1550,7 @@ describe('text estimate coordination', () => {
 
   test('stops after two retryable failures and settles once', async () => {
     const harness = textHandlerHarness({
+      maxProviderAttempts: 2,
       modelResults: [
         new TextModelAdapterError('provider-unavailable', true),
         new TextModelAdapterError('provider-unavailable', true),
@@ -1695,6 +1746,7 @@ describe('text estimate failure cleanup', () => {
 
   test('fails closed when retry reservation fails and settles the invoked lease once', async () => {
     const harness = textHandlerHarness({
+      maxProviderAttempts: 2,
       modelResults: [new TextModelAdapterError('provider-unavailable', true)],
     });
     harness.coordinator.reserveRetryCost.mockRejectedValue(new Error('private budget state'));

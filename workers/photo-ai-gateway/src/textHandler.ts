@@ -42,6 +42,7 @@ export interface TextHandlerDependencies {
   initialAttemptReserveMicros: number;
   retryAttemptReserveMicros: number;
   resultCacheMs: number;
+  maxProviderAttempts: 1 | 2;
   now(): number;
 }
 
@@ -54,6 +55,7 @@ export const TEXT_GATEWAY_RUNTIME: TextHandlerDependencies = Object.freeze({
   initialAttemptReserveMicros: GATEWAY_CHANNEL_POLICY.text.initialAttemptReserveMicros,
   retryAttemptReserveMicros: GATEWAY_CHANNEL_POLICY.text.retryAttemptReserveMicros,
   resultCacheMs: GATEWAY_LIMITS.resultCacheMs,
+  maxProviderAttempts: 1,
   now: Date.now,
 });
 
@@ -703,6 +705,7 @@ export function isTextAiGatewayConfigured(
       && runtime.retryAttemptReserveMicros
         === GATEWAY_CHANNEL_POLICY.text.retryAttemptReserveMicros
       && runtime.resultCacheMs === GATEWAY_LIMITS.resultCacheMs
+      && env.TEXT_AI_MAX_PROVIDER_ATTEMPTS === String(runtime.maxProviderAttempts)
       && typeof env.ARK_API_KEY === 'string'
       && env.ARK_API_KEY.length >= 1
       && env.ARK_API_KEY.length <= 4096
@@ -981,6 +984,9 @@ export async function handleTextAiRequest(
       const adapterError = normalizedAdapterError(error);
       if (adapterError === null || !adapterError.retryable) {
         return await settleFailure(adapterError?.code ?? 'provider-unavailable', null);
+      }
+      if (dependencies.maxProviderAttempts === 1) {
+        return await settleFailure(adapterError.code, null);
       }
       try {
         await raceLifecycleAbort(
