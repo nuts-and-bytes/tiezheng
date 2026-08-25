@@ -74,6 +74,7 @@ async function expectFixedRejection(action) {
 }
 
 const WORKER_NAME = 'tiezheng-photo-ai-gateway';
+const TOKEN_ID = 'token-id';
 const USER_APP_NAME = 'tiezheng-text-ai-preview-users';
 const ADMIN_APP_NAME = 'tiezheng-text-ai-preview-admin';
 const OTP_PROVIDER_ID = 'otp-provider-id';
@@ -92,6 +93,15 @@ const ADMIN_OPERATIONS = Object.freeze([
   'enable-account',
   'disable-account',
   'delete-account',
+]);
+const ACCOUNT_RESOURCE_KEY = `com.cloudflare.api.account.${SENSITIVE.accountId}`;
+const REQUIRED_TOKEN_PERMISSION_NAMES = Object.freeze([
+  'Account API Tokens Read',
+  'Workers Scripts Edit',
+  'Cloudflare Pages Edit',
+  'Access: Apps and Policies Edit',
+  'Access: Identity Providers Read',
+  'Access: Service Tokens Read',
 ]);
 
 const USER_APP_PAYLOAD = Object.freeze({
@@ -149,6 +159,31 @@ function appResult(id, aud, payload) {
 
 function policyResult(id, payload) {
   return { id, ...payload };
+}
+
+function permissionGroupCatalog(names = REQUIRED_TOKEN_PERMISSION_NAMES) {
+  return names.map((name, index) => ({
+    id: `permission-group-${index}`,
+    name,
+    scopes: ['com.cloudflare.api.account'],
+  }));
+}
+
+function tokenDetail(overrides = {}) {
+  return {
+    id: TOKEN_ID,
+    status: 'active',
+    policies: [{
+      id: 'token-policy-id',
+      effect: 'allow',
+      resources: { [ACCOUNT_RESOURCE_KEY]: '*' },
+      permission_groups: REQUIRED_TOKEN_PERMISSION_NAMES.map((_, index) => ({
+        id: `permission-group-${index}`,
+        name: `cosmetic-name-${index}`,
+      })),
+    }],
+    ...overrides,
+  };
 }
 
 function adminSuccess(operationId = OPERATION_ID, statusOverrides = {}) {
@@ -279,6 +314,7 @@ function projectResult(overrides = {}) {
   return {
     id: 'pages-project-id',
     name: 'tiezheng',
+    production_branch: 'main',
     deployment_configs: {
       production: {
         env_vars: {
@@ -295,7 +331,9 @@ function projectResult(overrides = {}) {
 
 function preflightResults(overrides = []) {
   return new Map([
-    ['GET /tokens/verify', { id: 'token-id', status: 'active' }],
+    ['GET /tokens/verify', { id: TOKEN_ID, status: 'active' }],
+    [`GET /tokens/${TOKEN_ID}`, tokenDetail()],
+    ['GET /tokens/permission_groups', permissionGroupCatalog()],
     ['GET /pages/projects/tiezheng', projectResult()],
     ['GET /workers/scripts', [{ id: WORKER_NAME, modified_on: '2026-08-25T00:00:00.000Z' }]],
     [`GET /workers/scripts/${WORKER_NAME}/settings`, {
@@ -420,7 +458,7 @@ test('does not read required configuration through inherited or accessor propert
   assert.equal(getterReads, 0);
 });
 
-test('preflight performs six ordered read-only account checks and validates fixed resources', async () => {
+test('preflight performs eight ordered read-only account checks and validates fixed resources', async () => {
   const config = loadTextPreviewConfig(validEnv());
   const fake = createFakeClient();
 
@@ -431,8 +469,11 @@ test('preflight performs six ordered read-only account checks and validates fixe
   assert.equal(result.otpProviderId, OTP_PROVIDER_ID);
   assert.equal(result.serviceTokenId, SERVICE_TOKEN_ID);
   assert.equal(result.photoAiGatewayEnabled, false);
+  assert.equal(result.workerTextEnabled, false);
   assert.deepEqual(fake.calls.map(({ method, path }) => `${method} ${path}`), [
     'GET /tokens/verify',
+    `GET /tokens/${TOKEN_ID}`,
+    'GET /tokens/permission_groups',
     'GET /pages/projects/tiezheng',
     'GET /workers/scripts',
     `GET /workers/scripts/${WORKER_NAME}/settings`,
@@ -443,11 +484,218 @@ test('preflight performs six ordered read-only account checks and validates fixe
   assert.equal(JSON.stringify(result).includes(SENSITIVE.apiToken), false);
 });
 
+test('preflight exposes the existing Worker text flag as a boolean without secrets', async () => {
+  const fake = createFakeClient(preflightResults([
+    [`GET /workers/scripts/${WORKER_NAME}/settings`, {
+      bindings: [
+        { type: 'plain_text', name: 'PHOTO_AI_GATEWAY_ENABLED', text: 'false' },
+        { type: 'plain_text', name: 'TEXT_AI_GATEWAY_ENABLED', text: 'true' },
+        { type: 'secret_text', name: 'ARK_API_KEY' },
+      ],
+    }],
+  ]));
+
+  const result = await preflightTextPreview(loadTextPreviewConfig(validEnv()), fake.client);
+
+  assert.equal(result.workerTextEnabled, true);
+  const serialized = JSON.stringify(result);
+  for (const secret of Object.values(SENSITIVE)) {
+    assert.equal(serialized.includes(secret), false);
+  }
+});
+
+test('preflight accepts only the documented account permission aliases resolved by catalog ID', async () => {
+  const aliasNames = [
+    'Account API Tokens Read',
+    'Workers Scripts Write',
+    'Pages Write',
+    'Access: Apps and Policies Write',
+    'Access: Organizations, Identity Providers, and Groups Read',
+    'Access: Service Tokens Read',
+  ];
+  const detail = tokenDetail();
+  for (const group of detail.policies[0].permission_groups) delete group.name;
+  delete detail.name;
+  const fake = createFakeClient(preflightResults([
+    [`GET /tokens/${TOKEN_ID}`, detail],
+    ['GET /tokens/permission_groups', permissionGroupCatalog(aliasNames)],
+  ]));
+
+  await assert.doesNotReject(() => preflightTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    fake.client,
+  ));
+});
+
+test('configure fails before every write on token capability, account scope, or ID drift', async () => {
+  const missingCapability = tokenDetail();
+  missingCapability.policies[0].permission_groups.pop();
+
+  const wrongAccount = tokenDetail();
+  wrongAccount.policies[0].resources = {
+    [`com.cloudflare.api.account.${'b'.repeat(32)}`]: '*',
+  };
+
+  const wildcardAccount = tokenDetail();
+  wildcardAccount.policies[0].resources = { 'com.cloudflare.api.account.*': '*' };
+
+  const additionalAccount = tokenDetail();
+  additionalAccount.policies[0].resources[`com.cloudflare.api.account.${'b'.repeat(32)}`] = '*';
+
+  const deniedPolicy = tokenDetail();
+  deniedPolicy.policies[0].effect = 'deny';
+
+  const mismatchedToken = tokenDetail({ id: 'different-token-id' });
+
+  const unknownGroup = tokenDetail();
+  unknownGroup.policies[0].permission_groups[0].id = 'unknown-permission-group-id';
+
+  const malformedGroup = tokenDetail();
+  malformedGroup.policies[0].permission_groups[0] = { name: 'cosmetic-only' };
+
+  const pollutedResources = { [ACCOUNT_RESOURCE_KEY]: '*' };
+  Object.defineProperty(pollutedResources, '__proto__', {
+    enumerable: true,
+    value: '*',
+  });
+  const pollutedDetail = tokenDetail();
+  pollutedDetail.policies[0].resources = pollutedResources;
+
+  const cases = [
+    { detail: missingCapability },
+    { detail: wrongAccount },
+    { detail: wildcardAccount },
+    { detail: additionalAccount },
+    { detail: deniedPolicy },
+    { detail: mismatchedToken },
+    { detail: unknownGroup },
+    { detail: malformedGroup },
+    { detail: pollutedDetail },
+  ];
+
+  for (const { detail } of cases) {
+    const fake = createFakeClient(reconciliationResults({
+      extra: [[`GET /tokens/${TOKEN_ID}`, detail]],
+    }));
+    await expectFixedRejection(() => reconcileTextPreview(
+      loadTextPreviewConfig(validEnv()),
+      fake.client,
+    ));
+    assert.equal(fake.calls.some(({ method }) => method !== 'GET'), false);
+  }
+});
+
+test('configure fails before every write on malformed permission-group catalogs', async () => {
+  const missingName = permissionGroupCatalog();
+  delete missingName[0].name;
+
+  const missingScopes = permissionGroupCatalog();
+  delete missingScopes[0].scopes;
+
+  const wrongScope = permissionGroupCatalog();
+  wrongScope[0].scopes = ['com.cloudflare.api.zone'];
+
+  const mixedScope = permissionGroupCatalog();
+  mixedScope[0].scopes = ['com.cloudflare.api.account', 'com.cloudflare.api.zone'];
+
+  const duplicateId = permissionGroupCatalog();
+  duplicateId.push({ ...duplicateId[0] });
+
+  const accessorEntry = permissionGroupCatalog();
+  let getterReads = 0;
+  Object.defineProperty(accessorEntry[0], 'name', {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return 'Account API Tokens Read';
+    },
+  });
+
+  for (const catalog of [
+    missingName,
+    missingScopes,
+    wrongScope,
+    mixedScope,
+    duplicateId,
+    accessorEntry,
+  ]) {
+    const fake = createFakeClient(reconciliationResults({
+      extra: [['GET /tokens/permission_groups', catalog]],
+    }));
+    await expectFixedRejection(() => reconcileTextPreview(
+      loadTextPreviewConfig(validEnv()),
+      fake.client,
+    ));
+    assert.equal(fake.calls.some(({ method }) => method !== 'GET'), false);
+  }
+  assert.equal(getterReads, 0);
+});
+
+test('preflight and configure require the Pages production branch to be exact main', async () => {
+  const missingBranch = projectResult();
+  delete missingBranch.production_branch;
+  const projects = [
+    missingBranch,
+    projectResult({ production_branch: 'release' }),
+    projectResult({ production_branch: new String('main') }),
+  ];
+
+  for (const project of projects) {
+    const preflightFake = createFakeClient(preflightResults([
+      ['GET /pages/projects/tiezheng', project],
+    ]));
+    await expectFixedRejection(() => preflightTextPreview(
+      loadTextPreviewConfig(validEnv()),
+      preflightFake.client,
+    ));
+
+    const configureFake = createFakeClient(reconciliationResults({ projectBefore: project }));
+    await expectFixedRejection(() => reconcileTextPreview(
+      loadTextPreviewConfig(validEnv()),
+      configureFake.client,
+    ));
+    assert.equal(configureFake.calls.some(({ method }) => method !== 'GET'), false);
+  }
+});
+
+test('preflight requires one exact Worker text flag binding', async () => {
+  const cases = [
+    [
+      { type: 'plain_text', name: 'PHOTO_AI_GATEWAY_ENABLED', text: 'false' },
+    ],
+    [
+      { type: 'plain_text', name: 'PHOTO_AI_GATEWAY_ENABLED', text: 'false' },
+      { type: 'plain_text', name: 'TEXT_AI_GATEWAY_ENABLED', text: 'false' },
+      { type: 'plain_text', name: 'TEXT_AI_GATEWAY_ENABLED', text: 'true' },
+    ],
+    [
+      { type: 'plain_text', name: 'PHOTO_AI_GATEWAY_ENABLED', text: 'false' },
+      { type: 'plain_text', name: 'TEXT_AI_GATEWAY_ENABLED', text: 'FALSE' },
+    ],
+    [
+      { type: 'plain_text', name: 'PHOTO_AI_GATEWAY_ENABLED', text: 'false' },
+      { type: 'secret_text', name: 'TEXT_AI_GATEWAY_ENABLED' },
+    ],
+  ];
+
+  for (const bindings of cases) {
+    const fake = createFakeClient(preflightResults([[
+      `GET /workers/scripts/${WORKER_NAME}/settings`,
+      { bindings },
+    ]]));
+    await expectFixedRejection(() => preflightTextPreview(
+      loadTextPreviewConfig(validEnv()),
+      fake.client,
+    ));
+  }
+});
+
 test('preflight stops immediately when the existing photo Worker flag is exact true', async () => {
   const results = preflightResults([
     [`GET /workers/scripts/${WORKER_NAME}/settings`, {
       bindings: [
         { type: 'plain_text', name: 'PHOTO_AI_GATEWAY_ENABLED', text: 'true' },
+        { type: 'plain_text', name: 'TEXT_AI_GATEWAY_ENABLED', text: 'false' },
       ],
     }],
   ]);
@@ -460,6 +708,8 @@ test('preflight stops immediately when the existing photo Worker flag is exact t
 
   assert.deepEqual(fake.calls.map(({ method, path }) => `${method} ${path}`), [
     'GET /tokens/verify',
+    `GET /tokens/${TOKEN_ID}`,
+    'GET /tokens/permission_groups',
     'GET /pages/projects/tiezheng',
     'GET /workers/scripts',
     `GET /workers/scripts/${WORKER_NAME}/settings`,
@@ -608,6 +858,8 @@ test('configure creates only the two dedicated Access apps and exact three polic
     fake.calls.slice(0, firstWriteIndex).map(({ method, path }) => `${method} ${path}`),
     [
       'GET /tokens/verify',
+      `GET /tokens/${TOKEN_ID}`,
+      'GET /tokens/permission_groups',
       'GET /pages/projects/tiezheng',
       'GET /workers/scripts',
       `GET /workers/scripts/${WORKER_NAME}/settings`,
@@ -666,6 +918,8 @@ test('configure updates existing exact apps and policies idempotently without cr
     fake.calls.slice(0, firstWriteIndex).map(({ path }) => path),
     [
       '/tokens/verify',
+      `/tokens/${TOKEN_ID}`,
+      '/tokens/permission_groups',
       '/pages/projects/tiezheng',
       '/workers/scripts',
       `/workers/scripts/${WORKER_NAME}/settings`,
@@ -2242,7 +2496,7 @@ test('CLI accepts only four exact commands and emits only fixed redacted JSON', 
   ], validEnv(), dependencies), 0);
 
   assert.deepEqual(stdout.map((line) => JSON.parse(line)), [
-    { command: 'preflight', status: 'ready' },
+    { command: 'preflight', status: 'ready', workerTextEnabled: false },
     { command: 'configure', status: 'configured' },
     { command: 'disable-access', status: 'disabled', deletedApps: [] },
     {
@@ -2268,6 +2522,91 @@ test('CLI accepts only four exact commands and emits only fixed redacted JSON', 
   ]) {
     assert.equal(output.includes(forbidden), false);
   }
+});
+
+test('CLI disable-access uses only account credentials and fails before fetch when either is missing', async () => {
+  const minimalEnv = {
+    CLOUDFLARE_ACCOUNT_ID: SENSITIVE.accountId,
+    CLOUDFLARE_API_TOKEN: SENSITIVE.apiToken,
+  };
+  const stdout = [];
+  const stderr = [];
+  const receivedConfigs = [];
+  let clientCalls = 0;
+  let fetchCalls = 0;
+  const dependencies = {
+    clientFactory: (config) => {
+      clientCalls += 1;
+      receivedConfigs.push(config);
+      return createFakeClient(new Map([['GET /access/apps', []]])).client;
+    },
+    fetcher: async () => {
+      fetchCalls += 1;
+      return adminResponse();
+    },
+    writeStdout: (value) => stdout.push(value),
+    writeStderr: (value) => stderr.push(value),
+  };
+
+  assert.equal(await runTextPreviewControlCli(['disable-access'], minimalEnv, dependencies), 0);
+  assert.deepEqual(Object.keys(receivedConfigs[0]).sort(), [
+    'accountId',
+    'apiToken',
+  ]);
+  assert.equal(clientCalls, 1);
+  assert.equal(fetchCalls, 0);
+  assert.deepEqual(stdout.map((line) => JSON.parse(line)), [{
+    command: 'disable-access',
+    status: 'disabled',
+    deletedApps: [],
+  }]);
+
+  for (const missingKey of ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN']) {
+    const invalidEnv = { ...minimalEnv };
+    delete invalidEnv[missingKey];
+    assert.equal(await runTextPreviewControlCli(['disable-access'], invalidEnv, dependencies), 1);
+  }
+  assert.equal(clientCalls, 1);
+  assert.equal(fetchCalls, 0);
+  assert.deepEqual(stderr, [
+    'Text preview control failed\n',
+    'Text preview control failed\n',
+  ]);
+  const output = [...stdout, ...stderr].join('');
+  for (const secret of Object.values(SENSITIVE)) {
+    assert.equal(output.includes(secret), false);
+  }
+});
+
+test('CLI preflight, configure, and invoke-admin retain the full configuration boundary', async () => {
+  let clientCalls = 0;
+  let fetchCalls = 0;
+  const dependencies = {
+    clientFactory: () => {
+      clientCalls += 1;
+      return createFakeClient().client;
+    },
+    fetcher: async () => {
+      fetchCalls += 1;
+      return adminResponse();
+    },
+    writeStdout: () => undefined,
+    writeStderr: () => undefined,
+  };
+  const minimalEnv = {
+    CLOUDFLARE_ACCOUNT_ID: SENSITIVE.accountId,
+    CLOUDFLARE_API_TOKEN: SENSITIVE.apiToken,
+  };
+
+  assert.equal(await runTextPreviewControlCli(['preflight'], minimalEnv, dependencies), 1);
+  assert.equal(await runTextPreviewControlCli(['configure'], minimalEnv, dependencies), 1);
+  assert.equal(await runTextPreviewControlCli([
+    'invoke-admin',
+    '--operation=status',
+    '--target=user-1',
+  ], minimalEnv, dependencies), 1);
+  assert.equal(clientCalls, 0);
+  assert.equal(fetchCalls, 0);
 });
 
 test('CLI rejects unknown, reordered, extra, coercible, and accessor arguments without API or fetch calls', async () => {

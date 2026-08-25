@@ -72,7 +72,20 @@ const OPERATION_ID_PATTERN = /^[a-f0-9]{32}$/;
 const MAX_ADMIN_RESPONSE_BYTES = 65_536;
 const ADMIN_DEADLINE_MS = 20_000;
 const CLOUDFLARE_DEFAULT_PAGE_SIZE = 20;
+const ACCOUNT_PERMISSION_SCOPE = 'com.cloudflare.api.account';
+const REQUIRED_TOKEN_CAPABILITY_ALIASES = Object.freeze([
+  Object.freeze(['Account API Tokens Read']),
+  Object.freeze(['Workers Scripts Edit', 'Workers Scripts Write']),
+  Object.freeze(['Cloudflare Pages Edit', 'Pages Write']),
+  Object.freeze(['Access: Apps and Policies Edit', 'Access: Apps and Policies Write']),
+  Object.freeze([
+    'Access: Identity Providers Read',
+    'Access: Organizations, Identity Providers, and Groups Read',
+  ]),
+  Object.freeze(['Access: Service Tokens Read']),
+]);
 const VALID_CONFIGS = new WeakSet();
+const VALID_CLOUDFLARE_CONFIGS = new WeakSet();
 
 function fail() {
   throw new Error(FAILURE_MESSAGE);
@@ -146,6 +159,14 @@ function safeIdentifier(value) {
 
 function configIsValid(config) {
   return config !== null && typeof config === 'object' && VALID_CONFIGS.has(config);
+}
+
+function cloudflareConfigIsValid(config) {
+  return (
+    config !== null
+    && typeof config === 'object'
+    && VALID_CLOUDFLARE_CONFIGS.has(config)
+  );
 }
 
 function clientGet(client) {
@@ -253,10 +274,30 @@ function isNormalizedEmail(value) {
   return EMAIL_PATTERN.test(value);
 }
 
+function parseCloudflareCredentials(env) {
+  return Object.freeze({
+    accountId: requiredString(
+      env,
+      'CLOUDFLARE_ACCOUNT_ID',
+      (value) => ACCOUNT_ID_PATTERN.test(value),
+    ),
+    apiToken: requiredString(env, 'CLOUDFLARE_API_TOKEN', (value) => isSecret(value)),
+  });
+}
+
+function loadCloudflareControlConfig(env) {
+  try {
+    const config = parseCloudflareCredentials(env);
+    VALID_CLOUDFLARE_CONFIGS.add(config);
+    return config;
+  } catch {
+    fail();
+  }
+}
+
 export function loadTextPreviewConfig(env) {
   try {
-    const accountId = requiredString(env, 'CLOUDFLARE_ACCOUNT_ID', (value) => ACCOUNT_ID_PATTERN.test(value));
-    const apiToken = requiredString(env, 'CLOUDFLARE_API_TOKEN', (value) => isSecret(value));
+    const { accountId, apiToken } = parseCloudflareCredentials(env);
     const teamDomain = requiredString(env, 'TEXT_AI_TEAM_DOMAIN', (value) => TEAM_DOMAIN_PATTERN.test(value));
     const countValue = requiredString(env, 'TEXT_AI_ALLOWED_EMAIL_COUNT', (value) => value === '2' || value === '3');
     const allowedEmailCount = Number(countValue);
@@ -313,6 +354,7 @@ export function loadTextPreviewConfig(env) {
       accountHmacKey,
     });
     VALID_CONFIGS.add(config);
+    VALID_CLOUDFLARE_CONFIGS.add(config);
     return config;
   } catch {
     fail();
@@ -321,13 +363,112 @@ export function loadTextPreviewConfig(env) {
 
 function parseTokenVerification(value) {
   const snapshot = snapshotRecord(value);
+  const id = snapshot.get('id');
   if (
     snapshot.size !== 2
-    || !safeIdentifier(snapshot.get('id'))
+    || !safeIdentifier(id)
     || snapshot.get('status') !== 'active'
   ) {
     fail();
   }
+  return id;
+}
+
+function rejectPrototypeKeys(snapshot) {
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    if (snapshot.has(key)) fail();
+  }
+}
+
+function validPermissionName(value) {
+  return (
+    typeof value === 'string'
+    && value.length > 0
+    && value.length <= 255
+    && value.trim() === value
+    && !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+function parsePermissionGroupCatalog(value) {
+  const catalog = new Map();
+  for (const item of snapshotArray(value)) {
+    const snapshot = snapshotRecord(item);
+    rejectPrototypeKeys(snapshot);
+    const id = snapshot.get('id');
+    const name = snapshot.get('name');
+    const scopes = snapshotArray(snapshot.get('scopes'));
+    if (
+      !safeIdentifier(id)
+      || !validPermissionName(name)
+      || catalog.has(id)
+      || scopes.length !== 1
+      || scopes[0] !== ACCOUNT_PERMISSION_SCOPE
+    ) {
+      fail();
+    }
+    catalog.set(id, name);
+  }
+  if (catalog.size === 0) fail();
+  return catalog;
+}
+
+function parseTokenDetails(value, tokenId, accountId, permissionCatalog) {
+  const token = snapshotRecord(value);
+  rejectPrototypeKeys(token);
+  if (
+    token.get('id') !== tokenId
+    || token.get('status') !== 'active'
+    || !token.has('policies')
+  ) {
+    fail();
+  }
+
+  const expectedResourceKey = `${ACCOUNT_PERMISSION_SCOPE}.${accountId}`;
+  const capabilities = new Set();
+  const observedPermissionGroupIds = new Set();
+  const policies = snapshotArray(token.get('policies'));
+  if (policies.length === 0) fail();
+
+  for (const policyValue of policies) {
+    const policy = snapshotRecord(policyValue);
+    rejectPrototypeKeys(policy);
+    if (policy.get('effect') !== 'allow') fail();
+    if (policy.has('id') && !safeIdentifier(policy.get('id'))) fail();
+
+    const resources = snapshotRecord(policy.get('resources'));
+    rejectPrototypeKeys(resources);
+    if (
+      resources.size !== 1
+      || !resources.has(expectedResourceKey)
+      || resources.get(expectedResourceKey) !== '*'
+    ) {
+      fail();
+    }
+
+    const groups = snapshotArray(policy.get('permission_groups'));
+    if (groups.length === 0) fail();
+    for (const groupValue of groups) {
+      const group = snapshotRecord(groupValue);
+      rejectPrototypeKeys(group);
+      const id = group.get('id');
+      if (
+        !safeIdentifier(id)
+        || observedPermissionGroupIds.has(id)
+        || !permissionCatalog.has(id)
+        || (group.has('name') && !validPermissionName(group.get('name')))
+      ) {
+        fail();
+      }
+      observedPermissionGroupIds.add(id);
+      const name = permissionCatalog.get(id);
+      for (let index = 0; index < REQUIRED_TOKEN_CAPABILITY_ALIASES.length; index += 1) {
+        if (REQUIRED_TOKEN_CAPABILITY_ALIASES[index].includes(name)) capabilities.add(index);
+      }
+    }
+  }
+
+  if (capabilities.size !== REQUIRED_TOKEN_CAPABILITY_ALIASES.length) fail();
 }
 
 function parsePagesProject(value) {
@@ -335,6 +476,7 @@ function parsePagesProject(value) {
   if (
     !safeIdentifier(snapshot.get('id'))
     || snapshot.get('name') !== PAGES_PROJECT_NAME
+    || snapshot.get('production_branch') !== 'main'
   ) {
     fail();
   }
@@ -343,6 +485,7 @@ function parsePagesProject(value) {
   return Object.freeze({
     id: snapshot.get('id'),
     name: PAGES_PROJECT_NAME,
+    production_branch: 'main',
     deployment_configs: Object.freeze({
       production: cloneRedactedJsonValue(deploymentConfigs.get('production')),
       preview: cloneRedactedJsonValue(deploymentConfigs.get('preview')),
@@ -367,23 +510,33 @@ function parseWorkerList(value) {
 function parseWorkerSettings(value) {
   const settings = snapshotRecord(value);
   const bindings = snapshotArray(settings.get('bindings'));
-  const photoFlags = [];
+  const flags = new Map([
+    ['PHOTO_AI_GATEWAY_ENABLED', []],
+    ['TEXT_AI_GATEWAY_ENABLED', []],
+  ]);
   for (const bindingValue of bindings) {
     const binding = snapshotRecord(bindingValue);
     const type = binding.get('type');
     const name = binding.get('name');
     if (!safeIdentifier(type) || !safeIdentifier(name)) fail();
-    if (name === 'PHOTO_AI_GATEWAY_ENABLED') photoFlags.push(binding);
+    if (flags.has(name)) flags.get(name).push(binding);
   }
-  if (photoFlags.length !== 1) fail();
-  const flag = photoFlags[0];
-  if (
-    flag.get('type') !== 'plain_text'
-    || (flag.get('text') !== 'false' && flag.get('text') !== 'true')
-  ) {
-    fail();
+  const parsed = {};
+  for (const [name, matches] of flags) {
+    if (matches.length !== 1) fail();
+    const flag = matches[0];
+    if (
+      flag.get('type') !== 'plain_text'
+      || (flag.get('text') !== 'false' && flag.get('text') !== 'true')
+    ) {
+      fail();
+    }
+    parsed[name] = flag.get('text') === 'true';
   }
-  return flag.get('text') === 'true';
+  return Object.freeze({
+    photoAiGatewayEnabled: parsed.PHOTO_AI_GATEWAY_ENABLED,
+    workerTextEnabled: parsed.TEXT_AI_GATEWAY_ENABLED,
+  });
 }
 
 function parseOtpProvider(value) {
@@ -405,13 +558,18 @@ export async function preflightTextPreview(config, client) {
     if (!configIsValid(config)) fail();
     const get = clientGet(client);
 
-    parseTokenVerification(await get('/tokens/verify'));
+    const tokenId = parseTokenVerification(await get('/tokens/verify'));
+    const tokenDetails = await get(`/tokens/${tokenId}`);
+    const permissionCatalog = parsePermissionGroupCatalog(
+      await get('/tokens/permission_groups'),
+    );
+    parseTokenDetails(tokenDetails, tokenId, config.accountId, permissionCatalog);
     const project = parsePagesProject(await get('/pages/projects/tiezheng'));
     parseWorkerList(await get('/workers/scripts'));
-    const photoAiGatewayEnabled = parseWorkerSettings(
+    const workerSettings = parseWorkerSettings(
       await get(`/workers/scripts/${WORKER_NAME}/settings`),
     );
-    if (photoAiGatewayEnabled) fail();
+    if (workerSettings.photoAiGatewayEnabled) fail();
     const otpProviderId = parseOtpProvider(await get('/access/identity_providers'));
     const serviceTokenId = parseServiceToken(
       await get('/access/service_tokens'),
@@ -423,7 +581,8 @@ export async function preflightTextPreview(config, client) {
       workerName: WORKER_NAME,
       otpProviderId,
       serviceTokenId,
-      photoAiGatewayEnabled,
+      photoAiGatewayEnabled: workerSettings.photoAiGatewayEnabled,
+      workerTextEnabled: workerSettings.workerTextEnabled,
     });
   } catch {
     fail();
@@ -622,7 +781,7 @@ function inspectDedicatedAppIdentities(apps) {
 
 export async function disableTextPreviewAccess(config, client) {
   try {
-    if (!configIsValid(config)) fail();
+    if (!cloudflareConfigIsValid(config)) fail();
     const get = clientGet(client);
     const remove = clientMethod(client, 'delete');
     const apps = scanDedicatedApps(await get('/access/apps'));
@@ -1042,7 +1201,9 @@ export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
     const parsedDependencies = parseCliDependencies(dependencies);
     writeStderr = parsedDependencies.writeStderr;
     const command = parseCliArguments(argv);
-    const config = loadTextPreviewConfig(env);
+    const config = command.command === 'disable-access'
+      ? loadCloudflareControlConfig(env)
+      : loadTextPreviewConfig(env);
     if (command.command === 'invoke-admin') {
       const result = await invokeTextPreviewAdmin(
         config,
@@ -1056,8 +1217,12 @@ export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
 
     const client = parsedDependencies.clientFactory(config);
     if (command.command === 'preflight') {
-      await preflightTextPreview(config, client);
-      writeCliLine(parsedDependencies.writeStdout, { command: 'preflight', status: 'ready' });
+      const result = await preflightTextPreview(config, client);
+      writeCliLine(parsedDependencies.writeStdout, {
+        command: 'preflight',
+        status: 'ready',
+        workerTextEnabled: result.workerTextEnabled,
+      });
       return 0;
     }
     if (command.command === 'configure') {
