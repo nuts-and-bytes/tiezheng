@@ -63,7 +63,9 @@ function coordinatorStub(
 
 function configuredEnv(overrides: Partial<GatewayEnv> = {}): GatewayEnv {
   return {
+    TEXT_AI_ADMIN_ENABLED: 'false',
     TEXT_AI_GATEWAY_ENABLED: 'true',
+    TEXT_AI_MAX_PROVIDER_ATTEMPTS: '1',
     TEXT_AI_MODEL: TEXT_AI_VERSIONS.model,
     PHOTO_AI_GATEWAY_ENABLED: 'true',
     PHOTO_AI_MODEL: 'doubao-seed-2-1-pro-260628',

@@ -12,6 +12,7 @@ import {
   handleTextAiRequest,
   handleTextSessionRequest,
 } from './textHandler';
+import { handleTextAdminRequest } from './textAdminHandler';
 import type { PhotoAiSessionSuccess } from '../../../src/lib/photoAiContract';
 
 export { PhotoAiCoordinator };
@@ -69,6 +70,9 @@ async function handleSessionRequest(request: Request, env: GatewayEnv): Promise<
 export default {
   fetch(request: Request, env: GatewayEnv): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === 'POST' && url.pathname === '/internal/text-admin' && url.search === '') {
+      return handleTextAdminRequest(request, env);
+    }
     if (request.method === 'GET' && url.pathname === '/text/session' && url.search === '') {
       return handleTextSessionRequest(request, env);
     }
