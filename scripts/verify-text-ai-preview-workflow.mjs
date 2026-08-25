@@ -5,7 +5,10 @@ import { pathToFileURL } from 'node:url';
 
 const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 const MAX_WORKFLOW_BYTES = 1_048_576;
-const EXPECTED_DISPATCH_SHA256 = 'cbbbf0a476cb1ac996e710f9a38f8966374296da1fd5d4a10eddf2c23cf200b4';
+const EXPECTED_DISPATCH_SHA256 = 'a832ab9fd1189278367b7faf91a2dc7fcafd8602ef7c1d6181f05c20205520cf';
+const EXPECTED_OPERATION_CASE_SHA256 = 'ff10cd022ef4036a462e643de34c6eb764faad1da1e36a033ee17f338656bc9a';
+const CHECKOUT_ACTION = 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5';
+const SETUP_NODE_ACTION = 'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020';
 const OPERATION_CHOICES = Object.freeze([
   'preflight',
   'deploy-disabled',
@@ -54,7 +57,7 @@ function workerVarArguments(values) {
 }
 
 const WRANGLER_DRY_RUN = `./node_modules/.bin/wrangler deploy --dry-run --config ${WORKER_CONFIG} --outdir "$RUNNER_TEMP/text-ai-worker-dry-run" ${workerVarArguments(WORKER_VARS_DISABLED)}`;
-const WRANGLER_DEPLOY_DISABLED = `./node_modules/.bin/wrangler deploy --config ${WORKER_CONFIG} --secrets-file "$TEXT_AI_SECRET_FILE" ${workerVarArguments(WORKER_VARS_DISABLED.map((value) => (
+const WRANGLER_DEPLOY_DISABLED = `./node_modules/.bin/wrangler deploy --config ${WORKER_CONFIG} ${workerVarArguments(WORKER_VARS_DISABLED.map((value) => (
   value === 'TEXT_AI_ADMIN_ENABLED:false' ? 'TEXT_AI_ADMIN_ENABLED:true' : value
 )))}`;
 const WRANGLER_DEPLOY_ENABLED = `./node_modules/.bin/wrangler deploy --config ${WORKER_CONFIG} --secrets-file "$TEXT_AI_SECRET_FILE" ${workerVarArguments(WORKER_VARS_ENABLED)}`;
@@ -66,83 +69,31 @@ const EXPECTED_WRANGLER_COMMANDS = Object.freeze([
   WRANGLER_PAGES_DEPLOY,
 ]);
 const EXPECTED_CONTROL_COMMANDS = Object.freeze([
-  'node scripts/text-ai-preview-control.mjs preflight',
-  'node scripts/text-ai-preview-control.mjs configure',
-  'node scripts/text-ai-preview-control.mjs configure',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-1',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-2',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-1',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-2',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-text-global --target=user-1',
-  'node scripts/text-ai-preview-control.mjs disable-access',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-1',
-  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-2',
+  'node scripts/text-ai-preview-control.mjs preflight > "$TEXT_AI_PREFLIGHT_FILE"',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-1 > "$TEXT_AI_USER_1_STATUS_FILE"',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2 > "$TEXT_AI_USER_2_STATUS_FILE"',
+  'node scripts/text-ai-preview-control.mjs configure > /dev/null',
+  'node scripts/text-ai-preview-control.mjs configure > /dev/null',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1 > /dev/null',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1 > /dev/null',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-1 > "$TEXT_AI_USER_1_STATUS_FILE"',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2 > "$TEXT_AI_USER_2_STATUS_FILE"',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-2 > /dev/null',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-1 > /dev/null',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-2 > /dev/null',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-text-global --target=user-1 > /dev/null',
+  'node scripts/text-ai-preview-control.mjs disable-access > /dev/null',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-1 > /dev/null',
+  'node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-2 > /dev/null',
 ]);
-const EXPECTED_OPERATION_CASE = `case "$TEXT_AI_OPERATION" in
-  preflight)
-    :
-    ;;
-  deploy-disabled)
-    node scripts/text-ai-preview-control.mjs configure
-    write_worker_secret_file
-    deploy_worker_disabled
-    deploy_pages_preview
-    ;;
-  enable-admin-preview)
-    if [ "$TEXT_AI_TARGET" != 'user-1' ] || [ "$TEXT_AI_CONFIRMATION" != 'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT' ]; then
-      exit 1
-    fi
-    node scripts/text-ai-preview-control.mjs configure
-    node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1
-    node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1
-    write_worker_secret_file
-    deploy_worker_enabled
-    ;;
-  status)
-    case "$TEXT_AI_TARGET" in
-      user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-1 ;;
-      user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2 ;;
-      *) exit 1 ;;
-    esac
-    ;;
-  enable-second-account)
-    node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-2
-    ;;
-  disable-account)
-    case "$TEXT_AI_TARGET" in
-      user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-1 ;;
-      user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-2 ;;
-      *) exit 1 ;;
-    esac
-    ;;
-  disable-all)
-    node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-text-global --target=user-1
-    write_worker_secret_file
-    deploy_worker_disabled
-    node scripts/text-ai-preview-control.mjs disable-access
-    ;;
-  delete-account)
-    if [ "$TEXT_AI_CONFIRMATION" != 'DELETE_TEXT_PREVIEW_ACCOUNT_STATE' ]; then
-      exit 1
-    fi
-    case "$TEXT_AI_TARGET" in
-      user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-1 ;;
-      user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-2 ;;
-      *) exit 1 ;;
-    esac
-    ;;
-  *)
-    exit 1
-    ;;
-esac`;
 const EXPECTED_DISPATCH_ENV = Object.freeze(new Map([
   ['TEXT_AI_OPERATION', '${{ inputs.operation }}'],
   ['TEXT_AI_TARGET', '${{ inputs.target }}'],
   ['TEXT_AI_CONFIRMATION', '${{ inputs.confirmation }}'],
   ['TEXT_AI_SECRET_FILE', '${{ runner.temp }}/text-ai-preview-secrets-${{ github.run_id }}-${{ github.run_attempt }}.json'],
+  ['TEXT_AI_PREFLIGHT_FILE', '${{ runner.temp }}/text-ai-preview-preflight-${{ github.run_id }}-${{ github.run_attempt }}.json'],
+  ['TEXT_AI_USER_1_STATUS_FILE', '${{ runner.temp }}/text-ai-preview-user-1-status-${{ github.run_id }}-${{ github.run_attempt }}.json'],
+  ['TEXT_AI_USER_2_STATUS_FILE', '${{ runner.temp }}/text-ai-preview-user-2-status-${{ github.run_id }}-${{ github.run_attempt }}.json'],
   ['CLOUDFLARE_ACCOUNT_ID', '${{ vars.CLOUDFLARE_ACCOUNT_ID }}'],
   ['CLOUDFLARE_API_TOKEN', '${{ secrets.CLOUDFLARE_API_TOKEN }}'],
   ['TEXT_AI_TEAM_DOMAIN', '${{ vars.TEXT_AI_TEAM_DOMAIN }}'],
@@ -153,10 +104,11 @@ const EXPECTED_DISPATCH_ENV = Object.freeze(new Map([
   ['TEXT_AI_CF_ACCESS_CLIENT_ID', '${{ secrets.TEXT_AI_CF_ACCESS_CLIENT_ID }}'],
   ['TEXT_AI_CF_ACCESS_CLIENT_SECRET', '${{ secrets.TEXT_AI_CF_ACCESS_CLIENT_SECRET }}'],
   ['PHOTO_AI_ACCOUNT_HMAC_KEY', '${{ secrets.PHOTO_AI_ACCOUNT_HMAC_KEY }}'],
-  ['ARK_API_KEY', '${{ secrets.ARK_API_KEY }}'],
-  ['PHOTO_AI_CACHE_AES_KEY', '${{ secrets.PHOTO_AI_CACHE_AES_KEY }}'],
+  ['ARK_API_KEY', "${{ inputs.operation == 'enable-admin-preview' && secrets.ARK_API_KEY || '' }}"],
+  ['PHOTO_AI_CACHE_AES_KEY', "${{ inputs.operation == 'enable-admin-preview' && secrets.PHOTO_AI_CACHE_AES_KEY || '' }}"],
 ]));
 const EXPECTED_EXPRESSIONS = Object.freeze([
+  '${{ github.sha }}',
   ...[...EXPECTED_DISPATCH_ENV.values()]
     .flatMap((value) => value.match(/\$\{\{[^}\n]*\}\}/g) ?? []),
 ].sort());
@@ -402,19 +354,27 @@ function verifyShellPolicy(allRunScripts, dispatchScript) {
   sameStrings(controlCommands, [...EXPECTED_CONTROL_COMMANDS].sort());
 
   const operationCaseStart = dispatchScript.indexOf('case "$TEXT_AI_OPERATION" in');
+  const operationCase = dispatchScript.slice(operationCaseStart);
   if (
     operationCaseStart === -1
-    || dispatchScript.slice(operationCaseStart) !== EXPECTED_OPERATION_CASE
+    || createHash('sha256').update(operationCase, 'utf8').digest('hex') !== EXPECTED_OPERATION_CASE_SHA256
   ) {
     fail();
   }
 
   const requiredSnippets = [
-    'trap cleanup_worker_secret_file EXIT\nnode scripts/text-ai-preview-control.mjs preflight\n\ncase "$TEXT_AI_OPERATION" in',
-    'deploy-disabled)\n    node scripts/text-ai-preview-control.mjs configure\n    write_worker_secret_file\n    deploy_worker_disabled\n    deploy_pages_preview',
-    'enable-admin-preview)\n    if [ "$TEXT_AI_TARGET" != \'user-1\' ] || [ "$TEXT_AI_CONFIRMATION" != \'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT\' ]; then\n      exit 1\n    fi\n    node scripts/text-ai-preview-control.mjs configure\n    node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1\n    node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1\n    write_worker_secret_file\n    deploy_worker_enabled',
-    'enable-second-account)\n    node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-2',
-    'disable-all)\n    node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-text-global --target=user-1\n    write_worker_secret_file\n    deploy_worker_disabled\n    node scripts/text-ai-preview-control.mjs disable-access',
+    'set -euo pipefail\numask 077',
+    "if (process.env.TEXT_AI_OPERATION === 'preflight') {",
+    'const canonicalStatus = Object.freeze({\n  textGlobalEnabled: value.textGlobalEnabled,',
+    'process.stdout.write(`${JSON.stringify(canonicalStatus)}\\n`);',
+    'trap cleanup_preview_temp_files EXIT\nif [ "$TEXT_AI_OPERATION" != \'disable-all\' ]; then\n  run_full_preflight\nfi\n\ncase "$TEXT_AI_OPERATION" in',
+    'deploy-disabled)\n    node scripts/text-ai-preview-control.mjs configure > /dev/null\n    deploy_worker_disabled\n    deploy_pages_preview',
+    'enable-admin-preview)\n    if [ "$TEXT_AI_TARGET" != \'user-1\' ] || [ "$TEXT_AI_CONFIRMATION" != \'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT\' ]; then\n      exit 1\n    fi\n    capture_status_pair\n    assert_enable_admin_preconditions',
+    'enable-second-account)\n    if [ "$TEXT_AI_TARGET" != \'user-2\' ]; then\n      exit 1\n    fi\n    capture_status_pair\n    assert_enable_second_preconditions',
+    'disable-all)\n    disable_failure_mask=0',
+    "TEXT_AI_DISABLE_ACCESS_ATTEMPTED='false'\n    if [ \"$disable_failure_mask\" -eq 0 ]; then\n      TEXT_AI_DISABLE_ACCESS_ATTEMPTED='true'\n      if node scripts/text-ai-preview-control.mjs disable-access > /dev/null; then",
+    'accessAttempted !== ((failureMask & 3) === 0)',
+    'attempted: index < 2 || accessAttempted,',
     'delete-account)\n    if [ "$TEXT_AI_CONFIRMATION" != \'DELETE_TEXT_PREVIEW_ACCOUNT_STATE\' ]; then',
   ];
   for (const snippet of requiredSnippets) {
@@ -422,29 +382,42 @@ function verifyShellPolicy(allRunScripts, dispatchScript) {
   }
 
   const exactCounts = new Map([
-    ['write_worker_secret_file', 4],
+    ['write_worker_secret_file', 2],
     ['deploy_worker_disabled', 3],
     ['deploy_worker_enabled', 2],
     ['deploy_pages_preview', 2],
-    ['$TEXT_AI_OPERATION', 1],
-    ['$TEXT_AI_TARGET', 4],
+    ['$TEXT_AI_OPERATION', 2],
+    ['$TEXT_AI_TARGET', 5],
     ['$TEXT_AI_CONFIRMATION', 2],
-    ['$TEXT_AI_SECRET_FILE', 2],
+    ['$TEXT_AI_SECRET_FILE', 1],
     ['$GITHUB_SHA', 1],
     ['ENABLE_ONE_TEXT_PREVIEW_ACCOUNT', 1],
     ['DELETE_TEXT_PREVIEW_ACCOUNT_STATE', 1],
     ['# REAL_TEXT_AI_REQUEST_BUDGET: 1', 1],
     ['# NO_REAL_MEAL_REQUEST_IN_WORKFLOW', 1],
-    ["node --input-type=module <<'NODE'", 2],
+    ["node --input-type=module <<'NODE'", 7],
     ["const secretNames = Object.freeze(['ARK_API_KEY', 'PHOTO_AI_CACHE_AES_KEY']);", 1],
     ["{ flag: 'wx', mode: 0o600 }", 1],
     ['await chmod(path, 0o600);', 1],
-    ['await rm(path, { force: true });', 1],
+    ['await Promise.all(paths.map((path) => rm(path, { force: true })));', 1],
+    ['process.stdout.write', 3],
+    ['TEXT_AI_DISABLE_ACCESS_ATTEMPTED', 5],
   ]);
   for (const [needle, count] of exactCounts) {
     if (countOccurrences(dispatchScript, needle) !== count) fail();
   }
   if (dispatchScript.includes('PHOTO_AI_ACCOUNT_HMAC_KEY')) fail();
+}
+
+function verifyConcurrency(lines) {
+  const concurrencyIndex = findUniqueExact(lines, 0, 'concurrency:');
+  const concurrencyEnd = blockEnd(lines, concurrencyIndex);
+  const properties = directMappings(lines, concurrencyIndex + 1, concurrencyEnd, 2);
+  requireEntryOrder(properties, ['group', 'cancel-in-progress']);
+  verifyExactMapping(properties, new Map([
+    ['group', 'text-ai-preview'],
+    ['cancel-in-progress', 'false'],
+  ]));
 }
 
 function verifyJobAndSteps(lines, source) {
@@ -457,6 +430,7 @@ function verifyJobAndSteps(lines, source) {
   const jobEnd = Math.min(blockEnd(lines, jobs[0].index), jobsEnd);
   const properties = directMappings(lines, jobs[0].index + 1, jobEnd, 4);
   requireEntryOrder(properties, [
+    'if',
     'environment',
     'permissions',
     'runs-on',
@@ -464,7 +438,8 @@ function verifyJobAndSteps(lines, source) {
     'steps',
   ]);
   if (
-    mappingByKey(properties, 'environment').value !== 'text-ai-preview'
+    mappingByKey(properties, 'if').value !== "github.ref == 'refs/heads/main' && github.ref_protected == true"
+    || mappingByKey(properties, 'environment').value !== 'text-ai-preview'
     || mappingByKey(properties, 'runs-on').value !== 'ubuntu-latest'
     || mappingByKey(properties, 'timeout-minutes').value !== '30'
   ) {
@@ -487,12 +462,22 @@ function verifyJobAndSteps(lines, source) {
 
   const steps = stepBlocks(lines, mappingByKey(properties, 'steps'), jobEnd);
   const checkout = stepProperties(lines, steps[0]);
-  requireEntryOrder(checkout, ['uses']);
-  if (checkout[0].value !== 'actions/checkout@v4') fail();
+  requireEntryOrder(checkout, ['uses', 'with']);
+  if (checkout[0].value !== CHECKOUT_ACTION || checkout[1].value !== '') fail();
+  const checkoutWith = directMappings(
+    lines,
+    checkout[1].index + 1,
+    Math.min(blockEnd(lines, checkout[1].index), steps[0].end),
+    10,
+  );
+  verifyExactMapping(checkoutWith, new Map([
+    ['ref', '${{ github.sha }}'],
+    ['persist-credentials', 'false'],
+  ]));
 
   const setup = stepProperties(lines, steps[1]);
   requireEntryOrder(setup, ['uses', 'with']);
-  if (setup[0].value !== 'actions/setup-node@v4' || setup[1].value !== '') fail();
+  if (setup[0].value !== SETUP_NODE_ACTION || setup[1].value !== '') fail();
   const setupWith = directMappings(
     lines,
     setup[1].index + 1,
@@ -574,15 +559,17 @@ export function verifyTextPreviewWorkflow(source) {
     }
     const lines = source.slice(0, -1).split('\n');
     const topLevel = directMappings(lines, 0, lines.length, 0);
-    requireEntryOrder(topLevel, ['name', 'on', 'jobs']);
+    requireEntryOrder(topLevel, ['name', 'on', 'concurrency', 'jobs']);
     if (
       topLevel[0].value !== 'Text AI Preview Control'
       || topLevel[1].value !== ''
       || topLevel[2].value !== ''
+      || topLevel[3].value !== ''
     ) {
       fail();
     }
     verifyManualInputs(lines);
+    verifyConcurrency(lines);
     verifyJobAndSteps(lines, source);
     return { ...FIXED_REPORT };
   } catch {

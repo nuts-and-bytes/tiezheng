@@ -29,8 +29,13 @@ on:
         type: string
         required: false
 
+concurrency:
+  group: text-ai-preview
+  cancel-in-progress: false
+
 jobs:
   text-ai-preview:
+    if: github.ref == 'refs/heads/main' && github.ref_protected == true
     environment: text-ai-preview
     permissions:
       contents: read
@@ -38,9 +43,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Set up Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: npm
@@ -70,6 +78,9 @@ jobs:
           TEXT_AI_TARGET: ${{ inputs.target }}
           TEXT_AI_CONFIRMATION: ${{ inputs.confirmation }}
           TEXT_AI_SECRET_FILE: ${{ runner.temp }}/text-ai-preview-secrets-${{ github.run_id }}-${{ github.run_attempt }}.json
+          TEXT_AI_PREFLIGHT_FILE: ${{ runner.temp }}/text-ai-preview-preflight-${{ github.run_id }}-${{ github.run_attempt }}.json
+          TEXT_AI_USER_1_STATUS_FILE: ${{ runner.temp }}/text-ai-preview-user-1-status-${{ github.run_id }}-${{ github.run_attempt }}.json
+          TEXT_AI_USER_2_STATUS_FILE: ${{ runner.temp }}/text-ai-preview-user-2-status-${{ github.run_id }}-${{ github.run_attempt }}.json
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TEXT_AI_TEAM_DOMAIN: ${{ vars.TEXT_AI_TEAM_DOMAIN }}
@@ -80,19 +91,280 @@ jobs:
           TEXT_AI_CF_ACCESS_CLIENT_ID: ${{ secrets.TEXT_AI_CF_ACCESS_CLIENT_ID }}
           TEXT_AI_CF_ACCESS_CLIENT_SECRET: ${{ secrets.TEXT_AI_CF_ACCESS_CLIENT_SECRET }}
           PHOTO_AI_ACCOUNT_HMAC_KEY: ${{ secrets.PHOTO_AI_ACCOUNT_HMAC_KEY }}
-          ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
-          PHOTO_AI_CACHE_AES_KEY: ${{ secrets.PHOTO_AI_CACHE_AES_KEY }}
+          ARK_API_KEY: ${{ inputs.operation == 'enable-admin-preview' && secrets.ARK_API_KEY || '' }}
+          PHOTO_AI_CACHE_AES_KEY: ${{ inputs.operation == 'enable-admin-preview' && secrets.PHOTO_AI_CACHE_AES_KEY || '' }}
         run: |
           set -euo pipefail
+          umask 077
           # REAL_TEXT_AI_REQUEST_BUDGET: 1
           # NO_REAL_MEAL_REQUEST_IN_WORKFLOW
 
-          cleanup_worker_secret_file() {
+          cleanup_preview_temp_files() {
             node --input-type=module <<'NODE'
           import { rm } from 'node:fs/promises';
-          const path = process.env.TEXT_AI_SECRET_FILE;
-          if (typeof path !== 'string' || path.length === 0) throw new Error('invalid secret path');
-          await rm(path, { force: true });
+          const names = Object.freeze([
+            'TEXT_AI_SECRET_FILE',
+            'TEXT_AI_PREFLIGHT_FILE',
+            'TEXT_AI_USER_1_STATUS_FILE',
+            'TEXT_AI_USER_2_STATUS_FILE',
+          ]);
+          const paths = names.map((name) => process.env[name]);
+          if (
+            paths.some((path) => typeof path !== 'string' || path.length === 0)
+            || new Set(paths).size !== paths.length
+          ) {
+            throw new Error('invalid preview temp path');
+          }
+          await Promise.all(paths.map((path) => rm(path, { force: true })));
+          NODE
+          }
+
+          run_full_preflight() {
+            node scripts/text-ai-preview-control.mjs preflight > "$TEXT_AI_PREFLIGHT_FILE"
+            node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { TextDecoder } from 'node:util';
+
+          const path = process.env.TEXT_AI_PREFLIGHT_FILE;
+          if (typeof path !== 'string' || path.length === 0) throw new Error('invalid preflight path');
+          const bytes = await readFile(path);
+          if (bytes.length === 0 || bytes.length > 4096 || bytes.includes(0)) {
+            throw new Error('invalid preflight result');
+          }
+          const raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+          if (!raw.endsWith('\n') || raw.includes('\r') || raw.slice(0, -1).includes('\n')) {
+            throw new Error('invalid preflight result');
+          }
+          const value = JSON.parse(raw);
+          const keys = Object.keys(value);
+          const expectedKeys = ['command', 'status', 'workerTextEnabled'];
+          if (
+            value === null
+            || Array.isArray(value)
+            || keys.length !== expectedKeys.length
+            || expectedKeys.some((key, index) => keys[index] !== key)
+            || value.command !== 'preflight'
+            || value.status !== 'ready'
+            || typeof value.workerTextEnabled !== 'boolean'
+          ) {
+            throw new Error('invalid preflight result');
+          }
+          if (process.env.TEXT_AI_OPERATION === 'preflight') {
+            process.stdout.write(`${JSON.stringify({
+              command: 'preflight',
+              status: 'ready',
+              workerTextEnabled: value.workerTextEnabled,
+            })}\n`);
+          }
+          NODE
+          }
+
+          capture_status_pair() {
+            node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-1 > "$TEXT_AI_USER_1_STATUS_FILE"
+            node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2 > "$TEXT_AI_USER_2_STATUS_FILE"
+          }
+
+          assert_enable_admin_preconditions() {
+            node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { TextDecoder } from 'node:util';
+
+          const readBoundedJson = async (path, label) => {
+            if (typeof path !== 'string' || path.length === 0) throw new Error(`invalid ${label} path`);
+            const bytes = await readFile(path);
+            if (bytes.length === 0 || bytes.length > 4096 || bytes.includes(0)) {
+              throw new Error(`invalid ${label} result`);
+            }
+            const raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            if (!raw.endsWith('\n') || raw.includes('\r') || raw.slice(0, -1).includes('\n')) {
+              throw new Error(`invalid ${label} result`);
+            }
+            return JSON.parse(raw);
+          };
+          const exactObject = (value, expectedKeys) => (
+            value !== null
+            && typeof value === 'object'
+            && !Array.isArray(value)
+            && Object.keys(value).length === expectedKeys.length
+            && expectedKeys.every((key, index) => Object.keys(value)[index] === key)
+          );
+          const parsePreflight = async () => {
+            const value = await readBoundedJson(process.env.TEXT_AI_PREFLIGHT_FILE, 'preflight');
+            const keys = ['command', 'status', 'workerTextEnabled'];
+            if (
+              !exactObject(value, keys)
+              || value.command !== 'preflight'
+              || value.status !== 'ready'
+              || typeof value.workerTextEnabled !== 'boolean'
+            ) {
+              throw new Error('invalid preflight result');
+            }
+            return value;
+          };
+          const parseStatus = async (path) => {
+            const value = await readBoundedJson(path, 'status');
+            const statusKeys = Object.freeze(['operation', 'textGlobalEnabled', 'accountEnabled', 'accountRemaining', 'globalRemaining', 'budgetSpentMicros', 'budgetReservedMicros', 'resetAt']);
+            const nonNegativeInteger = (item) => Number.isSafeInteger(item) && item >= 0 && !Object.is(item, -0);
+            const resetAt = new Date(value?.resetAt);
+            if (
+              !exactObject(value, statusKeys)
+              || value.operation !== 'status'
+              || typeof value.textGlobalEnabled !== 'boolean'
+              || typeof value.accountEnabled !== 'boolean'
+              || !nonNegativeInteger(value.accountRemaining)
+              || value.accountRemaining > 10
+              || !nonNegativeInteger(value.globalRemaining)
+              || value.globalRemaining > 30
+              || !nonNegativeInteger(value.budgetSpentMicros)
+              || !nonNegativeInteger(value.budgetReservedMicros)
+              || Number.isNaN(resetAt.valueOf())
+              || resetAt.toISOString() !== value.resetAt
+            ) {
+              throw new Error('invalid status result');
+            }
+            return value;
+          };
+
+          const preflight = await parsePreflight();
+          const userOne = await parseStatus(process.env.TEXT_AI_USER_1_STATUS_FILE);
+          const userTwo = await parseStatus(process.env.TEXT_AI_USER_2_STATUS_FILE);
+          if (
+            preflight.workerTextEnabled !== false
+            || userOne.textGlobalEnabled !== false
+            || userOne.accountEnabled !== false
+            || userTwo.textGlobalEnabled !== false
+            || userTwo.accountEnabled !== false
+          ) {
+            throw new Error('first enable precondition failed');
+          }
+          NODE
+          }
+
+          assert_enable_second_preconditions() {
+            node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { TextDecoder } from 'node:util';
+
+          const readBoundedJson = async (path, label) => {
+            if (typeof path !== 'string' || path.length === 0) throw new Error(`invalid ${label} path`);
+            const bytes = await readFile(path);
+            if (bytes.length === 0 || bytes.length > 4096 || bytes.includes(0)) {
+              throw new Error(`invalid ${label} result`);
+            }
+            const raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            if (!raw.endsWith('\n') || raw.includes('\r') || raw.slice(0, -1).includes('\n')) {
+              throw new Error(`invalid ${label} result`);
+            }
+            return JSON.parse(raw);
+          };
+          const exactObject = (value, expectedKeys) => (
+            value !== null
+            && typeof value === 'object'
+            && !Array.isArray(value)
+            && Object.keys(value).length === expectedKeys.length
+            && expectedKeys.every((key, index) => Object.keys(value)[index] === key)
+          );
+          const parsePreflight = async () => {
+            const value = await readBoundedJson(process.env.TEXT_AI_PREFLIGHT_FILE, 'preflight');
+            const keys = ['command', 'status', 'workerTextEnabled'];
+            if (
+              !exactObject(value, keys)
+              || value.command !== 'preflight'
+              || value.status !== 'ready'
+              || typeof value.workerTextEnabled !== 'boolean'
+            ) {
+              throw new Error('invalid preflight result');
+            }
+            return value;
+          };
+          const parseStatus = async (path) => {
+            const value = await readBoundedJson(path, 'status');
+            const statusKeys = Object.freeze(['operation', 'textGlobalEnabled', 'accountEnabled', 'accountRemaining', 'globalRemaining', 'budgetSpentMicros', 'budgetReservedMicros', 'resetAt']);
+            const nonNegativeInteger = (item) => Number.isSafeInteger(item) && item >= 0 && !Object.is(item, -0);
+            const resetAt = new Date(value?.resetAt);
+            if (
+              !exactObject(value, statusKeys)
+              || value.operation !== 'status'
+              || typeof value.textGlobalEnabled !== 'boolean'
+              || typeof value.accountEnabled !== 'boolean'
+              || !nonNegativeInteger(value.accountRemaining)
+              || value.accountRemaining > 10
+              || !nonNegativeInteger(value.globalRemaining)
+              || value.globalRemaining > 30
+              || !nonNegativeInteger(value.budgetSpentMicros)
+              || !nonNegativeInteger(value.budgetReservedMicros)
+              || Number.isNaN(resetAt.valueOf())
+              || resetAt.toISOString() !== value.resetAt
+            ) {
+              throw new Error('invalid status result');
+            }
+            return value;
+          };
+
+          const secondPreflight = await parsePreflight();
+          const secondUserOne = await parseStatus(process.env.TEXT_AI_USER_1_STATUS_FILE);
+          const secondUserTwo = await parseStatus(process.env.TEXT_AI_USER_2_STATUS_FILE);
+          if (
+            secondPreflight.workerTextEnabled !== true
+            || secondUserOne.textGlobalEnabled !== true
+            || secondUserOne.accountEnabled !== true
+            || secondUserTwo.textGlobalEnabled !== true
+            || secondUserTwo.accountEnabled !== false
+          ) {
+            throw new Error('second enable precondition failed');
+          }
+          NODE
+          }
+
+          assert_status_file() {
+            TEXT_AI_SELECTED_STATUS_FILE="$1" node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { TextDecoder } from 'node:util';
+
+          const path = process.env.TEXT_AI_SELECTED_STATUS_FILE;
+          if (typeof path !== 'string' || path.length === 0) throw new Error('invalid status path');
+          const bytes = await readFile(path);
+          if (bytes.length === 0 || bytes.length > 4096 || bytes.includes(0)) {
+            throw new Error('invalid status result');
+          }
+          const raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+          if (!raw.endsWith('\n') || raw.includes('\r') || raw.slice(0, -1).includes('\n')) {
+            throw new Error('invalid status result');
+          }
+          const value = JSON.parse(raw);
+          const statusKeys = Object.freeze(['operation', 'textGlobalEnabled', 'accountEnabled', 'accountRemaining', 'globalRemaining', 'budgetSpentMicros', 'budgetReservedMicros', 'resetAt']);
+          const keys = Object.keys(value);
+          const nonNegativeInteger = (item) => Number.isSafeInteger(item) && item >= 0 && !Object.is(item, -0);
+          const resetAt = new Date(value?.resetAt);
+          if (
+            value === null
+            || Array.isArray(value)
+            || keys.length !== statusKeys.length
+            || statusKeys.some((key, index) => keys[index] !== key)
+            || value.operation !== 'status'
+            || typeof value.textGlobalEnabled !== 'boolean'
+            || typeof value.accountEnabled !== 'boolean'
+            || !nonNegativeInteger(value.accountRemaining)
+            || value.accountRemaining > 10
+            || !nonNegativeInteger(value.globalRemaining)
+            || value.globalRemaining > 30
+            || !nonNegativeInteger(value.budgetSpentMicros)
+            || !nonNegativeInteger(value.budgetReservedMicros)
+            || Number.isNaN(resetAt.valueOf())
+            || resetAt.toISOString() !== value.resetAt
+          ) {
+            throw new Error('invalid status result');
+          }
+          const canonicalStatus = Object.freeze({
+            textGlobalEnabled: value.textGlobalEnabled,
+            accountEnabled: value.accountEnabled,
+            accountRemaining: value.accountRemaining,
+            globalRemaining: value.globalRemaining,
+            budgetSpentMicros: value.budgetSpentMicros,
+            budgetReservedMicros: value.budgetReservedMicros,
+            resetAt: value.resetAt,
+          });
+          process.stdout.write(`${JSON.stringify(canonicalStatus)}\n`);
           NODE
           }
 
@@ -121,7 +393,7 @@ jobs:
           }
 
           deploy_worker_disabled() {
-            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
           }
 
           deploy_worker_enabled() {
@@ -132,16 +404,17 @@ jobs:
             ./node_modules/.bin/wrangler pages deploy dist --project-name=tiezheng --branch=text-ai-preview --commit-hash="$GITHUB_SHA"
           }
 
-          trap cleanup_worker_secret_file EXIT
-          node scripts/text-ai-preview-control.mjs preflight
+          trap cleanup_preview_temp_files EXIT
+          if [ "$TEXT_AI_OPERATION" != 'disable-all' ]; then
+            run_full_preflight
+          fi
 
           case "$TEXT_AI_OPERATION" in
             preflight)
               :
               ;;
             deploy-disabled)
-              node scripts/text-ai-preview-control.mjs configure
-              write_worker_secret_file
+              node scripts/text-ai-preview-control.mjs configure > /dev/null
               deploy_worker_disabled
               deploy_pages_preview
               ;;
@@ -149,42 +422,100 @@ jobs:
               if [ "$TEXT_AI_TARGET" != 'user-1' ] || [ "$TEXT_AI_CONFIRMATION" != 'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT' ]; then
                 exit 1
               fi
-              node scripts/text-ai-preview-control.mjs configure
-              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1
-              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1
+              capture_status_pair
+              assert_enable_admin_preconditions
+              node scripts/text-ai-preview-control.mjs configure > /dev/null
+              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1 > /dev/null
+              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1 > /dev/null
               write_worker_secret_file
               deploy_worker_enabled
               ;;
             status)
               case "$TEXT_AI_TARGET" in
-                user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-1 ;;
-                user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2 ;;
+                user-1)
+                  node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-1 > "$TEXT_AI_USER_1_STATUS_FILE"
+                  assert_status_file "$TEXT_AI_USER_1_STATUS_FILE"
+                  ;;
+                user-2)
+                  node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2 > "$TEXT_AI_USER_2_STATUS_FILE"
+                  assert_status_file "$TEXT_AI_USER_2_STATUS_FILE"
+                  ;;
                 *) exit 1 ;;
               esac
               ;;
             enable-second-account)
-              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-2
+              if [ "$TEXT_AI_TARGET" != 'user-2' ]; then
+                exit 1
+              fi
+              capture_status_pair
+              assert_enable_second_preconditions
+              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-2 > /dev/null
               ;;
             disable-account)
               case "$TEXT_AI_TARGET" in
-                user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-1 ;;
-                user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-2 ;;
+                user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-1 > /dev/null ;;
+                user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-account --target=user-2 > /dev/null ;;
                 *) exit 1 ;;
               esac
               ;;
             disable-all)
-              node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-text-global --target=user-1
-              write_worker_secret_file
-              deploy_worker_disabled
-              node scripts/text-ai-preview-control.mjs disable-access
+              disable_failure_mask=0
+              if node scripts/text-ai-preview-control.mjs invoke-admin --operation=disable-text-global --target=user-1 > /dev/null; then
+                :
+              else
+                disable_failure_mask=$((disable_failure_mask | 1))
+              fi
+              if deploy_worker_disabled > /dev/null; then
+                :
+              else
+                disable_failure_mask=$((disable_failure_mask | 2))
+              fi
+              TEXT_AI_DISABLE_ACCESS_ATTEMPTED='false'
+              if [ "$disable_failure_mask" -eq 0 ]; then
+                TEXT_AI_DISABLE_ACCESS_ATTEMPTED='true'
+                if node scripts/text-ai-preview-control.mjs disable-access > /dev/null; then
+                  :
+                else
+                  disable_failure_mask=$((disable_failure_mask | 4))
+                fi
+              else
+                disable_failure_mask=$((disable_failure_mask | 4))
+              fi
+              TEXT_AI_DISABLE_FAILURE_MASK="$disable_failure_mask" TEXT_AI_DISABLE_ACCESS_ATTEMPTED="$TEXT_AI_DISABLE_ACCESS_ATTEMPTED" node --input-type=module <<'NODE'
+          const rawMask = process.env.TEXT_AI_DISABLE_FAILURE_MASK;
+          const rawAccessAttempted = process.env.TEXT_AI_DISABLE_ACCESS_ATTEMPTED;
+          if (
+            typeof rawMask !== 'string'
+            || !/^[0-7]$/u.test(rawMask)
+            || (rawAccessAttempted !== 'true' && rawAccessAttempted !== 'false')
+          ) {
+            throw new Error('invalid disable failure mask');
+          }
+          const failureMask = Number(rawMask);
+          const accessAttempted = rawAccessAttempted === 'true';
+          if (
+            accessAttempted !== ((failureMask & 3) === 0)
+            || (!accessAttempted && (failureMask & 4) === 0)
+          ) {
+            throw new Error('invalid disable failure mask');
+          }
+          const stepNames = Object.freeze(['disable-text-global', 'deploy-worker-disabled', 'disable-access']);
+          const steps = stepNames.map((name, index) => Object.freeze({
+            name,
+            attempted: index < 2 || accessAttempted,
+            failed: (failureMask & (1 << index)) !== 0,
+          }));
+          process.stdout.write(`${JSON.stringify({ failureMask, steps })}\n`);
+          if (failureMask !== 0) process.exitCode = 1;
+          NODE
               ;;
             delete-account)
               if [ "$TEXT_AI_CONFIRMATION" != 'DELETE_TEXT_PREVIEW_ACCOUNT_STATE' ]; then
                 exit 1
               fi
               case "$TEXT_AI_TARGET" in
-                user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-1 ;;
-                user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-2 ;;
+                user-1) node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-1 > /dev/null ;;
+                user-2) node scripts/text-ai-preview-control.mjs invoke-admin --operation=delete-account --target=user-2 > /dev/null ;;
                 *) exit 1 ;;
               esac
               ;;
