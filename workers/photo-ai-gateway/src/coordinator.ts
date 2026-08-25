@@ -1,6 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 
 import type { GatewayEnv } from './env';
+import type {
+  TextAiAdminOperation,
+  TextAiAdminStatus,
+} from '../../../src/lib/textAiAdminContract';
 import {
   GATEWAY_CHANNEL_POLICY,
   GATEWAY_LIMITS,
@@ -20,6 +24,20 @@ const OPERATION_REJECTED = 'Coordinator operation rejected';
 const GLOBAL_SCOPE = '$global';
 const MAX_DATE_MS = 8_640_000_000_000_000;
 const MAX_DERIVED_DATE_WINDOW_MS = 32 * 86_400_000 + 8 * 60 * 60_000;
+const TEXT_ADMIN_OPERATION_TTL_MS = 24 * 60 * 60_000;
+
+export interface TextAdminOperationInput {
+  operationId: string;
+  operation: TextAiAdminOperation;
+  accountKey: string;
+  fingerprint: string;
+  now: number;
+}
+
+export type TextAdminOperationResult =
+  | { kind: 'applied'; status: TextAiAdminStatus }
+  | { kind: 'conflict' };
+
 export interface StatusInput {
   channel: AiChannel;
   accountKey: string;
@@ -109,6 +127,10 @@ interface SettingRow {
   value: number;
 }
 
+interface TextAdminOperationRow {
+  fingerprint: string;
+}
+
 interface IdempotencyRow {
   fingerprint: string;
   state: string;
@@ -172,6 +194,35 @@ function idempotencyKey(value: unknown): string {
 function fingerprint(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) return invalid();
   return value;
+}
+
+function textAdminOperation(value: unknown): TextAiAdminOperation {
+  if (value !== 'status'
+    && value !== 'enable-text-global'
+    && value !== 'disable-text-global'
+    && value !== 'enable-account'
+    && value !== 'disable-account'
+    && value !== 'delete-account') return invalid();
+  return value;
+}
+
+function textAdminInput(value: unknown): TextAdminOperationInput {
+  try {
+    if (typeof value !== 'object' || value === null) return invalid();
+    const input = value as Record<string, unknown>;
+    const now = safeTimestamp(input.now);
+    if (Object.is(now, -0)
+      || !Number.isSafeInteger(now + TEXT_ADMIN_OPERATION_TTL_MS)) return invalid();
+    return {
+      operationId: idempotencyKey(input.operationId),
+      operation: textAdminOperation(input.operation),
+      accountKey: accountKey(input.accountKey),
+      fingerprint: fingerprint(input.fingerprint),
+      now,
+    };
+  } catch {
+    return invalid();
+  }
 }
 
 function leaseId(value: unknown): string {
@@ -340,6 +391,11 @@ export function ensureCoordinatorSchema(sql: SqlStorage): void {
   schemaExec(sql, `CREATE TABLE IF NOT EXISTS account_flags (
     account_key TEXT PRIMARY KEY,
     enabled INTEGER NOT NULL
+  )`);
+  schemaExec(sql, `CREATE TABLE IF NOT EXISTS text_admin_operations (
+    operation_id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
   )`);
   schemaExec(sql, `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -566,6 +622,73 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
       now,
     );
     this.exec('DELETE FROM idempotency WHERE expires_at <= ?', now);
+  }
+
+  private setAccountFlag(account: string, enabled: boolean): void {
+    const existing = this.rows<{ enabled: number }>(
+      'SELECT enabled FROM account_flags WHERE account_key = ?',
+      account,
+    )[0]?.enabled === 1;
+    if (enabled && !existing) {
+      const enabledAccounts = this.rows<CountRow>(
+        'SELECT COUNT(*) AS count FROM account_flags WHERE enabled = 1',
+      )[0]?.count ?? 0;
+      if (enabledAccounts >= GATEWAY_LIMITS.betaAccounts) return rejectedOperation();
+    }
+    this.exec(
+      `INSERT INTO account_flags (account_key, enabled) VALUES (?, ?)
+       ON CONFLICT(account_key) DO UPDATE SET enabled = excluded.enabled`,
+      account,
+      enabled ? 1 : 0,
+    );
+  }
+
+  private deleteAccountState(account: string): void {
+    const leases = this.rows<LeaseRow>(
+      `SELECT lease_id, channel, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
+              initial_reserve_micros, retry_reserve_micros, invoked, expires_at
+       FROM active_leases WHERE account_key = ? ORDER BY lease_id`,
+      account,
+    );
+    for (const lease of leases) {
+      const totalReserve = lease.initial_reserve_micros + lease.retry_reserve_micros;
+      if (lease.invoked === 0) {
+        const scopes = channelScopes(aiChannel(lease.channel), account);
+        this.changeDaily(scopes.global, lease.day_bucket, -1, 0);
+        this.changeCost(lease.month_bucket, 0, -totalReserve);
+      } else {
+        this.changeCost(lease.month_bucket, totalReserve, -totalReserve);
+      }
+    }
+    this.exec('DELETE FROM active_leases WHERE account_key = ?', account);
+    this.exec('DELETE FROM idempotency WHERE account_key = ?', account);
+    this.exec('DELETE FROM minute_counters WHERE account_key IN (?, ?)', account, `text:${account}`);
+    this.exec('DELETE FROM daily_counters WHERE scope IN (?, ?)', account, `text:${account}`);
+    this.exec('DELETE FROM account_flags WHERE account_key = ?', account);
+  }
+
+  private textStatusSnapshot(account: string, now: number): TextAiAdminStatus {
+    this.cleanup(now);
+    const day = dayBucket(now);
+    const month = monthBucket(now);
+    const scopes = channelScopes('text', account);
+    const policy = GATEWAY_CHANNEL_POLICY.text;
+    const accountCounter = this.counter(scopes.account, day);
+    const globalCounter = this.counter(scopes.global, day);
+    const accountEnabled = this.rows<{ enabled: number }>(
+      'SELECT enabled FROM account_flags WHERE account_key = ?',
+      account,
+    )[0]?.enabled === 1;
+    const cost = this.cost(month);
+    return {
+      textGlobalEnabled: this.setting('text_global_enabled') === 1,
+      accountEnabled,
+      accountRemaining: Math.max(0, policy.accountDaily - accountCounter.pending - accountCounter.consumed),
+      globalRemaining: Math.max(0, policy.globalDaily - globalCounter.pending - globalCounter.consumed),
+      budgetSpentMicros: cost.spent,
+      budgetReservedMicros: cost.reserved,
+      resetAt: nextDay(now),
+    };
   }
 
   async status(input: StatusInput): Promise<CoordinatorStatus> {
@@ -915,6 +1038,52 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
     });
   }
 
+  async applyTextAdminOperation(input: TextAdminOperationInput): Promise<TextAdminOperationResult> {
+    const value = textAdminInput(input);
+    const expiresAt = value.now + TEXT_ADMIN_OPERATION_TTL_MS;
+
+    return this.ctx.storage.transactionSync((): TextAdminOperationResult => {
+      this.exec('DELETE FROM text_admin_operations WHERE expires_at <= ?', value.now);
+      const existing = this.rows<TextAdminOperationRow>(
+        'SELECT fingerprint FROM text_admin_operations WHERE operation_id = ?',
+        value.operationId,
+      )[0];
+      if (existing !== undefined) {
+        if (existing.fingerprint !== value.fingerprint) return { kind: 'conflict' };
+        return { kind: 'applied', status: this.textStatusSnapshot(value.accountKey, value.now) };
+      }
+
+      switch (value.operation) {
+        case 'status':
+          break;
+        case 'enable-text-global':
+          this.setSetting('text_global_enabled', 1);
+          break;
+        case 'disable-text-global':
+          this.setSetting('text_global_enabled', 0);
+          break;
+        case 'enable-account':
+          this.setAccountFlag(value.accountKey, true);
+          break;
+        case 'disable-account':
+          this.setAccountFlag(value.accountKey, false);
+          break;
+        case 'delete-account':
+          this.deleteAccountState(value.accountKey);
+          break;
+      }
+
+      this.exec(
+        `INSERT INTO text_admin_operations (operation_id, fingerprint, expires_at)
+         VALUES (?, ?, ?)`,
+        value.operationId,
+        value.fingerprint,
+        expiresAt,
+      );
+      return { kind: 'applied', status: this.textStatusSnapshot(value.accountKey, value.now) };
+    });
+  }
+
   async setGlobalEnabled(enabled: boolean): Promise<void> {
     if (typeof enabled !== 'boolean') return invalid();
     this.ctx.storage.transactionSync(() => this.setSetting('global_enabled', enabled ? 1 : 0));
@@ -928,50 +1097,11 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
   async setAccountEnabled(account: string, enabled: boolean): Promise<void> {
     const normalized = accountKey(account);
     if (typeof enabled !== 'boolean') return invalid();
-    this.ctx.storage.transactionSync(() => {
-      const existing = this.rows<{ enabled: number }>(
-        'SELECT enabled FROM account_flags WHERE account_key = ?',
-        normalized,
-      )[0]?.enabled === 1;
-      if (enabled && !existing) {
-        const enabledAccounts = this.rows<CountRow>(
-          'SELECT COUNT(*) AS count FROM account_flags WHERE enabled = 1',
-        )[0]?.count ?? 0;
-        if (enabledAccounts >= GATEWAY_LIMITS.betaAccounts) return rejectedOperation();
-      }
-      this.exec(
-        `INSERT INTO account_flags (account_key, enabled) VALUES (?, ?)
-         ON CONFLICT(account_key) DO UPDATE SET enabled = excluded.enabled`,
-        normalized,
-        enabled ? 1 : 0,
-      );
-    });
+    this.ctx.storage.transactionSync(() => this.setAccountFlag(normalized, enabled));
   }
 
   async deleteAccount(account: string): Promise<void> {
     const normalized = accountKey(account);
-    this.ctx.storage.transactionSync(() => {
-      const leases = this.rows<LeaseRow>(
-        `SELECT lease_id, channel, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
-                initial_reserve_micros, retry_reserve_micros, invoked, expires_at
-         FROM active_leases WHERE account_key = ? ORDER BY lease_id`,
-        normalized,
-      );
-      for (const lease of leases) {
-        const totalReserve = lease.initial_reserve_micros + lease.retry_reserve_micros;
-        if (lease.invoked === 0) {
-          const scopes = channelScopes(aiChannel(lease.channel), normalized);
-          this.changeDaily(scopes.global, lease.day_bucket, -1, 0);
-          this.changeCost(lease.month_bucket, 0, -totalReserve);
-        } else {
-          this.changeCost(lease.month_bucket, totalReserve, -totalReserve);
-        }
-      }
-      this.exec('DELETE FROM active_leases WHERE account_key = ?', normalized);
-      this.exec('DELETE FROM idempotency WHERE account_key = ?', normalized);
-      this.exec('DELETE FROM minute_counters WHERE account_key IN (?, ?)', normalized, `text:${normalized}`);
-      this.exec('DELETE FROM daily_counters WHERE scope IN (?, ?)', normalized, `text:${normalized}`);
-      this.exec('DELETE FROM account_flags WHERE account_key = ?', normalized);
-    });
+    this.ctx.storage.transactionSync(() => this.deleteAccountState(normalized));
   }
 }

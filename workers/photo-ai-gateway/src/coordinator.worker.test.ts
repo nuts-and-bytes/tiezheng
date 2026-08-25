@@ -29,6 +29,7 @@ import {
   textAiCandidateFixture,
   textAiRequestFixture,
 } from '../../../src/test/textAiFixtures';
+import type { TextAiAdminOperation } from '../../../src/lib/textAiAdminContract';
 
 const ACCOUNT_A = 'a'.repeat(64);
 const ACCOUNT_B = 'b'.repeat(64);
@@ -81,6 +82,22 @@ function key(index: number): string {
 
 function fingerprint(index: number): string {
   return index.toString(16).padStart(64, '0');
+}
+
+function textAdminInput(
+  operation: TextAiAdminOperation,
+  index: number,
+  accountKey = ACCOUNT_A,
+  now = BASE_NOW,
+  fingerprintIndex = index,
+) {
+  return {
+    operationId: key(index),
+    operation,
+    accountKey,
+    fingerprint: fingerprint(fingerprintIndex),
+    now,
+  };
 }
 
 function coordinator() {
@@ -397,6 +414,269 @@ describe('private gateway entrypoint', () => {
 });
 
 describe('PhotoAiCoordinator', () => {
+  test('adds the private text admin replay table idempotently with only approved columns', async () => {
+    const stub = coordinator();
+    await runInDurableObject(stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+
+      state.storage.transactionSync(() => ensureCoordinatorSchema(sql));
+      state.storage.transactionSync(() => ensureCoordinatorSchema(sql));
+
+      expect(sql.exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'text_admin_operations'",
+      ).toArray()).toEqual([{ name: 'text_admin_operations' }]);
+      expect(sql.exec<{ name: string }>('PRAGMA table_info(text_admin_operations)')
+        .toArray().map((column) => column.name)).toEqual([
+        'operation_id',
+        'fingerprint',
+        'expires_at',
+      ]);
+    });
+  });
+
+  test('starts text admin status closed and replays an identical operation without applying it twice', async () => {
+    const stub = coordinator();
+    const statusInput = textAdminInput('status', 100);
+
+    const first = await stub.applyTextAdminOperation(statusInput);
+    const replay = await stub.applyTextAdminOperation(statusInput);
+
+    expect(first).toEqual({
+      kind: 'applied',
+      status: {
+        textGlobalEnabled: false,
+        accountEnabled: false,
+        accountRemaining: 10,
+        globalRemaining: 30,
+        budgetSpentMicros: 0,
+        budgetReservedMicros: 0,
+        resetAt: '2026-08-18T16:00:00.000Z',
+      },
+    });
+    expect(replay).toEqual(first);
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(state.storage.sql.exec<{
+        operation_id: string;
+        fingerprint: string;
+        expires_at: number;
+      }>(
+        'SELECT operation_id, fingerprint, expires_at FROM text_admin_operations',
+      ).toArray()).toEqual([{
+        operation_id: statusInput.operationId,
+        fingerprint: statusInput.fingerprint,
+        expires_at: BASE_NOW + 24 * 60 * 60_000,
+      }]);
+    });
+  });
+
+  test('returns conflict for a live operation id with changed semantics and preserves its first state', async () => {
+    const stub = coordinator();
+    const firstInput = textAdminInput('enable-text-global', 101);
+    const first = await stub.applyTextAdminOperation(firstInput);
+
+    expect(await stub.applyTextAdminOperation(firstInput)).toEqual(first);
+    expect(await stub.applyTextAdminOperation({
+      ...firstInput,
+      operation: 'disable-text-global',
+      fingerprint: fingerprint(102),
+    })).toEqual({ kind: 'conflict' });
+    expect(await stub.applyTextAdminOperation({
+      ...firstInput,
+      fingerprint: fingerprint(103),
+    })).toEqual({ kind: 'conflict' });
+    expect(await stub.status({ channel: 'text', accountKey: ACCOUNT_A, now: BASE_NOW }))
+      .toMatchObject({ enabled: true });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(state.storage.sql.exec<{ fingerprint: string; expires_at: number }>(
+        'SELECT fingerprint, expires_at FROM text_admin_operations WHERE operation_id = ?',
+        firstInput.operationId,
+      ).toArray()).toEqual([{
+        fingerprint: firstInput.fingerprint,
+        expires_at: BASE_NOW + 24 * 60 * 60_000,
+      }]);
+    });
+  });
+
+  test('allows a changed operation id exactly at its 24-hour expiry but not one millisecond before', async () => {
+    const stub = coordinator();
+    const firstInput = textAdminInput('enable-text-global', 104);
+    await stub.applyTextAdminOperation(firstInput);
+    const changedInput = {
+      ...firstInput,
+      operation: 'disable-text-global' as const,
+      fingerprint: fingerprint(105),
+    };
+
+    expect(await stub.applyTextAdminOperation({
+      ...changedInput,
+      now: BASE_NOW + 24 * 60 * 60_000 - 1,
+    })).toEqual({ kind: 'conflict' });
+    expect(await stub.applyTextAdminOperation({
+      ...changedInput,
+      now: BASE_NOW + 24 * 60 * 60_000,
+    })).toMatchObject({
+      kind: 'applied',
+      status: { textGlobalEnabled: false },
+    });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(state.storage.sql.exec<{ fingerprint: string; expires_at: number }>(
+        'SELECT fingerprint, expires_at FROM text_admin_operations WHERE operation_id = ?',
+        firstInput.operationId,
+      ).toArray()).toEqual([{
+        fingerprint: changedInput.fingerprint,
+        expires_at: BASE_NOW + 2 * 24 * 60 * 60_000,
+      }]);
+    });
+  });
+
+  test.each([
+    ['operationId', 'A'.repeat(32)],
+    ['operationId', 'a'.repeat(31)],
+    ['accountKey', 'A'.repeat(64)],
+    ['accountKey', 'a'.repeat(63)],
+    ['fingerprint', 'F'.repeat(64)],
+    ['fingerprint', 'f'.repeat(65)],
+    ['operation', 'enable-photo-global'],
+    ['now', -1],
+    ['now', -0],
+    ['now', 0.5],
+    ['now', Number.NaN],
+    ['now', Number.POSITIVE_INFINITY],
+    ['now', Number.MAX_SAFE_INTEGER],
+  ] as const)('rejects invalid text admin %s without persisting or applying it', async (field, invalidValue) => {
+    const stub = coordinator();
+    const input = {
+      ...textAdminInput('enable-text-global', 106),
+      [field]: invalidValue,
+    };
+
+    await runInDurableObject(stub, async (instance, state) => {
+      await expect(instance.applyTextAdminOperation(
+        input as Parameters<typeof instance.applyTextAdminOperation>[0],
+      )).rejects.toThrow('Invalid coordinator input');
+      expect(state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM text_admin_operations',
+      ).toArray()).toEqual([{ count: 0 }]);
+      expect(state.storage.sql.exec<{ value: number }>(
+        "SELECT value FROM settings WHERE key = 'text_global_enabled'",
+      ).toArray()).toEqual([{ value: 0 }]);
+    });
+  });
+
+  test('isolates text global and account gate operations from the photo global gate', async () => {
+    const stub = coordinator();
+
+    expect(await stub.applyTextAdminOperation(textAdminInput('enable-text-global', 107)))
+      .toMatchObject({ kind: 'applied', status: { textGlobalEnabled: true, accountEnabled: false } });
+    expect(await stub.status({ channel: 'photo', accountKey: ACCOUNT_A, now: BASE_NOW }))
+      .toMatchObject({ enabled: false, accountEnabled: false });
+
+    expect(await stub.applyTextAdminOperation(textAdminInput('enable-account', 108)))
+      .toMatchObject({ kind: 'applied', status: { textGlobalEnabled: true, accountEnabled: true } });
+    expect(await stub.applyTextAdminOperation(textAdminInput('disable-account', 109)))
+      .toMatchObject({ kind: 'applied', status: { textGlobalEnabled: true, accountEnabled: false } });
+    expect(await stub.applyTextAdminOperation(textAdminInput('disable-text-global', 110)))
+      .toMatchObject({ kind: 'applied', status: { textGlobalEnabled: false, accountEnabled: false } });
+    expect(await stub.status({ channel: 'photo', accountKey: ACCOUNT_A, now: BASE_NOW }))
+      .toMatchObject({ enabled: false, accountEnabled: false });
+  });
+
+  test('keeps the three-account beta limit atomic for text admin enablement', async () => {
+    const stub = coordinator();
+    const fourth = 'd'.repeat(64);
+
+    await stub.applyTextAdminOperation(textAdminInput('enable-account', 111, ACCOUNT_A));
+    await stub.applyTextAdminOperation(textAdminInput('enable-account', 112, ACCOUNT_B));
+    await stub.applyTextAdminOperation(textAdminInput('enable-account', 113, ACCOUNT_C));
+    await runInDurableObject(stub, async (instance, state) => {
+      const fourthInput = textAdminInput('enable-account', 114, fourth);
+      await expect(instance.applyTextAdminOperation(fourthInput))
+        .rejects.toThrow('Coordinator operation rejected');
+      expect(state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM text_admin_operations WHERE operation_id = ?',
+        fourthInput.operationId,
+      ).toArray()).toEqual([{ count: 0 }]);
+    });
+    expect(await stub.status({ channel: 'text', accountKey: fourth, now: BASE_NOW }))
+      .toMatchObject({ accountEnabled: false });
+  });
+
+  test('atomically deletes both channel account state while preserving every global gate', async () => {
+    const stub = coordinator();
+    await stub.setGlobalEnabled(true);
+    await stub.applyTextAdminOperation(textAdminInput('enable-text-global', 115));
+    await stub.applyTextAdminOperation(textAdminInput('enable-account', 116));
+
+    const settledPhoto = channelReserveInput('photo', ACCOUNT_A, 117);
+    const settledPhotoResult = await stub.reserve(settledPhoto);
+    if (settledPhotoResult.kind !== 'reserved') throw new Error('expected settled photo');
+    const settledPhotoLease = leaseInput(settledPhoto, settledPhotoResult.leaseId);
+    await stub.markInvoked(settledPhotoLease);
+    await stub.settleSuccess({
+      ...settledPhotoLease,
+      actualCostMicros: 123,
+      cache: { ivBase64: 'aXY=', ciphertextBase64: 'Y2lwaGVy', expiresAt: BASE_NOW + 600_000 },
+    });
+
+    const pendingText = channelReserveInput('text', ACCOUNT_A, 118, BASE_NOW + 60_000);
+    expect((await stub.reserve(pendingText)).kind).toBe('reserved');
+
+    const deleted = await stub.applyTextAdminOperation(
+      textAdminInput('delete-account', 119, ACCOUNT_A, BASE_NOW + 60_000),
+    );
+    expect(deleted).toEqual({
+      kind: 'applied',
+      status: {
+        textGlobalEnabled: true,
+        accountEnabled: false,
+        accountRemaining: 10,
+        globalRemaining: 30,
+        budgetSpentMicros: 123,
+        budgetReservedMicros: 0,
+        resetAt: '2026-08-18T16:00:00.000Z',
+      },
+    });
+    expect(await stub.status({ channel: 'photo', accountKey: ACCOUNT_A, now: BASE_NOW + 60_000 }))
+      .toMatchObject({
+        enabled: true,
+        accountEnabled: false,
+        accountRemaining: 10,
+        globalRemaining: 29,
+        budgetSpentMicros: 123,
+        budgetReservedMicros: 0,
+      });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(sql.exec<{ key: string; value: number }>(
+        "SELECT key, value FROM settings WHERE key IN ('global_enabled', 'text_global_enabled') ORDER BY key",
+      ).toArray()).toEqual([
+        { key: 'global_enabled', value: 1 },
+        { key: 'text_global_enabled', value: 1 },
+      ]);
+      expect(sql.exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM idempotency WHERE account_key = ?
+         UNION ALL SELECT COUNT(*) FROM active_leases WHERE account_key = ?
+         UNION ALL SELECT COUNT(*) FROM minute_counters WHERE account_key IN (?, ?)
+         UNION ALL SELECT COUNT(*) FROM daily_counters WHERE scope IN (?, ?)
+         UNION ALL SELECT COUNT(*) FROM account_flags WHERE account_key = ?`,
+        ACCOUNT_A,
+        ACCOUNT_A,
+        ACCOUNT_A,
+        `text:${ACCOUNT_A}`,
+        ACCOUNT_A,
+        `text:${ACCOUNT_A}`,
+        ACCOUNT_A,
+      ).toArray().map((row) => row.count)).toEqual([0, 0, 0, 0, 0]);
+      expect(sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM text_admin_operations',
+      ).toArray()).toEqual([{ count: 3 }]);
+    });
+  });
+
   test('keeps photo and text daily quota independent while sharing active concurrency and monthly budget', async () => {
     const stub = coordinator();
     await stub.setGlobalEnabled(true);
