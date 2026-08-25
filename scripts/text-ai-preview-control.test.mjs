@@ -114,6 +114,7 @@ function userPolicyPayload(emailList = [SENSITIVE.user1, SENSITIVE.user2]) {
   return {
     name: `${USER_APP_NAME}-allow`,
     decision: 'allow',
+    session_duration: '30m',
     include: emailList.map((email) => ({ email: { email } })),
     require: [{ login_method: { id: OTP_PROVIDER_ID } }],
     exclude: [],
@@ -124,6 +125,7 @@ function adminHumanPolicyPayload() {
   return {
     name: `${ADMIN_APP_NAME}-human`,
     decision: 'allow',
+    session_duration: '30m',
     include: [{ email: { email: SENSITIVE.user1 } }],
     require: [{ login_method: { id: OTP_PROVIDER_ID } }],
     exclude: [],
@@ -134,6 +136,7 @@ function adminServicePolicyPayload() {
   return {
     name: `${ADMIN_APP_NAME}-service`,
     decision: 'non_identity',
+    session_duration: '30m',
     include: [{ service_token: { token_id: SERVICE_TOKEN_ID } }],
     require: [],
     exclude: [],
@@ -177,6 +180,40 @@ function adminResponse(body = adminSuccess(), overrides = {}) {
   });
 }
 
+function manualInvokeDependencies() {
+  let nextId = 1;
+  let setCalls = 0;
+  let clearCalls = 0;
+  const timers = new Map();
+  return {
+    dependencies: {
+      generateOperationId: () => OPERATION_ID,
+      setTimeout(callback, delay) {
+        assert.equal(typeof callback, 'function');
+        assert.equal(delay, 20_000);
+        const id = nextId;
+        nextId += 1;
+        setCalls += 1;
+        timers.set(id, callback);
+        return id;
+      },
+      clearTimeout(id) {
+        clearCalls += 1;
+        timers.delete(id);
+      },
+    },
+    fire() {
+      assert.equal(timers.size, 1);
+      const [id, callback] = timers.entries().next().value;
+      timers.delete(id);
+      callback();
+    },
+    activeCount: () => timers.size,
+    setCalls: () => setCalls,
+    clearCalls: () => clearCalls,
+  };
+}
+
 function expectedPagesPatch(config, userAudience = USER_AUDIENCE, adminAudience = ADMIN_AUDIENCE) {
   return {
     deployment_configs: {
@@ -213,13 +250,16 @@ function reconciliationResults({
   apps = [],
   projectBefore = projectResult(),
   projectAfter = projectBefore,
+  projectRecheck = projectAfter,
   patchProject = projectAfter,
   extra = [],
 } = {}) {
   const base = preflightResults([
     ['GET /pages/projects/tiezheng', ({ calls }) => {
       const count = calls.filter(({ method, path }) => method === 'GET' && path === '/pages/projects/tiezheng').length;
-      return count === 1 ? projectBefore : projectAfter;
+      if (count === 1) return projectBefore;
+      if (count === 2) return projectRecheck;
+      return projectAfter;
     }],
     ['GET /access/apps', apps],
     ['POST /access/apps', ({ body }) => {
@@ -609,12 +649,12 @@ test('configure updates existing exact apps and policies idempotently without cr
   assert.equal(result.adminApp.created, false);
   const writes = fake.calls.filter(({ method }) => method !== 'GET');
   assert.deepEqual(writes, [
-    { method: 'PUT', path: `/access/apps/${USER_APP_ID}`, body: USER_APP_PAYLOAD },
     {
       method: 'PUT',
       path: `/access/apps/${USER_APP_ID}/policies/user-policy-id`,
       body: userPolicyPayload(),
     },
+    { method: 'PUT', path: `/access/apps/${USER_APP_ID}`, body: USER_APP_PAYLOAD },
     {
       method: 'PATCH',
       path: '/pages/projects/tiezheng',
@@ -638,6 +678,345 @@ test('configure updates existing exact apps and policies idempotently without cr
   );
 });
 
+test('configure validates every drifted policy before migrating either existing app', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const userApp = appResult(USER_APP_ID, USER_AUDIENCE, {
+    ...USER_APP_PAYLOAD,
+    domain: 'stale-user.example.test/api/nutrition/text',
+  });
+  const adminApp = appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, {
+    ...ADMIN_APP_PAYLOAD,
+    domain: 'stale-admin.example.test/api/nutrition/text-admin',
+  });
+  const projectAfter = projectWithPreview(expectedPagesPatch(config).deployment_configs.preview);
+  const fake = createFakeClient(reconciliationResults({
+    apps: [userApp, adminApp],
+    projectAfter,
+    extra: [
+      [`GET /access/apps/${USER_APP_ID}/policies`, [
+        policyResult('user-policy-id', {
+          ...userPolicyPayload(),
+          session_duration: '24h',
+        }),
+      ]],
+      [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+        policyResult('admin-human-policy-id', {
+          ...adminHumanPolicyPayload(),
+          session_duration: '24h',
+        }),
+        policyResult('admin-service-policy-id', {
+          ...adminServicePolicyPayload(),
+          session_duration: '24h',
+        }),
+      ]],
+      [`PUT /access/apps/${USER_APP_ID}/policies/user-policy-id`,
+        policyResult('user-policy-id', userPolicyPayload())],
+      [`PUT /access/apps/${USER_APP_ID}`,
+        appResult(USER_APP_ID, USER_AUDIENCE, USER_APP_PAYLOAD)],
+      [`PUT /access/apps/${ADMIN_APP_ID}/policies/admin-human-policy-id`,
+        policyResult('admin-human-policy-id', adminHumanPolicyPayload())],
+      [`PUT /access/apps/${ADMIN_APP_ID}/policies/admin-service-policy-id`,
+        policyResult('admin-service-policy-id', adminServicePolicyPayload())],
+      [`PUT /access/apps/${ADMIN_APP_ID}`,
+        appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, ADMIN_APP_PAYLOAD)],
+    ],
+  }));
+
+  await reconcileTextPreview(config, fake.client);
+
+  assert.deepEqual(fake.calls.filter(({ method }) => method !== 'GET').slice(0, 5), [
+    {
+      method: 'PUT',
+      path: `/access/apps/${USER_APP_ID}/policies/user-policy-id`,
+      body: userPolicyPayload(),
+    },
+    {
+      method: 'PUT',
+      path: `/access/apps/${ADMIN_APP_ID}/policies/admin-human-policy-id`,
+      body: adminHumanPolicyPayload(),
+    },
+    {
+      method: 'PUT',
+      path: `/access/apps/${ADMIN_APP_ID}/policies/admin-service-policy-id`,
+      body: adminServicePolicyPayload(),
+    },
+    { method: 'PUT', path: `/access/apps/${USER_APP_ID}`, body: USER_APP_PAYLOAD },
+    { method: 'PUT', path: `/access/apps/${ADMIN_APP_ID}`, body: ADMIN_APP_PAYLOAD },
+  ]);
+});
+
+test('configure never migrates an existing app or patches Pages after a policy write failure', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const userApp = appResult(USER_APP_ID, USER_AUDIENCE, {
+    ...USER_APP_PAYLOAD,
+    domain: 'stale-user.example.test/api/nutrition/text',
+  });
+  const adminApp = appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, {
+    ...ADMIN_APP_PAYLOAD,
+    domain: 'stale-admin.example.test/api/nutrition/text-admin',
+  });
+  const cases = [
+    {
+      failingPath: `/access/apps/${USER_APP_ID}/policies/user-policy-id`,
+      userPolicy: { ...userPolicyPayload(), session_duration: '24h' },
+      adminHumanPolicy: adminHumanPolicyPayload(),
+    },
+    {
+      failingPath: `/access/apps/${ADMIN_APP_ID}/policies/admin-human-policy-id`,
+      userPolicy: userPolicyPayload(),
+      adminHumanPolicy: { ...adminHumanPolicyPayload(), session_duration: '24h' },
+    },
+  ];
+
+  for (const { failingPath, userPolicy, adminHumanPolicy } of cases) {
+    const fake = createFakeClient(reconciliationResults({
+      apps: [userApp, adminApp],
+      extra: [
+        [`GET /access/apps/${USER_APP_ID}/policies`, [
+          policyResult('user-policy-id', userPolicy),
+        ]],
+        [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+          policyResult('admin-human-policy-id', adminHumanPolicy),
+          policyResult('admin-service-policy-id', adminServicePolicyPayload()),
+        ]],
+        [`PUT ${failingPath}`, () => {
+          throw new Error(`${SENSITIVE.apiToken}:${SENSITIVE.user1}`);
+        }],
+      ],
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+
+    const writes = fake.calls.filter(({ method }) => method !== 'GET');
+    assert.equal(writes.at(-1).path, failingPath);
+    assert.equal(writes.some(({ path }) => path === `/access/apps/${USER_APP_ID}`), false);
+    assert.equal(writes.some(({ path }) => path === `/access/apps/${ADMIN_APP_ID}`), false);
+    assert.equal(writes.some(({ method }) => method === 'PATCH'), false);
+  }
+});
+
+test('configure correlates existing policy and app PUT responses to the exact URL resource ID', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const staleUser = appResult(USER_APP_ID, USER_AUDIENCE, {
+    ...USER_APP_PAYLOAD,
+    domain: 'stale-user.example.test/api/nutrition/text',
+  });
+  const adminApp = appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, ADMIN_APP_PAYLOAD);
+  const expectedProject = projectWithPreview(expectedPagesPatch(config).deployment_configs.preview);
+  const cases = [
+    {
+      userPolicy: { ...userPolicyPayload(), session_duration: '24h' },
+      extraWrites: [
+        [`PUT /access/apps/${USER_APP_ID}/policies/user-policy-id`,
+          policyResult('other-policy-id', userPolicyPayload())],
+        [`PUT /access/apps/${USER_APP_ID}`,
+          appResult(USER_APP_ID, USER_AUDIENCE, USER_APP_PAYLOAD)],
+      ],
+      expectedWrites: [{
+        method: 'PUT',
+        path: `/access/apps/${USER_APP_ID}/policies/user-policy-id`,
+        body: userPolicyPayload(),
+      }],
+    },
+    {
+      userPolicy: userPolicyPayload(),
+      extraWrites: [[`PUT /access/apps/${USER_APP_ID}`,
+        appResult('other-app-id', USER_AUDIENCE, USER_APP_PAYLOAD)]],
+      expectedWrites: [{
+        method: 'PUT',
+        path: `/access/apps/${USER_APP_ID}`,
+        body: USER_APP_PAYLOAD,
+      }],
+    },
+  ];
+
+  for (const { userPolicy, extraWrites, expectedWrites } of cases) {
+    const fake = createFakeClient(reconciliationResults({
+      apps: [staleUser, adminApp],
+      projectAfter: expectedProject,
+      extra: [
+        [`GET /access/apps/${USER_APP_ID}/policies`, [
+          policyResult('user-policy-id', userPolicy),
+        ]],
+        [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+          policyResult('admin-human-policy-id', adminHumanPolicyPayload()),
+          policyResult('admin-service-policy-id', adminServicePolicyPayload()),
+        ]],
+        ...extraWrites,
+      ],
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+    assert.deepEqual(fake.calls.filter(({ method }) => method !== 'GET'), expectedWrites);
+  }
+});
+
+test('configure rejects a newly created app ID that collides with an observed dedicated app', async () => {
+  const adminApp = appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, ADMIN_APP_PAYLOAD);
+  const fake = createFakeClient(reconciliationResults({
+    apps: [adminApp],
+    extra: [
+      [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+        policyResult('admin-human-policy-id', adminHumanPolicyPayload()),
+        policyResult('admin-service-policy-id', adminServicePolicyPayload()),
+      ]],
+      ['POST /access/apps', appResult(ADMIN_APP_ID, USER_AUDIENCE, USER_APP_PAYLOAD)],
+    ],
+  }));
+
+  await expectFixedRejection(() => reconcileTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    fake.client,
+  ));
+  assert.deepEqual(fake.calls.filter(({ method }) => method !== 'GET'), [
+    { method: 'POST', path: '/access/apps', body: USER_APP_PAYLOAD },
+  ]);
+});
+
+test('configure rejects a newly created app ID that collides with any observed Access app', async () => {
+  const unrelatedAppId = 'unrelated-existing-app-id';
+  const adminApp = appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, ADMIN_APP_PAYLOAD);
+  const fake = createFakeClient(reconciliationResults({
+    apps: [
+      { id: unrelatedAppId, name: 'unrelated-existing-app' },
+      adminApp,
+    ],
+    extra: [
+      [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+        policyResult('admin-human-policy-id', adminHumanPolicyPayload()),
+        policyResult('admin-service-policy-id', adminServicePolicyPayload()),
+      ]],
+      ['POST /access/apps', appResult(unrelatedAppId, USER_AUDIENCE, USER_APP_PAYLOAD)],
+    ],
+  }));
+
+  await expectFixedRejection(() => reconcileTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    fake.client,
+  ));
+  assert.deepEqual(fake.calls.filter(({ method }) => method !== 'GET'), [
+    { method: 'POST', path: '/access/apps', body: USER_APP_PAYLOAD },
+  ]);
+});
+
+test('configure stops before Pages when a new app receives duplicate policy IDs', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const expectedProject = projectWithPreview(expectedPagesPatch(config).deployment_configs.preview);
+  const fake = createFakeClient(reconciliationResults({
+    projectAfter: expectedProject,
+    extra: [[
+      `POST /access/apps/${ADMIN_APP_ID}/policies`,
+      ({ body }) => policyResult('shared-new-policy-id', body),
+    ]],
+  }));
+
+  await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+
+  assert.deepEqual(fake.calls.filter(({ method }) => method !== 'GET'), [
+    { method: 'POST', path: '/access/apps', body: USER_APP_PAYLOAD },
+    {
+      method: 'POST',
+      path: `/access/apps/${USER_APP_ID}/policies`,
+      body: userPolicyPayload(),
+    },
+    { method: 'POST', path: '/access/apps', body: ADMIN_APP_PAYLOAD },
+    {
+      method: 'POST',
+      path: `/access/apps/${ADMIN_APP_ID}/policies`,
+      body: adminHumanPolicyPayload(),
+    },
+    {
+      method: 'POST',
+      path: `/access/apps/${ADMIN_APP_ID}/policies`,
+      body: adminServicePolicyPayload(),
+    },
+  ]);
+  assert.equal(fake.calls.some(({ method }) => method === 'PATCH'), false);
+});
+
+test('configure tracks newly created policy IDs for existing apps before Pages', async () => {
+  const userApp = appResult(USER_APP_ID, USER_AUDIENCE, USER_APP_PAYLOAD);
+  const adminApp = appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, ADMIN_APP_PAYLOAD);
+  const cases = [
+    {
+      response: ({ body }) => policyResult('shared-created-policy-id', body),
+      expectedPolicyPosts: 2,
+    },
+    {
+      response: ({ body }) => policyResult(USER_APP_ID, body),
+      expectedPolicyPosts: 1,
+    },
+  ];
+
+  for (const { response, expectedPolicyPosts } of cases) {
+    const fake = createFakeClient(reconciliationResults({
+      apps: [userApp, adminApp],
+      extra: [
+        [`GET /access/apps/${USER_APP_ID}/policies`, [
+          policyResult('user-policy-id', userPolicyPayload()),
+        ]],
+        [`GET /access/apps/${ADMIN_APP_ID}/policies`, []],
+        [`POST /access/apps/${ADMIN_APP_ID}/policies`, response],
+      ],
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(
+      loadTextPreviewConfig(validEnv()),
+      fake.client,
+    ));
+    assert.equal(
+      fake.calls.filter(({ method, path }) => (
+        method === 'POST' && path === `/access/apps/${ADMIN_APP_ID}/policies`
+      )).length,
+      expectedPolicyPosts,
+    );
+    assert.equal(fake.calls.some(({ method }) => method === 'PATCH'), false);
+  }
+});
+
+test('configure stops before new admin policies when created app audiences collide', async () => {
+  const fake = createFakeClient(reconciliationResults({
+    extra: [[
+      'POST /access/apps',
+      ({ body }) => body.name === USER_APP_NAME
+        ? appResult(USER_APP_ID, USER_AUDIENCE, USER_APP_PAYLOAD)
+        : appResult(ADMIN_APP_ID, USER_AUDIENCE, ADMIN_APP_PAYLOAD),
+    ]],
+  }));
+
+  await expectFixedRejection(() => reconcileTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    fake.client,
+  ));
+  assert.deepEqual(fake.calls.filter(({ method }) => method !== 'GET'), [
+    { method: 'POST', path: '/access/apps', body: USER_APP_PAYLOAD },
+    {
+      method: 'POST',
+      path: `/access/apps/${USER_APP_ID}/policies`,
+      body: userPolicyPayload(),
+    },
+    { method: 'POST', path: '/access/apps', body: ADMIN_APP_PAYLOAD },
+  ]);
+  assert.equal(fake.calls.some(({ method }) => method === 'PATCH'), false);
+});
+
+test('configure rejects duplicate dedicated app IDs before policy reads', async () => {
+  const sharedId = 'shared-dedicated-app-id';
+  const fake = createFakeClient(reconciliationResults({
+    apps: [
+      appResult(sharedId, USER_AUDIENCE, USER_APP_PAYLOAD),
+      appResult(sharedId, ADMIN_AUDIENCE, ADMIN_APP_PAYLOAD),
+    ],
+  }));
+
+  await expectFixedRejection(() => reconcileTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    fake.client,
+  ));
+  assert.equal(fake.calls.some(({ path }) => path.includes('/policies')), false);
+  assert.equal(fake.calls.some(({ method }) => method !== 'GET'), false);
+});
+
 test('configure fails before every write on duplicate/fuzzy apps, unknown policies, or unknown preview keys', async () => {
   const config = loadTextPreviewConfig(validEnv());
   const userApp = appResult(USER_APP_ID, USER_AUDIENCE, USER_APP_PAYLOAD);
@@ -654,6 +1033,33 @@ test('configure fails before every write on duplicate/fuzzy apps, unknown polici
           policyResult('unknown-policy-id', { ...userPolicyPayload(), name: 'unexpected-policy' }),
         ]],
         [`GET /access/apps/${ADMIN_APP_ID}/policies`, []],
+      ],
+    }),
+    reconciliationResults({
+      apps: [userApp, adminApp],
+      extra: [
+        [`GET /access/apps/${USER_APP_ID}/policies`, [
+          policyResult('user-policy-id', userPolicyPayload()),
+        ]],
+        [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+          policyResult('shared-policy-id', adminHumanPolicyPayload()),
+          policyResult('shared-policy-id', adminServicePolicyPayload()),
+        ]],
+      ],
+    }),
+    reconciliationResults({
+      apps: [
+        userApp,
+        appResult(ADMIN_APP_ID, USER_AUDIENCE, ADMIN_APP_PAYLOAD),
+      ],
+      extra: [
+        [`GET /access/apps/${USER_APP_ID}/policies`, [
+          policyResult('user-policy-id', userPolicyPayload()),
+        ]],
+        [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+          policyResult('admin-human-policy-id', adminHumanPolicyPayload()),
+          policyResult('admin-service-policy-id', adminServicePolicyPayload()),
+        ]],
       ],
     }),
     reconciliationResults({
@@ -674,6 +1080,256 @@ test('configure fails before every write on duplicate/fuzzy apps, unknown polici
     const fake = createFakeClient(results);
     await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
     assert.equal(fake.calls.some(({ method }) => method !== 'GET'), false);
+  }
+});
+
+test('configure fails before every write on any nonempty unowned Preview binding container', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const bindingContainers = [
+    'kv_namespaces',
+    'd1_databases',
+    'ai_bindings',
+    'queue_producers',
+    'vectorize_bindings',
+    'analytics_engine_datasets',
+    'browsers',
+    'durable_object_namespaces',
+    'hyperdrive_bindings',
+    'mtls_certificates',
+    'r2_buckets',
+  ];
+
+  for (const container of bindingContainers) {
+    const fake = createFakeClient(reconciliationResults({
+      projectBefore: projectWithPreview({
+        env_vars: {},
+        services: {},
+        [container]: { EXISTING_BINDING: { id: 'resource-id' } },
+      }),
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+    assert.equal(fake.calls.some(({ method }) => method !== 'GET'), false, container);
+  }
+});
+
+test('configure rejects unknown Preview top-level fields even when their containers are empty', async () => {
+  const previews = [
+    {
+      env_vars: {},
+      services: {},
+      unknown_binding_container: {},
+    },
+    JSON.parse('{"__proto__":"unknown-field","env_vars":{},"services":{}}'),
+    JSON.parse('{"__proto__":null,"env_vars":{},"services":{}}'),
+    JSON.parse('{"constructor":"unknown-field","env_vars":{},"services":{}}'),
+    JSON.parse('{"prototype":"unknown-field","env_vars":{},"services":{}}'),
+  ];
+
+  for (const preview of previews) {
+    const fake = createFakeClient(reconciliationResults({
+      projectBefore: projectWithPreview(preview),
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(
+      loadTextPreviewConfig(validEnv()),
+      fake.client,
+    ));
+    assert.equal(fake.calls.some(({ method }) => method !== 'GET'), false);
+  }
+});
+
+test('configure rechecks Preview immediately before PATCH and stops on late binding drift', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const expectedPreview = expectedPagesPatch(config).deployment_configs.preview;
+  const fake = createFakeClient(reconciliationResults({
+    projectBefore: projectResult(),
+    projectRecheck: projectWithPreview({
+      env_vars: {},
+      services: {},
+      kv_namespaces: { LATE_BINDING: { namespace_id: 'late-id' } },
+    }),
+    projectAfter: projectWithPreview(expectedPreview),
+    patchProject: projectWithPreview(expectedPreview),
+  }));
+
+  await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+
+  const pageCalls = fake.calls.filter(({ path }) => path === '/pages/projects/tiezheng');
+  assert.deepEqual(pageCalls.map(({ method }) => method), ['GET', 'GET']);
+  assert.equal(fake.calls.some(({ method }) => method === 'PATCH'), false);
+});
+
+test('configure preserves every allowed nonowned Preview behavior across PATCH response and final GET', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const nonowned = {
+    compatibility_date: '2026-08-25',
+    compatibility_flags: ['nodejs_compat', 'streams_enable_constructors'],
+    always_use_latest_compatibility_date: false,
+    placement: { mode: 'smart' },
+    limits: { cpu_ms: 50 },
+    fail_open: false,
+    usage_model: 'standard',
+  };
+  const beforePreview = {
+    ...nonowned,
+    env_vars: {},
+    services: {},
+    kv_namespaces: {},
+    d1_databases: {},
+    ai_bindings: {},
+    queue_producers: {},
+    vectorize_bindings: {},
+    wrangler_config_hash: null,
+  };
+  const expectedPreview = {
+    ...nonowned,
+    ...expectedPagesPatch(config).deployment_configs.preview,
+    wrangler_config_hash: 'b'.repeat(64),
+  };
+  const stableProject = projectWithPreview(expectedPreview);
+  const recheckedPreview = structuredClone(beforePreview);
+  recheckedPreview.compatibility_flags.reverse();
+  recheckedPreview.wrangler_config_hash = 'a'.repeat(64);
+  const fake = createFakeClient(reconciliationResults({
+    projectBefore: projectWithPreview(beforePreview),
+    projectRecheck: projectWithPreview(recheckedPreview),
+    patchProject: stableProject,
+    projectAfter: stableProject,
+  }));
+
+  await assert.doesNotReject(() => reconcileTextPreview(config, fake.client));
+
+  const patch = fake.calls.find(({ method }) => method === 'PATCH');
+  assert.deepEqual(Object.keys(patch.body.deployment_configs.preview).sort(), ['env_vars', 'services']);
+});
+
+test('configure rejects nonowned Preview behavior drift in PATCH response or final GET', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const nonowned = {
+    compatibility_date: '2026-08-25',
+    compatibility_flags: ['nodejs_compat'],
+    placement: { mode: 'smart' },
+  };
+  const before = projectWithPreview({ ...nonowned, env_vars: {}, services: {} });
+  const expected = {
+    ...nonowned,
+    ...expectedPagesPatch(config).deployment_configs.preview,
+  };
+  const drifted = {
+    ...expected,
+    placement: { mode: 'off' },
+  };
+  const cases = [
+    {
+      patchProject: projectWithPreview(drifted),
+      projectAfter: projectWithPreview(expected),
+      expectedPageMethods: ['GET', 'GET', 'PATCH'],
+    },
+    {
+      patchProject: projectWithPreview(expected),
+      projectAfter: projectWithPreview(drifted),
+      expectedPageMethods: ['GET', 'GET', 'PATCH', 'GET'],
+    },
+  ];
+
+  for (const { patchProject, projectAfter, expectedPageMethods } of cases) {
+    const fake = createFakeClient(reconciliationResults({
+      projectBefore: before,
+      projectRecheck: before,
+      patchProject,
+      projectAfter,
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+    assert.deepEqual(
+      fake.calls.filter(({ path }) => path === '/pages/projects/tiezheng').map(({ method }) => method),
+      expectedPageMethods,
+    );
+  }
+});
+
+test('configure preserves dangerous own keys when hashing nested nonowned Preview behavior', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    const beforeLimits = JSON.parse(`{"cpu_ms":50,"${key}":"before"}`);
+    const afterLimits = JSON.parse(`{"cpu_ms":50,"${key}":"after"}`);
+    const beforePreview = { env_vars: {}, services: {}, limits: beforeLimits };
+    const recheckedPreview = { env_vars: {}, services: {}, limits: afterLimits };
+    const expectedPreview = {
+      ...expectedPagesPatch(config).deployment_configs.preview,
+      limits: beforeLimits,
+    };
+    const fake = createFakeClient(reconciliationResults({
+      projectBefore: projectWithPreview(beforePreview),
+      projectRecheck: projectWithPreview(recheckedPreview),
+      patchProject: projectWithPreview(expectedPreview),
+      projectAfter: projectWithPreview(expectedPreview),
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+    assert.deepEqual(
+      fake.calls.filter(({ path }) => path === '/pages/projects/tiezheng').map(({ method }) => method),
+      ['GET', 'GET'],
+    );
+    assert.equal(fake.calls.some(({ method }) => method === 'PATCH'), false);
+  }
+});
+
+test('configure hashes nested secret-shaped behavior outside env_vars for Preview and production', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const fakeSecret = (value) => ({
+    nested: { type: 'secret_text', value },
+  });
+  const expectedPreview = {
+    ...expectedPagesPatch(config).deployment_configs.preview,
+    limits: fakeSecret('before'),
+  };
+  const baseProduction = projectResult().deployment_configs.production;
+  const cases = [
+    {
+      projectBefore: projectWithPreview({
+        env_vars: {},
+        services: {},
+        limits: fakeSecret('before'),
+      }),
+      projectRecheck: projectWithPreview({
+        env_vars: {},
+        services: {},
+        limits: fakeSecret('after'),
+      }),
+      stableProject: projectWithPreview(expectedPreview),
+    },
+    {
+      projectBefore: projectWithPreview(
+        { env_vars: {}, services: {} },
+        { ...baseProduction, limits: fakeSecret('before') },
+      ),
+      projectRecheck: projectWithPreview(
+        { env_vars: {}, services: {} },
+        { ...baseProduction, limits: fakeSecret('after') },
+      ),
+      stableProject: projectWithPreview(
+        expectedPagesPatch(config).deployment_configs.preview,
+        { ...baseProduction, limits: fakeSecret('before') },
+      ),
+    },
+  ];
+
+  for (const { projectBefore, projectRecheck, stableProject } of cases) {
+    const fake = createFakeClient(reconciliationResults({
+      projectBefore,
+      projectRecheck,
+      patchProject: stableProject,
+      projectAfter: stableProject,
+    }));
+
+    await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+    assert.deepEqual(
+      fake.calls.filter(({ path }) => path === '/pages/projects/tiezheng').map(({ method }) => method),
+      ['GET', 'GET'],
+    );
+    assert.equal(fake.calls.some(({ method }) => method === 'PATCH'), false);
   }
 });
 
@@ -792,7 +1448,10 @@ test('configure detects production deployment drift after patch without ever sen
     expectedPagesPatch(config).deployment_configs.preview,
     afterProduction,
   );
-  const fake = createFakeClient(reconciliationResults({ projectAfter }));
+  const fake = createFakeClient(reconciliationResults({
+    projectRecheck: projectResult(),
+    projectAfter,
+  }));
 
   await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
 
@@ -814,8 +1473,8 @@ test('configure rejects an incomplete PATCH response before the final Pages GET'
   await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
 
   const pageCalls = fake.calls.filter(({ path }) => path === '/pages/projects/tiezheng');
-  assert.deepEqual(pageCalls.map(({ method }) => method), ['GET', 'PATCH']);
-  assert.deepEqual(Object.keys(pageCalls[1].body.deployment_configs), ['preview']);
+  assert.deepEqual(pageCalls.map(({ method }) => method), ['GET', 'GET', 'PATCH']);
+  assert.deepEqual(Object.keys(pageCalls[2].body.deployment_configs), ['preview']);
 });
 
 test('configure rejects incomplete or stale final Preview state after a valid PATCH response', async () => {
@@ -850,8 +1509,47 @@ test('configure rejects incomplete or stale final Preview state after a valid PA
     assert.deepEqual(Object.keys(patches[0].body.deployment_configs), ['preview']);
     assert.equal(
       fake.calls.filter(({ method, path }) => method === 'GET' && path === '/pages/projects/tiezheng').length,
-      2,
+      3,
     );
+  }
+});
+
+test('configure rejects non-string secret values before redaction in PATCH response or final GET', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const expectedPreview = expectedPagesPatch(config).deployment_configs.preview;
+  const validProject = projectWithPreview(expectedPreview);
+  const invalidValues = [42, true, { nested: SENSITIVE.apiToken }];
+
+  for (const invalidValue of invalidValues) {
+    const invalidPreview = structuredClone(expectedPreview);
+    invalidPreview.env_vars.TEXT_AI_ACCESS_AUD.value = invalidValue;
+    const invalidProject = projectWithPreview(invalidPreview);
+    const cases = [
+      {
+        patchProject: invalidProject,
+        projectAfter: validProject,
+        expectedPageMethods: ['GET', 'GET', 'PATCH'],
+      },
+      {
+        patchProject: validProject,
+        projectAfter: invalidProject,
+        expectedPageMethods: ['GET', 'GET', 'PATCH', 'GET'],
+      },
+    ];
+
+    for (const { patchProject, projectAfter, expectedPageMethods } of cases) {
+      const fake = createFakeClient(reconciliationResults({
+        projectRecheck: projectResult(),
+        patchProject,
+        projectAfter,
+      }));
+
+      await expectFixedRejection(() => reconcileTextPreview(config, fake.client));
+      assert.deepEqual(
+        fake.calls.filter(({ path }) => path === '/pages/projects/tiezheng').map(({ method }) => method),
+        expectedPageMethods,
+      );
+    }
   }
 });
 
@@ -932,6 +1630,37 @@ test('disable-access reads and validates both dedicated apps before deleting onl
   ]);
 });
 
+test('disable-access can remove exact dedicated apps whose audiences collide', async () => {
+  const userApp = appResult(USER_APP_ID, USER_AUDIENCE, USER_APP_PAYLOAD);
+  const adminApp = appResult(ADMIN_APP_ID, USER_AUDIENCE, ADMIN_APP_PAYLOAD);
+  const fake = createFakeClient(new Map([
+    ['GET /access/apps', [userApp, adminApp]],
+    [`GET /access/apps/${USER_APP_ID}/policies`, [
+      policyResult('user-policy-id', userPolicyPayload()),
+    ]],
+    [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+      policyResult('admin-human-policy-id', adminHumanPolicyPayload()),
+      policyResult('admin-service-policy-id', adminServicePolicyPayload()),
+    ]],
+    [`DELETE /access/apps/${USER_APP_ID}`, { id: USER_APP_ID }],
+    [`DELETE /access/apps/${ADMIN_APP_ID}`, { id: ADMIN_APP_ID }],
+  ]));
+
+  const result = await disableTextPreviewAccess(
+    loadTextPreviewConfig(validEnv()),
+    fake.client,
+  );
+
+  assert.deepEqual(result, {
+    disabled: true,
+    deletedApps: [USER_APP_NAME, ADMIN_APP_NAME],
+  });
+  assert.deepEqual(fake.calls.filter(({ method }) => method === 'DELETE'), [
+    { method: 'DELETE', path: `/access/apps/${USER_APP_ID}`, body: undefined },
+    { method: 'DELETE', path: `/access/apps/${ADMIN_APP_ID}`, body: undefined },
+  ]);
+});
+
 test('disable-access is idempotent when exact apps are absent and never deletes unrelated apps', async () => {
   const fake = createFakeClient(new Map([
     ['GET /access/apps', [
@@ -945,6 +1674,69 @@ test('disable-access is idempotent when exact apps are absent and never deletes 
   );
 
   assert.deepEqual(result, { disabled: true, deletedApps: [] });
+  assert.equal(fake.calls.some(({ method }) => method === 'DELETE'), false);
+});
+
+test('disable-access validates both exact-name app domains and types before deleting either candidate', async () => {
+  const exactUser = appResult(USER_APP_ID, USER_AUDIENCE, USER_APP_PAYLOAD);
+  const exactAdmin = appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, ADMIN_APP_PAYLOAD);
+  const cases = [
+    [
+      appResult(USER_APP_ID, USER_AUDIENCE, {
+        ...USER_APP_PAYLOAD,
+        domain: 'tiezheng.pages.dev/api/nutrition/text',
+      }),
+      exactAdmin,
+    ],
+    [
+      exactUser,
+      appResult(ADMIN_APP_ID, ADMIN_AUDIENCE, {
+        ...ADMIN_APP_PAYLOAD,
+        type: 'saas',
+      }),
+    ],
+  ];
+
+  for (const apps of cases) {
+    const fake = createFakeClient(new Map([
+      ['GET /access/apps', apps],
+      [`GET /access/apps/${USER_APP_ID}/policies`, [
+        policyResult('user-policy-id', userPolicyPayload()),
+      ]],
+      [`GET /access/apps/${ADMIN_APP_ID}/policies`, [
+        policyResult('admin-human-policy-id', adminHumanPolicyPayload()),
+        policyResult('admin-service-policy-id', adminServicePolicyPayload()),
+      ]],
+      [`DELETE /access/apps/${USER_APP_ID}`, { id: USER_APP_ID }],
+      [`DELETE /access/apps/${ADMIN_APP_ID}`, { id: ADMIN_APP_ID }],
+    ]));
+
+    await expectFixedRejection(() => disableTextPreviewAccess(
+      loadTextPreviewConfig(validEnv()),
+      fake.client,
+    ));
+    assert.equal(fake.calls.some(({ method }) => method === 'DELETE'), false);
+  }
+});
+
+test('disable-access rejects duplicate IDs across the full Access app list before policy reads', async () => {
+  const userApp = appResult(USER_APP_ID, USER_AUDIENCE, USER_APP_PAYLOAD);
+  const fake = createFakeClient(new Map([
+    ['GET /access/apps', [
+      userApp,
+      { id: USER_APP_ID, aud: 'unrelated-aud', name: 'unrelated-application' },
+    ]],
+    [`GET /access/apps/${USER_APP_ID}/policies`, [
+      policyResult('user-policy-id', userPolicyPayload()),
+    ]],
+    [`DELETE /access/apps/${USER_APP_ID}`, { id: USER_APP_ID }],
+  ]));
+
+  await expectFixedRejection(() => disableTextPreviewAccess(
+    loadTextPreviewConfig(validEnv()),
+    fake.client,
+  ));
+  assert.equal(fake.calls.some(({ path }) => path.includes('/policies')), false);
   assert.equal(fake.calls.some(({ method }) => method === 'DELETE'), false);
 });
 
@@ -997,7 +1789,7 @@ test('invoke-admin accepts only six fixed operations and two logical targets wit
         config,
         { operation, target },
         fetcher,
-        () => OPERATION_ID,
+        { generateOperationId: () => OPERATION_ID },
       );
       assert.deepEqual(result, {
         operation,
@@ -1034,7 +1826,10 @@ test('invoke-admin accepts only six fixed operations and two logical targets wit
         operation,
         targetEmail: target === 'user-1' ? SENSITIVE.user1 : SENSITIVE.user2,
       }),
+      signal: init.signal,
     });
+    assert.equal(init.signal instanceof AbortSignal, true);
+    assert.equal(init.signal.aborted, false);
     assert.equal(url.includes('@'), false);
     assert.equal(JSON.stringify(init.headers).includes('@'), false);
   }
@@ -1046,7 +1841,7 @@ test('invoke-admin output is an operation/status whitelist with no identity, ope
     config,
     { operation: 'status', target: 'user-1' },
     async () => adminResponse(),
-    () => OPERATION_ID,
+    { generateOperationId: () => OPERATION_ID },
   );
   const serialized = JSON.stringify(result);
 
@@ -1104,17 +1899,54 @@ test('invoke-admin rejects extra/accessor/coercible options and invalid operatio
       loadTextPreviewConfig(validEnv()),
       options,
       fetcher,
-      generate,
+      { generateOperationId: generate },
     ));
   }
   await expectFixedRejection(() => invokeTextPreviewAdmin(
     loadTextPreviewConfig(validEnv()),
     { operation: 'status', target: 'user-1' },
     fetcher,
-    () => 'A'.repeat(32),
+    { generateOperationId: () => 'A'.repeat(32) },
   ));
   assert.equal(fetchCalls, 0);
   assert.equal(generatorCalls, 0);
+});
+
+test('invoke-admin rejects inherited, accessor, coercible, or extra runtime dependencies before fetch', async () => {
+  let fetchCalls = 0;
+  let accessorReads = 0;
+  const fetcher = async () => {
+    fetchCalls += 1;
+    return adminResponse();
+  };
+  const inherited = Object.create({ generateOperationId: () => OPERATION_ID });
+  const accessor = {};
+  Object.defineProperty(accessor, 'generateOperationId', {
+    enumerable: true,
+    get() {
+      accessorReads += 1;
+      throw new Error(SENSITIVE.serviceClientSecret);
+    },
+  });
+  const invalidDependencies = [
+    inherited,
+    accessor,
+    { generateOperationId: new String(OPERATION_ID) },
+    { generateOperationId: () => OPERATION_ID, secret: SENSITIVE.apiToken },
+    { setTimeout: { call: () => undefined } },
+    { clearTimeout: null },
+  ];
+
+  for (const dependencies of invalidDependencies) {
+    await expectFixedRejection(() => invokeTextPreviewAdmin(
+      loadTextPreviewConfig(validEnv()),
+      { operation: 'status', target: 'user-1' },
+      fetcher,
+      dependencies,
+    ));
+  }
+  assert.equal(fetchCalls, 0);
+  assert.equal(accessorReads, 0);
 });
 
 test('redacted admin parser enforces the Task2 exact response contract and operation correlation', () => {
@@ -1187,7 +2019,7 @@ test('invoke-admin rejects redirects, unsafe headers, correlation errors, fatal 
       loadTextPreviewConfig(validEnv()),
       { operation: 'status', target: 'user-1' },
       async () => response,
-      () => OPERATION_ID,
+      { generateOperationId: () => OPERATION_ID },
     ));
   }
 });
@@ -1200,14 +2032,184 @@ test('invoke-admin hides fetch and response failures containing every sensitive 
     async () => {
       throw new Error(leaked);
     },
-    () => OPERATION_ID,
+    { generateOperationId: () => OPERATION_ID },
   ));
   await expectFixedRejection(() => invokeTextPreviewAdmin(
     loadTextPreviewConfig(validEnv()),
     { operation: 'status', target: 'user-1' },
     async () => adminResponse({ ok: false, code: leaked }),
-    () => OPERATION_ID,
+    { generateOperationId: () => OPERATION_ID },
   ));
+});
+
+test('invoke-admin aborts a fetch that ignores signal at one fixed deadline and clears its timer', async () => {
+  const runtime = manualInvokeDependencies();
+  let rejectFetch;
+  let signal;
+  const pending = invokeTextPreviewAdmin(
+    loadTextPreviewConfig(validEnv()),
+    { operation: 'status', target: 'user-1' },
+    async (_url, init) => {
+      signal = init.signal;
+      return new Promise((_, reject) => {
+        rejectFetch = reject;
+      });
+    },
+    runtime.dependencies,
+  );
+  pending.catch(() => undefined);
+
+  await Promise.resolve();
+  assert.equal(runtime.setCalls(), 1);
+  assert.equal(runtime.activeCount(), 1);
+  runtime.fire();
+
+  await expectFixedRejection(() => pending);
+  assert.equal(signal instanceof AbortSignal, true);
+  assert.equal(signal.aborted, true);
+  assert.equal(runtime.activeCount(), 0);
+  assert.equal(runtime.clearCalls(), 1);
+  rejectFetch(new Error(`${SENSITIVE.serviceClientSecret}:${SENSITIVE.user1}`));
+  await Promise.resolve();
+  await Promise.resolve();
+});
+
+test('invoke-admin cancels a response body that resolves only after the fetch deadline wins', async () => {
+  const runtime = manualInvokeDependencies();
+  let resolveFetch;
+  let cancelCalls = 0;
+  let signal;
+  const lateResponse = new Response(new ReadableStream({
+    cancel() {
+      cancelCalls += 1;
+    },
+  }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    },
+  });
+  const pending = invokeTextPreviewAdmin(
+    loadTextPreviewConfig(validEnv()),
+    { operation: 'status', target: 'user-1' },
+    async (_url, init) => {
+      signal = init.signal;
+      return new Promise((resolve) => {
+        resolveFetch = resolve;
+      });
+    },
+    runtime.dependencies,
+  );
+  pending.catch(() => undefined);
+
+  await Promise.resolve();
+  runtime.fire();
+  await expectFixedRejection(() => pending);
+  assert.equal(signal.aborted, true);
+  assert.equal(cancelCalls, 0);
+
+  resolveFetch(lateResponse);
+  for (let index = 0; index < 16 && cancelCalls === 0; index += 1) {
+    await Promise.resolve();
+  }
+
+  assert.equal(cancelCalls, 1);
+  assert.equal(lateResponse.body.locked, false);
+  assert.equal(runtime.activeCount(), 0);
+  assert.equal(runtime.clearCalls(), 1);
+});
+
+test('invoke-admin applies the same deadline to a stalled response body and cancels the reader', async () => {
+  const runtime = manualInvokeDependencies();
+  let cancelCalls = 0;
+  let signal;
+  const response = new Response(new ReadableStream({
+    pull() {
+      return new Promise(() => undefined);
+    },
+    cancel() {
+      cancelCalls += 1;
+    },
+  }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    },
+  });
+  const pending = invokeTextPreviewAdmin(
+    loadTextPreviewConfig(validEnv()),
+    { operation: 'status', target: 'user-2' },
+    async (_url, init) => {
+      signal = init.signal;
+      return response;
+    },
+    runtime.dependencies,
+  );
+  pending.catch(() => undefined);
+
+  for (let index = 0; index < 8 && !response.body.locked; index += 1) {
+    await Promise.resolve();
+  }
+  assert.equal(runtime.setCalls(), 1);
+  assert.equal(runtime.activeCount(), 1);
+  assert.equal(response.body.locked, true);
+  runtime.fire();
+
+  await expectFixedRejection(() => pending);
+  assert.equal(signal instanceof AbortSignal, true);
+  assert.equal(signal.aborted, true);
+  assert.equal(cancelCalls, 1);
+  assert.equal(response.body.locked, false);
+  assert.equal(runtime.activeCount(), 0);
+  assert.equal(runtime.clearCalls(), 1);
+});
+
+test('invoke-admin clears the single deadline after success, fetch error, and read error', async () => {
+  const config = loadTextPreviewConfig(validEnv());
+  const invalidBody = new Response('{', {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    },
+  });
+  const cases = [
+    {
+      fetcher: async () => adminResponse(),
+      succeeds: true,
+    },
+    {
+      fetcher: async () => {
+        throw new Error(`${SENSITIVE.apiToken}:${SENSITIVE.user2}`);
+      },
+      succeeds: false,
+    },
+    {
+      fetcher: async () => invalidBody,
+      succeeds: false,
+    },
+  ];
+
+  for (const { fetcher, succeeds } of cases) {
+    const runtime = manualInvokeDependencies();
+    const action = () => invokeTextPreviewAdmin(
+      config,
+      { operation: 'status', target: 'user-1' },
+      fetcher,
+      runtime.dependencies,
+    );
+    if (succeeds) await assert.doesNotReject(action);
+    else await expectFixedRejection(action);
+    assert.equal(runtime.setCalls(), 1);
+    assert.equal(runtime.activeCount(), 0);
+    assert.equal(runtime.clearCalls(), 1);
+  }
+  assert.equal(invalidBody.body.locked, false);
 });
 
 test('CLI accepts only four exact commands and emits only fixed redacted JSON', async () => {

@@ -31,6 +31,35 @@ const EXPECTED_PREVIEW_ENV_NAMES = new Set([
   'TEXT_AI_ADMIN_SERVICE_CLIENT_ID',
 ]);
 const EXPECTED_PREVIEW_SERVICE_NAMES = new Set(['PHOTO_AI_GATEWAY']);
+const PREVIEW_BINDING_CONTAINER_NAMES = Object.freeze([
+  'ai_bindings',
+  'analytics_engine_datasets',
+  'browsers',
+  'd1_databases',
+  'durable_object_namespaces',
+  'hyperdrive_bindings',
+  'kv_namespaces',
+  'mtls_certificates',
+  'queue_producers',
+  'r2_buckets',
+  'services',
+  'vectorize_bindings',
+]);
+const PREVIEW_NON_BINDING_NAMES = Object.freeze([
+  'always_use_latest_compatibility_date',
+  'compatibility_date',
+  'compatibility_flags',
+  'fail_open',
+  'limits',
+  'placement',
+  'usage_model',
+]);
+const PREVIEW_TOP_LEVEL_NAMES = new Set([
+  'env_vars',
+  'wrangler_config_hash',
+  ...PREVIEW_BINDING_CONTAINER_NAMES,
+  ...PREVIEW_NON_BINDING_NAMES,
+]);
 const ADMIN_OPERATIONS = new Set([
   'status',
   'enable-text-global',
@@ -41,6 +70,7 @@ const ADMIN_OPERATIONS = new Set([
 ]);
 const OPERATION_ID_PATTERN = /^[a-f0-9]{32}$/;
 const MAX_ADMIN_RESPONSE_BYTES = 65_536;
+const ADMIN_DEADLINE_MS = 20_000;
 const CLOUDFLARE_DEFAULT_PAGE_SIZE = 20;
 const VALID_CONFIGS = new WeakSet();
 
@@ -128,6 +158,15 @@ function clientMethod(client, name) {
   return method;
 }
 
+function defineClonedData(target, key, value) {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
 function cloneJsonValue(value, state = { nodes: 0 }, depth = 0) {
   state.nodes += 1;
   if (state.nodes > 20_000 || depth > 64) fail();
@@ -143,12 +182,18 @@ function cloneJsonValue(value, state = { nodes: 0 }, depth = 0) {
   const snapshot = snapshotRecord(value);
   const clone = {};
   for (const [key, item] of snapshot) {
-    clone[key] = cloneJsonValue(item, state, depth + 1);
+    defineClonedData(clone, key, cloneJsonValue(item, state, depth + 1));
   }
   return Object.freeze(clone);
 }
 
-function cloneRedactedJsonValue(value, state = { nodes: 0 }, depth = 0) {
+function cloneRedactedJsonValue(
+  value,
+  state = { nodes: 0 },
+  depth = 0,
+  path = [],
+  envVarEntry = false,
+) {
   state.nodes += 1;
   if (state.nodes > 20_000 || depth > 64) fail();
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -158,17 +203,34 @@ function cloneRedactedJsonValue(value, state = { nodes: 0 }, depth = 0) {
   }
   if (Array.isArray(value)) {
     return Object.freeze(
-      snapshotArray(value).map((item) => cloneRedactedJsonValue(item, state, depth + 1)),
+      snapshotArray(value).map((item, index) => cloneRedactedJsonValue(
+        item,
+        state,
+        depth + 1,
+        [...path, String(index)],
+        false,
+      )),
     );
   }
   if (typeof value !== 'object') fail();
   const snapshot = snapshotRecord(value);
-  const secretText = snapshot.get('type') === 'secret_text';
+  const secretText = envVarEntry && snapshot.get('type') === 'secret_text';
   const clone = {};
   for (const [key, item] of snapshot) {
-    clone[key] = secretText && key === 'value'
-      ? '[redacted]'
-      : cloneRedactedJsonValue(item, state, depth + 1);
+    if (secretText && key === 'value' && item !== null && typeof item !== 'string') fail();
+    defineClonedData(
+      clone,
+      key,
+      secretText && key === 'value'
+        ? '[redacted]'
+        : cloneRedactedJsonValue(
+          item,
+          state,
+          depth + 1,
+          [...path, key],
+          path.length === 1 && path[0] === 'env_vars',
+        ),
+    );
   }
   return Object.freeze(clone);
 }
@@ -406,12 +468,14 @@ function scanDedicatedApps(value) {
     [USER_APP_NAME, []],
     [ADMIN_APP_NAME, []],
   ]);
+  const seenIds = new Set();
   for (const item of snapshotUnpaginatedList(value)) {
     const snapshot = snapshotRecord(item);
     const id = snapshot.get('id');
     const name = snapshot.get('name');
     const domain = snapshot.get('domain');
-    if (!safeIdentifier(id) || typeof name !== 'string') fail();
+    if (!safeIdentifier(id) || typeof name !== 'string' || seenIds.has(id)) fail();
+    seenIds.add(id);
     if (domain !== undefined && typeof domain !== 'string') fail();
     if (
       (domain === USER_APP_DOMAIN && name !== USER_APP_NAME)
@@ -426,6 +490,7 @@ function scanDedicatedApps(value) {
     if (resources.length > 1) fail();
   }
   return Object.freeze({
+    observedAppIds: Object.freeze([...seenIds]),
     user: matches.get(USER_APP_NAME).length === 0
       ? undefined
       : parseDedicatedApp(matches.get(USER_APP_NAME)[0], USER_APP_NAME),
@@ -455,6 +520,7 @@ function desiredUserPolicy(config, otpProviderId) {
   return Object.freeze({
     name: `${USER_APP_NAME}-allow`,
     decision: 'allow',
+    session_duration: '30m',
     include: config.allowedEmailList.map((email) => ({ email: { email } })),
     require: [{ login_method: { id: otpProviderId } }],
     exclude: [],
@@ -465,6 +531,7 @@ function desiredAdminHumanPolicy(config, otpProviderId) {
   return Object.freeze({
     name: `${ADMIN_APP_NAME}-human`,
     decision: 'allow',
+    session_duration: '30m',
     include: [{ email: { email: config.adminEmail } }],
     require: [{ login_method: { id: otpProviderId } }],
     exclude: [],
@@ -475,6 +542,7 @@ function desiredAdminServicePolicy(serviceTokenId) {
   return Object.freeze({
     name: `${ADMIN_APP_NAME}-service`,
     decision: 'non_identity',
+    session_duration: '30m',
     include: [{ service_token: { token_id: serviceTokenId } }],
     require: [],
     exclude: [],
@@ -499,21 +567,30 @@ function stableJson(value) {
 
 function policyComparable(policySnapshot) {
   const comparable = {};
-  for (const key of ['name', 'decision', 'include', 'require', 'exclude']) {
+  for (const key of ['name', 'decision', 'session_duration', 'include', 'require', 'exclude']) {
     if (!policySnapshot.has(key)) fail();
     comparable[key] = cloneJsonValue(policySnapshot.get(key));
   }
   return comparable;
 }
 
-function parsePolicies(value, expectedNames) {
+function parsePolicies(value, expectedNames, observedResourceIds = new Set()) {
   const result = new Map();
   for (const item of snapshotUnpaginatedList(value)) {
     cloneJsonValue(item);
     const snapshot = snapshotRecord(item);
     const id = snapshot.get('id');
     const name = snapshot.get('name');
-    if (!safeIdentifier(id) || typeof name !== 'string' || !expectedNames.has(name) || result.has(name)) fail();
+    if (
+      !safeIdentifier(id)
+      || typeof name !== 'string'
+      || !expectedNames.has(name)
+      || result.has(name)
+      || observedResourceIds.has(id)
+    ) {
+      fail();
+    }
+    observedResourceIds.add(id);
     result.set(name, Object.freeze({ id, snapshot }));
   }
   return result;
@@ -524,23 +601,51 @@ function parseDeletedApp(value, expectedId) {
   if (snapshot.size !== 1 || snapshot.get('id') !== expectedId) fail();
 }
 
+function appIsExactDisableTarget(app, desired) {
+  return (
+    app.snapshot.get('name') === desired.name
+    && app.snapshot.get('domain') === desired.domain
+    && app.snapshot.get('type') === desired.type
+  );
+}
+
+function inspectDedicatedAppIdentities(apps) {
+  const resourceIds = new Set(apps.observedAppIds);
+  const audiences = new Set();
+  for (const app of [apps.user, apps.admin]) {
+    if (app === undefined) continue;
+    if (audiences.has(app.aud)) fail();
+    audiences.add(app.aud);
+  }
+  return { resourceIds, audiences };
+}
+
 export async function disableTextPreviewAccess(config, client) {
   try {
     if (!configIsValid(config)) fail();
     const get = clientGet(client);
     const remove = clientMethod(client, 'delete');
     const apps = scanDedicatedApps(await get('/access/apps'));
+    if (
+      (apps.user !== undefined && !appIsExactDisableTarget(apps.user, desiredUserApp()))
+      || (apps.admin !== undefined && !appIsExactDisableTarget(apps.admin, desiredAdminApp()))
+    ) {
+      fail();
+    }
+    const observedResourceIds = new Set(apps.observedAppIds);
 
     if (apps.user !== undefined) {
       parsePolicies(
         await get(`/access/apps/${apps.user.id}/policies`),
         new Set([`${USER_APP_NAME}-allow`]),
+        observedResourceIds,
       );
     }
     if (apps.admin !== undefined) {
       parsePolicies(
         await get(`/access/apps/${apps.admin.id}/policies`),
         new Set([`${ADMIN_APP_NAME}-human`, `${ADMIN_APP_NAME}-service`]),
+        observedResourceIds,
       );
     }
 
@@ -644,8 +749,37 @@ function cancelBodySilently(body) {
   }
 }
 
-async function readBoundedAdminJson(response) {
+function waitForAdminDeadline(value, signal) {
+  const awaited = Promise.resolve(value);
+  if (signal.aborted) {
+    awaited.catch(() => undefined);
+    return Promise.reject(new Error(FAILURE_MESSAGE));
+  }
+  let abortListener;
+  const aborted = new Promise((_, reject) => {
+    abortListener = () => reject(new Error(FAILURE_MESSAGE));
+    signal.addEventListener('abort', abortListener, { once: true });
+  });
+  return Promise.race([awaited, aborted]).finally(() => {
+    signal.removeEventListener('abort', abortListener);
+  });
+}
+
+function cancelReaderSilently(reader) {
+  try {
+    const cancelled = reader.cancel();
+    if (cancelled && typeof cancelled.catch === 'function') cancelled.catch(() => undefined);
+  } catch {
+    // Cancellation details cannot alter the fixed failure.
+  }
+}
+
+async function readBoundedAdminJson(response, signal) {
   if (!(response instanceof Response)) fail();
+  if (signal.aborted) {
+    cancelBodySilently(response.body);
+    fail();
+  }
   if (
     response.status !== 200
     || response.headers.get('content-type') !== 'application/json; charset=utf-8'
@@ -675,7 +809,7 @@ async function readBoundedAdminJson(response) {
   let complete = false;
   try {
     while (true) {
-      const item = await reader.read();
+      const item = await waitForAdminDeadline(reader.read(), signal);
       if (item === null || typeof item !== 'object' || typeof item.done !== 'boolean') fail();
       if (item.done) {
         complete = true;
@@ -696,13 +830,7 @@ async function readBoundedAdminJson(response) {
       chunks.push(chunk);
     }
   } catch {
-    if (!complete) {
-      try {
-        await reader.cancel();
-      } catch {
-        // Cancellation cannot alter the fixed failure.
-      }
-    }
+    if (!complete) cancelReaderSilently(reader);
     fail();
   } finally {
     try {
@@ -743,42 +871,99 @@ function defaultOperationId() {
   return randomBytes(16).toString('hex');
 }
 
+function parseInvokeDependencies(dependencies) {
+  const snapshot = snapshotRecord(dependencies);
+  const allowed = new Set(['generateOperationId', 'setTimeout', 'clearTimeout']);
+  for (const key of snapshot.keys()) {
+    if (!allowed.has(key)) fail();
+  }
+  const generateOperationId = snapshot.has('generateOperationId')
+    ? snapshot.get('generateOperationId')
+    : defaultOperationId;
+  const setDeadline = snapshot.has('setTimeout')
+    ? snapshot.get('setTimeout')
+    : (callback, delay) => globalThis.setTimeout(callback, delay);
+  const clearDeadline = snapshot.has('clearTimeout')
+    ? snapshot.get('clearTimeout')
+    : (timer) => globalThis.clearTimeout(timer);
+  if (
+    typeof generateOperationId !== 'function'
+    || typeof setDeadline !== 'function'
+    || typeof clearDeadline !== 'function'
+  ) {
+    fail();
+  }
+  return Object.freeze({ generateOperationId, setDeadline, clearDeadline });
+}
+
 export async function invokeTextPreviewAdmin(
   config,
   options,
   fetcher = globalThis.fetch,
-  generateOperationId = defaultOperationId,
+  dependencies = {},
 ) {
+  let deadlineExpired = false;
+  let timer;
+  let timerScheduled = false;
+  let runtime;
   try {
-    if (!configIsValid(config) || typeof fetcher !== 'function' || typeof generateOperationId !== 'function') fail();
+    if (!configIsValid(config) || typeof fetcher !== 'function') fail();
+    runtime = parseInvokeDependencies(dependencies);
     const parsed = parseInvokeOptions(options);
-    const operationId = generateOperationId();
+    const operationId = runtime.generateOperationId();
     if (typeof operationId !== 'string' || !OPERATION_ID_PATTERN.test(operationId)) fail();
     const targetEmail = parsed.target === 'user-1' ? config.user1Email : config.user2Email;
-    const response = await fetcher(`${PREVIEW_ORIGIN}/api/nutrition/text-admin/account`, {
-      method: 'POST',
-      redirect: 'error',
-      headers: {
-        'content-type': 'application/json',
-        'cf-access-client-id': config.serviceClientId,
-        'cf-access-client-secret': config.serviceClientSecret,
-        origin: PREVIEW_ORIGIN,
-        'sec-fetch-site': 'same-origin',
+    const controller = new AbortController();
+    timer = runtime.setDeadline(() => {
+      deadlineExpired = true;
+      controller.abort();
+    }, ADMIN_DEADLINE_MS);
+    timerScheduled = true;
+    const fetchPromise = Promise.resolve().then(() => fetcher(
+      `${PREVIEW_ORIGIN}/api/nutrition/text-admin/account`,
+      {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/json',
+          'cf-access-client-id': config.serviceClientId,
+          'cf-access-client-secret': config.serviceClientSecret,
+          origin: PREVIEW_ORIGIN,
+          'sec-fetch-site': 'same-origin',
+        },
+        body: JSON.stringify({
+          schemaVersion: 1,
+          operationId,
+          operation: parsed.operation,
+          targetEmail,
+        }),
+        signal: controller.signal,
       },
-      body: JSON.stringify({
-        schemaVersion: 1,
-        operationId,
-        operation: parsed.operation,
-        targetEmail,
-      }),
-    });
+    ));
+    fetchPromise.then((lateResponse) => {
+      if (!deadlineExpired || !(lateResponse instanceof Response)) return;
+      try {
+        cancelBodySilently(lateResponse.body);
+      } catch {
+        // Late response cleanup details remain private.
+      }
+    }).catch(() => undefined);
+    const response = await waitForAdminDeadline(fetchPromise, controller.signal);
     const status = parseRedactedAdminResponse(
-      await readBoundedAdminJson(response),
+      await readBoundedAdminJson(response, controller.signal),
       operationId,
     );
     return Object.freeze({ operation: parsed.operation, ...status });
   } catch {
     fail();
+  } finally {
+    if (runtime !== undefined && timerScheduled) {
+      try {
+        runtime.clearDeadline(timer);
+      } catch {
+        // Timer cleanup details remain private.
+      }
+    }
   }
 }
 
@@ -863,7 +1048,7 @@ export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
         config,
         { operation: command.operation, target: command.target },
         parsedDependencies.fetcher,
-        parsedDependencies.generateOperationId,
+        { generateOperationId: parsedDependencies.generateOperationId },
       );
       writeCliLine(parsedDependencies.writeStdout, result);
       return 0;
@@ -925,8 +1110,56 @@ function inspectNamedRecord(value, allowedNames) {
   return snapshot;
 }
 
+function canonicalDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  try {
+    return new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
+  } catch {
+    return false;
+  }
+}
+
+function inspectPreviewNonBinding(preview, name) {
+  const value = preview.get(name);
+  if (name === 'compatibility_date') {
+    if (!canonicalDate(value)) fail();
+    return value;
+  }
+  if (name === 'compatibility_flags') {
+    const flags = snapshotArray(value);
+    if (
+      flags.length > 128
+      || flags.some((flag) => !safeIdentifier(flag))
+      || new Set(flags).size !== flags.length
+    ) {
+      fail();
+    }
+    return Object.freeze([...flags].sort());
+  }
+  if (name === 'always_use_latest_compatibility_date' || name === 'fail_open') {
+    if (typeof value !== 'boolean') fail();
+    return value;
+  }
+  if (name === 'usage_model') {
+    if (value !== 'bundled' && value !== 'unbound' && value !== 'standard') fail();
+    return value;
+  }
+  if (name === 'limits' || name === 'placement') {
+    snapshotRecord(value);
+    return cloneJsonValue(value);
+  }
+  fail();
+}
+
+function previewBehaviorHash(value) {
+  return createHash('sha256').update(stableJson(value)).digest('hex');
+}
+
 function inspectPreviewProject(project) {
   const preview = snapshotRecord(project.deployment_configs.preview);
+  for (const key of preview.keys()) {
+    if (!PREVIEW_TOP_LEVEL_NAMES.has(key)) fail();
+  }
   const envVars = preview.has('env_vars')
     ? inspectNamedRecord(preview.get('env_vars'), EXPECTED_PREVIEW_ENV_NAMES)
     : new Map();
@@ -946,33 +1179,31 @@ function inspectPreviewProject(project) {
     const snapshot = snapshotRecord(entry);
     if (typeof snapshot.get('service') !== 'string' || typeof snapshot.get('environment') !== 'string') fail();
   }
-  return Object.freeze({ envVars, services });
-}
-
-function redactedCanonical(value, parentIsSecret = false) {
-  if (parentIsSecret && (value === null || ['string', 'number', 'boolean'].includes(typeof value))) {
-    return JSON.stringify('[redacted]');
+  for (const name of PREVIEW_BINDING_CONTAINER_NAMES) {
+    if (name === 'services' || !preview.has(name)) continue;
+    if (snapshotRecord(preview.get(name)).size !== 0) fail();
   }
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || Object.is(value, -0)) fail();
-    return JSON.stringify(value);
+  if (
+    preview.has('wrangler_config_hash')
+    && preview.get('wrangler_config_hash') !== null
+    && !safeIdentifier(preview.get('wrangler_config_hash'))
+  ) {
+    fail();
   }
-  if (Array.isArray(value)) {
-    return `[${snapshotArray(value).map((item) => redactedCanonical(item)).join(',')}]`;
+  const behavior = {};
+  for (const name of PREVIEW_NON_BINDING_NAMES) {
+    if (preview.has(name)) behavior[name] = inspectPreviewNonBinding(preview, name);
   }
-  const snapshot = snapshotRecord(value);
-  const secretText = snapshot.get('type') === 'secret_text';
-  const keys = [...snapshot.keys()].sort();
-  return `{${keys.map((key) => {
-    const sensitiveKey = secretText && key === 'value';
-    return `${JSON.stringify(key)}:${redactedCanonical(snapshot.get(key), sensitiveKey)}`;
-  }).join(',')}}`;
+  return Object.freeze({
+    envVars,
+    services,
+    behaviorHash: previewBehaviorHash(behavior),
+  });
 }
 
 function productionHash(project) {
   return createHash('sha256')
-    .update(redactedCanonical(project.deployment_configs.production))
+    .update(stableJson(project.deployment_configs.production))
     .digest('hex');
 }
 
@@ -1040,6 +1271,7 @@ function inspectExpectedPreviewProject(project, desiredPreview) {
       fail();
     }
   }
+  return actual;
 }
 
 async function writeApp(client, existing, desired) {
@@ -1050,8 +1282,10 @@ async function writeApp(client, existing, desired) {
     };
   }
   if (!appMatches(existing, desired)) {
+    const app = parseWrittenApp(await client.put(`/access/apps/${existing.id}`, desired), desired);
+    if (app.id !== existing.id) fail();
     return {
-      app: parseWrittenApp(await client.put(`/access/apps/${existing.id}`, desired), desired),
+      app,
       created: false,
     };
   }
@@ -1064,9 +1298,79 @@ async function writePolicy(client, appId, existing, desired) {
     : policyMatches(existing, desired)
       ? undefined
       : await client.put(`/access/apps/${appId}/policies/${existing.id}`, desired);
-  if (value === undefined) return;
+  if (value === undefined) return existing.id;
   const snapshot = snapshotRecord(value);
-  if (!safeIdentifier(snapshot.get('id')) || stableJson(policyComparable(snapshot)) !== stableJson(desired)) fail();
+  const id = snapshot.get('id');
+  if (
+    !safeIdentifier(id)
+    || (existing !== undefined && id !== existing.id)
+    || stableJson(policyComparable(snapshot)) !== stableJson(desired)
+  ) {
+    fail();
+  }
+  return id;
+}
+
+async function writeObservedPolicy(client, appId, existing, desired, observedResourceIds) {
+  const policyId = await writePolicy(client, appId, existing, desired);
+  if (existing === undefined) {
+    if (observedResourceIds.has(policyId)) fail();
+    observedResourceIds.add(policyId);
+  }
+  return policyId;
+}
+
+async function reconcileAccessAppPlans(client, plans, observedResourceIds, observedAudiences) {
+  const results = new Map();
+
+  for (const plan of plans) {
+    if (plan.existing !== undefined) continue;
+    const written = await writeApp(client, undefined, plan.desiredApp);
+    if (
+      observedResourceIds.has(written.app.id)
+      || observedAudiences.has(written.app.aud)
+    ) {
+      fail();
+    }
+    observedResourceIds.add(written.app.id);
+    observedAudiences.add(written.app.aud);
+    for (const policy of plan.policies) {
+      await writeObservedPolicy(
+        client,
+        written.app.id,
+        undefined,
+        policy.desired,
+        observedResourceIds,
+      );
+    }
+    results.set(plan.name, written);
+  }
+
+  for (const plan of plans) {
+    if (plan.existing === undefined) continue;
+    for (const policy of plan.policies) {
+      await writeObservedPolicy(
+        client,
+        plan.existing.id,
+        policy.existing,
+        policy.desired,
+        observedResourceIds,
+      );
+    }
+  }
+
+  for (const plan of plans) {
+    if (plan.existing === undefined) continue;
+    const written = await writeApp(client, plan.existing, plan.desiredApp);
+    if (written.app.aud !== plan.existing.aud) {
+      observedAudiences.delete(plan.existing.aud);
+      if (observedAudiences.has(written.app.aud)) fail();
+      observedAudiences.add(written.app.aud);
+    }
+    results.set(plan.name, written);
+  }
+
+  return results;
 }
 
 export async function reconcileTextPreview(config, client) {
@@ -1079,54 +1383,97 @@ export async function reconcileTextPreview(config, client) {
     const api = Object.freeze({ get, post, put, patch });
 
     const preflight = await preflightTextPreview(config, client);
-    inspectPreviewProject(preflight.project);
+    const beforePreview = inspectPreviewProject(preflight.project);
     const beforeProductionHash = productionHash(preflight.project);
     const apps = scanDedicatedApps(await get('/access/apps'));
+    const identities = inspectDedicatedAppIdentities(apps);
     const userPolicies = apps.user === undefined
       ? new Map()
       : parsePolicies(
         await get(`/access/apps/${apps.user.id}/policies`),
         new Set([`${USER_APP_NAME}-allow`]),
+        identities.resourceIds,
       );
     const adminPolicies = apps.admin === undefined
       ? new Map()
       : parsePolicies(
         await get(`/access/apps/${apps.admin.id}/policies`),
         new Set([`${ADMIN_APP_NAME}-human`, `${ADMIN_APP_NAME}-service`]),
+        identities.resourceIds,
       );
 
     const userPolicy = desiredUserPolicy(config, preflight.otpProviderId);
     const adminHumanPolicy = desiredAdminHumanPolicy(config, preflight.otpProviderId);
     const adminServicePolicy = desiredAdminServicePolicy(preflight.serviceTokenId);
 
-    const writtenUser = await writeApp(api, apps.user, desiredUserApp());
-    await writePolicy(
-      api,
-      writtenUser.app.id,
-      userPolicies.get(userPolicy.name),
-      userPolicy,
-    );
-    const writtenAdmin = await writeApp(api, apps.admin, desiredAdminApp());
-    await writePolicy(
-      api,
-      writtenAdmin.app.id,
-      adminPolicies.get(adminHumanPolicy.name),
-      adminHumanPolicy,
-    );
-    await writePolicy(
-      api,
-      writtenAdmin.app.id,
-      adminPolicies.get(adminServicePolicy.name),
-      adminServicePolicy,
-    );
+    const writtenApps = await reconcileAccessAppPlans(api, [
+      {
+        name: 'user',
+        existing: apps.user,
+        desiredApp: desiredUserApp(),
+        policies: [{
+          existing: userPolicies.get(userPolicy.name),
+          desired: userPolicy,
+        }],
+      },
+      {
+        name: 'admin',
+        existing: apps.admin,
+        desiredApp: desiredAdminApp(),
+        policies: [
+          {
+            existing: adminPolicies.get(adminHumanPolicy.name),
+            desired: adminHumanPolicy,
+          },
+          {
+            existing: adminPolicies.get(adminServicePolicy.name),
+            desired: adminServicePolicy,
+          },
+        ],
+      },
+    ], identities.resourceIds, identities.audiences);
+    const writtenUser = writtenApps.get('user');
+    const writtenAdmin = writtenApps.get('admin');
+    if (
+      writtenUser === undefined
+      || writtenAdmin === undefined
+      || writtenUser.app.id === writtenAdmin.app.id
+      || writtenUser.app.aud === writtenAdmin.app.aud
+    ) {
+      fail();
+    }
 
     const pagesPatch = desiredPagesPatch(config, writtenUser.app.aud, writtenAdmin.app.aud);
+    const recheckedProject = parsePagesProject(await get('/pages/projects/tiezheng'));
+    const recheckedPreview = inspectPreviewProject(recheckedProject);
+    if (
+      recheckedPreview.behaviorHash !== beforePreview.behaviorHash
+      || productionHash(recheckedProject) !== beforeProductionHash
+    ) {
+      fail();
+    }
     const patchResult = parsePagesProject(await patch('/pages/projects/tiezheng', pagesPatch));
-    inspectExpectedPreviewProject(patchResult, pagesPatch.deployment_configs.preview);
-    if (productionHash(patchResult) !== beforeProductionHash) fail();
+    const patchedPreview = inspectExpectedPreviewProject(
+      patchResult,
+      pagesPatch.deployment_configs.preview,
+    );
+    if (
+      patchedPreview.behaviorHash !== beforePreview.behaviorHash
+      || productionHash(patchResult) !== beforeProductionHash
+    ) {
+      fail();
+    }
     const afterProject = parsePagesProject(await get('/pages/projects/tiezheng'));
-    inspectExpectedPreviewProject(afterProject, pagesPatch.deployment_configs.preview);
-    if (productionHash(afterProject) !== beforeProductionHash) fail();
+    const afterPreview = inspectExpectedPreviewProject(
+      afterProject,
+      pagesPatch.deployment_configs.preview,
+    );
+    if (
+      afterPreview.behaviorHash !== beforePreview.behaviorHash
+      || productionHash(afterProject) !== beforeProductionHash
+    ) {
+      fail();
+    }
 
     return {
       configured: true,
