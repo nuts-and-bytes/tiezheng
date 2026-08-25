@@ -121,7 +121,8 @@ export function createCloudflareClient(options) {
     }
     const candidateAccountId = options.accountId;
     apiToken = options.apiToken;
-    fetcher = options.fetcher === undefined ? globalThis.fetch : options.fetcher;
+    const candidateFetcher = options.fetcher;
+    fetcher = candidateFetcher === undefined ? globalThis.fetch : candidateFetcher;
 
     if (
       typeof candidateAccountId !== 'string'
@@ -160,7 +161,12 @@ export function createCloudflareClient(options) {
       });
       const envelope = await readBoundedJson(response);
 
-      if (response.ok !== true || envelope.success !== true || !Object.hasOwn(envelope, 'result')) {
+      if (
+        response.ok !== true
+        || !Object.hasOwn(envelope, 'success')
+        || envelope.success !== true
+        || !Object.hasOwn(envelope, 'result')
+      ) {
         fail();
       }
       return envelope.result;

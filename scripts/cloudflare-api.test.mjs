@@ -37,6 +37,25 @@ async function expectFixedFailure(action, forbiddenValues = []) {
   });
 }
 
+async function withObjectPrototypeValue(property, value, action) {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(Object.prototype, property);
+  try {
+    Object.defineProperty(Object.prototype, property, {
+      configurable: true,
+      enumerable: false,
+      value,
+      writable: true,
+    });
+    await action();
+  } finally {
+    if (originalDescriptor === undefined) {
+      Reflect.deleteProperty(Object.prototype, property);
+    } else {
+      Object.defineProperty(Object.prototype, property, originalDescriptor);
+    }
+  }
+}
+
 test('returns only a successful result and sends the token only in authorization', async () => {
   let calls = 0;
   const fetcher = async (url, init) => {
@@ -55,6 +74,36 @@ test('returns only a successful result and sends the token only in authorization
 
   assert.deepEqual(await client.get('/pages/projects/tiezheng'), { id: 'safe-id' });
   assert.equal(calls, 1);
+});
+
+test('captures a custom fetcher getter once and reuses only the first function', async () => {
+  let getterReads = 0;
+  let firstFetcherCalls = 0;
+  let laterFetcherCalls = 0;
+  const firstFetcher = async () => {
+    firstFetcherCalls += 1;
+    return successResponse({ source: 'first' });
+  };
+  const laterFetcher = async () => {
+    laterFetcherCalls += 1;
+    return successResponse({ source: 'later' });
+  };
+  const options = {
+    accountId: ACCOUNT_ID,
+    apiToken: API_TOKEN,
+    get fetcher() {
+      getterReads += 1;
+      return getterReads === 1 ? firstFetcher : laterFetcher;
+    },
+  };
+
+  const client = createCloudflareClient(options);
+  const result = await client.get('/pages/projects/tiezheng');
+
+  assert.equal(getterReads, 1);
+  assert.deepEqual(result, { source: 'first' });
+  assert.equal(firstFetcherCalls, 1);
+  assert.equal(laterFetcherCalls, 0);
 });
 
 test('exposes only fixed HTTP verbs with the expected request shapes', async () => {
@@ -350,6 +399,33 @@ test('rejects malformed JSON, failed APIs, non-ok responses, and invalid envelop
       'private API error',
     ]);
   }
+});
+
+test('requires success to be an own envelope property', async () => {
+  await withObjectPrototypeValue('success', true, async () => {
+    const client = createCloudflareClient({
+      accountId: ACCOUNT_ID,
+      apiToken: API_TOKEN,
+      fetcher: async () => new Response('{"result":{"id":"safe-id"}}'),
+    });
+
+    await expectFixedFailure(() => client.get('/pages/projects/tiezheng'), [API_TOKEN]);
+  });
+});
+
+test('requires result to be an own envelope property', async () => {
+  await withObjectPrototypeValue('result', { id: 'inherited-result' }, async () => {
+    const client = createCloudflareClient({
+      accountId: ACCOUNT_ID,
+      apiToken: API_TOKEN,
+      fetcher: async () => new Response('{"success":true}'),
+    });
+
+    await expectFixedFailure(() => client.get('/pages/projects/tiezheng'), [
+      API_TOKEN,
+      'inherited-result',
+    ]);
+  });
 });
 
 test('hides fetch and reader failures, cancels failed reads, and releases reader locks', async () => {
