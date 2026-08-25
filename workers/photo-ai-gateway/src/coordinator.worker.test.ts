@@ -167,6 +167,24 @@ async function consumeWithoutCost(input: ReserveInput): Promise<void> {
   await stub.settleFailure({ ...lease, actualCostMicros: 0, errorCode: 'invalid-estimate' });
 }
 
+async function coordinatorStorageSnapshot(stub = coordinator()) {
+  return runInDurableObject(stub, async (_instance, state) => {
+    const sql = state.storage.sql;
+    const rows = (table: string) => sql.exec<Record<string, SqlStorageValue>>(
+      `SELECT * FROM ${table} ORDER BY rowid`,
+    ).toArray();
+    return {
+      accountFlags: rows('account_flags'),
+      activeLeases: rows('active_leases'),
+      dailyCounters: rows('daily_counters'),
+      idempotency: rows('idempotency'),
+      minuteCounters: rows('minute_counters'),
+      settings: rows('settings'),
+      textAdminOperations: rows('text_admin_operations'),
+    };
+  });
+}
+
 describe('arkCostMicros', () => {
   test('uses the exact approved integer micro-yuan formula', () => {
     expect(arkCostMicros(100, 20)).toBe(1_200);
@@ -499,6 +517,35 @@ describe('PhotoAiCoordinator', () => {
     });
   });
 
+  test.each(['replay', 'conflict'] as const)(
+    'keeps every database row stable for a live %s before expired operation cleanup',
+    async (kind) => {
+      const stub = coordinator();
+      const liveInput = textAdminInput('status', 127);
+      await stub.applyTextAdminOperation(liveInput);
+      await stub.setTextGlobalEnabled(true);
+      await stub.setAccountEnabled(ACCOUNT_A, true);
+      expect((await stub.reserve(channelReserveInput('text', ACCOUNT_A, 128))).kind)
+        .toBe('reserved');
+      await runInDurableObject(stub, async (_instance, state) => {
+        state.storage.sql.exec(
+          `INSERT INTO text_admin_operations (operation_id, fingerprint, expires_at)
+           VALUES (?, ?, ?)`,
+          key(129),
+          fingerprint(129),
+          BASE_NOW,
+        ).toArray();
+      });
+      const before = await coordinatorStorageSnapshot(stub);
+      const result = await stub.applyTextAdminOperation(kind === 'replay'
+        ? liveInput
+        : { ...liveInput, fingerprint: fingerprint(130) });
+
+      expect(result.kind).toBe(kind === 'replay' ? 'applied' : 'conflict');
+      expect(await coordinatorStorageSnapshot(stub)).toEqual(before);
+    },
+  );
+
   test('replays delete-account without deleting recreated state or housekeeping expired leases', async () => {
     const stub = coordinator();
     await stub.setTextGlobalEnabled(true);
@@ -520,8 +567,8 @@ describe('PhotoAiCoordinator', () => {
       kind: 'applied',
       status: {
         accountEnabled: true,
-        accountRemaining: 9,
-        budgetReservedMicros: GATEWAY_CHANNEL_POLICY.text.initialAttemptReserveMicros,
+        accountRemaining: 10,
+        budgetReservedMicros: 0,
       },
     });
     await runInDurableObject(stub, async (_instance, state) => {
@@ -546,6 +593,195 @@ describe('PhotoAiCoordinator', () => {
       }]);
     });
   });
+
+  test('projects expired lease effects for a zero-write replay and materializes them for a fresh operation', async () => {
+    const stub = coordinator();
+    const replayInput = textAdminInput('status', 123);
+    await stub.applyTextAdminOperation(replayInput);
+    await stub.setGlobalEnabled(true);
+    await stub.setTextGlobalEnabled(true);
+    await stub.setAccountEnabled(ACCOUNT_A, true);
+    await stub.setAccountEnabled(ACCOUNT_B, true);
+
+    const expiredAt = BASE_NOW - GATEWAY_LIMITS.leaseMs - 1;
+    const targetText = channelReserveInput('text', ACCOUNT_A, 124, expiredAt);
+    const targetTextResult = await stub.reserve(targetText);
+    if (targetTextResult.kind !== 'reserved') throw new Error('expected target text lease');
+    const otherPhoto = channelReserveInput('photo', ACCOUNT_B, 125, expiredAt);
+    const otherPhotoResult = await stub.reserve(otherPhoto);
+    if (otherPhotoResult.kind !== 'reserved') throw new Error('expected other photo lease');
+    await stub.markInvoked(leaseInput(otherPhoto, otherPhotoResult.leaseId));
+
+    const beforeReplay = await coordinatorStorageSnapshot(stub);
+    const replay = await stub.applyTextAdminOperation(replayInput);
+    expect(replay).toEqual({
+      kind: 'applied',
+      status: {
+        textGlobalEnabled: true,
+        accountEnabled: true,
+        accountRemaining: 10,
+        globalRemaining: 30,
+        budgetSpentMicros: GATEWAY_CHANNEL_POLICY.photo.initialAttemptReserveMicros,
+        budgetReservedMicros: 0,
+        resetAt: '2026-08-18T16:00:00.000Z',
+      },
+    });
+    expect(await coordinatorStorageSnapshot(stub)).toEqual(beforeReplay);
+
+    const fresh = await stub.applyTextAdminOperation(textAdminInput('status', 126));
+    expect(fresh).toEqual(replay);
+    const materialized = await coordinatorStorageSnapshot(stub);
+    expect(materialized.activeLeases).toEqual([]);
+    expect(materialized.idempotency).toEqual([
+      expect.objectContaining({
+        account_key: ACCOUNT_B,
+        idempotency_key: `photo:${otherPhoto.idempotencyKey}`,
+        state: 'failed',
+        lease_id: null,
+        error_code: 'provider-timeout',
+      }),
+    ]);
+    expect(materialized.dailyCounters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: `text:${ACCOUNT_A}`, pending: 0, consumed: 0 }),
+      expect.objectContaining({ scope: '$global:text', pending: 0, consumed: 0 }),
+      expect.objectContaining({ scope: ACCOUNT_B, pending: 0, consumed: 1 }),
+      expect.objectContaining({ scope: '$global', pending: 0, consumed: 1 }),
+    ]));
+    expect(materialized.settings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'reserved:2026-08', value: 0 }),
+      expect.objectContaining({
+        key: 'spent:2026-08',
+        value: GATEWAY_CHANNEL_POLICY.photo.initialAttemptReserveMicros,
+      }),
+    ]));
+  });
+
+  test.each([
+    {
+      name: 'other-account-current-day',
+      index: 136,
+      now: BASE_NOW,
+      leaseAccount: ACCOUNT_B,
+      invoked: false,
+      expected: {
+        accountRemaining: 10,
+        globalRemaining: 30,
+        budgetSpentMicros: 0,
+        budgetReservedMicros: 0,
+      },
+    },
+    {
+      name: 'previous-day-same-month',
+      index: 138,
+      now: Date.UTC(2026, 7, 18, 16, 0, 10),
+      leaseAccount: ACCOUNT_A,
+      invoked: false,
+      expected: {
+        accountRemaining: 10,
+        globalRemaining: 30,
+        budgetSpentMicros: 0,
+        budgetReservedMicros: 0,
+      },
+    },
+    {
+      name: 'previous-month',
+      index: 140,
+      now: Date.UTC(2026, 7, 31, 16, 0, 10),
+      leaseAccount: ACCOUNT_A,
+      invoked: false,
+      expected: {
+        accountRemaining: 10,
+        globalRemaining: 30,
+        budgetSpentMicros: 0,
+        budgetReservedMicros: 0,
+      },
+    },
+    {
+      name: 'current-day-invoked',
+      index: 142,
+      now: BASE_NOW,
+      leaseAccount: ACCOUNT_A,
+      invoked: true,
+      expected: {
+        accountRemaining: 9,
+        globalRemaining: 29,
+        budgetSpentMicros: GATEWAY_CHANNEL_POLICY.text.initialAttemptReserveMicros,
+        budgetReservedMicros: 0,
+      },
+    },
+  ])('projects $name read-only', async ({
+    index,
+    now,
+    leaseAccount,
+    invoked,
+    expected,
+  }) => {
+    const stub = coordinator();
+    const replayInput = textAdminInput('status', index, ACCOUNT_A, now);
+    await stub.applyTextAdminOperation(replayInput);
+    await stub.setTextGlobalEnabled(true);
+    await stub.setAccountEnabled(ACCOUNT_A, true);
+    if (leaseAccount !== ACCOUNT_A) await stub.setAccountEnabled(leaseAccount, true);
+    const expiredText = channelReserveInput(
+      'text',
+      leaseAccount,
+      index + 1,
+      now - GATEWAY_LIMITS.leaseMs - 1,
+    );
+    const reserveResult = await stub.reserve(expiredText);
+    if (reserveResult.kind !== 'reserved') throw new Error('expected expired text lease');
+    if (invoked) await stub.markInvoked(leaseInput(expiredText, reserveResult.leaseId));
+
+    const before = await coordinatorStorageSnapshot(stub);
+    expect(await stub.applyTextAdminOperation(replayInput)).toMatchObject({
+      kind: 'applied',
+      status: expected,
+    });
+    expect(await coordinatorStorageSnapshot(stub)).toEqual(before);
+  });
+
+  test.each(['enable-text-global', 'enable-account'] as const)(
+    'rolls back %s together with expired operation and lease cleanup when replay insert aborts',
+    async (operation) => {
+      const stub = coordinator();
+      await stub.setGlobalEnabled(true);
+      await stub.setAccountEnabled(ACCOUNT_B, true);
+      const expiredPhoto = channelReserveInput(
+        'photo',
+        ACCOUNT_B,
+        operation === 'enable-text-global' ? 131 : 132,
+        BASE_NOW - GATEWAY_LIMITS.leaseMs - 1,
+      );
+      expect((await stub.reserve(expiredPhoto)).kind).toBe('reserved');
+      await runInDurableObject(stub, async (_instance, state) => {
+        const sql = state.storage.sql;
+        sql.exec(
+          `INSERT INTO text_admin_operations (operation_id, fingerprint, expires_at)
+           VALUES (?, ?, ?)`,
+          key(133),
+          fingerprint(133),
+          BASE_NOW,
+        ).toArray();
+        sql.exec(`CREATE TRIGGER fail_text_admin_insert
+          BEFORE INSERT ON text_admin_operations
+          BEGIN
+            SELECT RAISE(ABORT, 'forced text admin insert failure');
+          END`).toArray();
+      });
+      const before = await coordinatorStorageSnapshot(stub);
+
+      await runInDurableObject(stub, async (instance) => {
+        await expect(instance.applyTextAdminOperation(
+          textAdminInput(
+            operation,
+            operation === 'enable-text-global' ? 134 : 135,
+            ACCOUNT_A,
+          ),
+        )).rejects.toThrow();
+      });
+      expect(await coordinatorStorageSnapshot(stub)).toEqual(before);
+    },
+  );
 
   test('allows a changed operation id exactly at its 24-hour expiry but not one millisecond before', async () => {
     const stub = coordinator();

@@ -129,6 +129,7 @@ interface SettingRow {
 
 interface TextAdminOperationRow {
   fingerprint: string;
+  expires_at: number;
 }
 
 interface IdempotencyRow {
@@ -674,18 +675,41 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
     const policy = GATEWAY_CHANNEL_POLICY.text;
     const accountCounter = this.counter(scopes.account, day);
     const globalCounter = this.counter(scopes.global, day);
+    let accountPending = accountCounter.pending;
+    let globalPending = globalCounter.pending;
     const accountEnabled = this.rows<{ enabled: number }>(
       'SELECT enabled FROM account_flags WHERE account_key = ?',
       account,
     )[0]?.enabled === 1;
     const cost = this.cost(month);
+    let budgetSpentMicros = cost.spent;
+    let budgetReservedMicros = cost.reserved;
+    const expiredLeases = this.rows<LeaseRow>(
+      `SELECT lease_id, channel, account_key, idempotency_key, fingerprint, day_bucket, month_bucket,
+              initial_reserve_micros, retry_reserve_micros, invoked, expires_at
+       FROM active_leases WHERE expires_at <= ? ORDER BY lease_id`,
+      now,
+    );
+    for (const lease of expiredLeases) {
+      const channel = aiChannel(lease.channel);
+      const leaseAccount = accountKey(lease.account_key);
+      const totalReserve = lease.initial_reserve_micros + lease.retry_reserve_micros;
+      if (lease.month_bucket === month) {
+        budgetReservedMicros -= totalReserve;
+        if (lease.invoked === 1) budgetSpentMicros += totalReserve;
+      }
+      if (lease.invoked === 0 && channel === 'text' && lease.day_bucket === day) {
+        globalPending -= 1;
+        if (leaseAccount === account) accountPending -= 1;
+      }
+    }
     return {
       textGlobalEnabled: this.setting('text_global_enabled') === 1,
       accountEnabled,
-      accountRemaining: Math.max(0, policy.accountDaily - accountCounter.pending - accountCounter.consumed),
-      globalRemaining: Math.max(0, policy.globalDaily - globalCounter.pending - globalCounter.consumed),
-      budgetSpentMicros: cost.spent,
-      budgetReservedMicros: cost.reserved,
+      accountRemaining: Math.max(0, policy.accountDaily - accountPending - accountCounter.consumed),
+      globalRemaining: Math.max(0, policy.globalDaily - globalPending - globalCounter.consumed),
+      budgetSpentMicros,
+      budgetReservedMicros,
       resetAt: nextDay(now),
     };
   }
@@ -1042,16 +1066,17 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
     const expiresAt = value.now + TEXT_ADMIN_OPERATION_TTL_MS;
 
     return this.ctx.storage.transactionSync((): TextAdminOperationResult => {
-      this.exec('DELETE FROM text_admin_operations WHERE expires_at <= ?', value.now);
       const existing = this.rows<TextAdminOperationRow>(
-        'SELECT fingerprint FROM text_admin_operations WHERE operation_id = ?',
+        'SELECT fingerprint, expires_at FROM text_admin_operations WHERE operation_id = ?',
         value.operationId,
       )[0];
-      if (existing !== undefined) {
+      if (existing !== undefined && existing.expires_at > value.now) {
         if (existing.fingerprint !== value.fingerprint) return { kind: 'conflict' };
         return { kind: 'applied', status: this.textStatusSnapshot(value.accountKey, value.now) };
       }
 
+      this.exec('DELETE FROM text_admin_operations WHERE expires_at <= ?', value.now);
+      this.cleanup(value.now);
       switch (value.operation) {
         case 'status':
           break;
