@@ -588,6 +588,25 @@ test('setup reports exactly each missing canonical permission without writes', a
   }
 });
 
+test('setup reports all missing permissions in canonical order despite shuffled API observations', async () => {
+  const observedPermissionNames = [
+    'Access: Service Tokens Read',
+    'Cloudflare Pages Edit',
+    'Account API Tokens Read',
+    'Access: Apps and Policies Write',
+    'Access: Organizations, Identity Providers, and Groups Read',
+  ];
+  const fake = createFakeClient(setupTokenResults(observedPermissionNames));
+
+  const result = await verifyTextPreviewSetupToken(SENSITIVE.accountId, fake.client);
+
+  assert.deepEqual(result.missingPermissions, [
+    'Workers Scripts Edit',
+    'Access: Service Tokens Write',
+  ]);
+  assert.equal(fake.calls.every(({ method }) => method === 'GET'), true);
+});
+
 test('setup accepts the existing Workers, Pages, and Apps Write aliases', async () => {
   const permissionNames = [
     'Account API Tokens Read',
