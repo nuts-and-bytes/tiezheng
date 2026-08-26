@@ -60,6 +60,17 @@ function makeKeys({ hostileFill = false } = {}) {
   return Object.freeze({ aesKey, hmacKey });
 }
 
+function makeHostileBuffer(text) {
+  const value = Buffer.from(text);
+  Object.defineProperty(value, 'fill', {
+    configurable: true,
+    value() {
+      throw new Error('hostile-fill-sentinel');
+    },
+  });
+  return value;
+}
+
 function isWiped(value) {
   return Buffer.isBuffer(value)
     && Reflect.apply(TYPED_ARRAY_EVERY, value, [(byte) => byte === 0]);
@@ -75,20 +86,46 @@ function makeOutput(kind, events, options) {
     text: '',
     write(value) {
       assert.equal(typeof value, 'string');
+      let writePoint = kind;
       if (kind === 'stdout' && value === PREVIEW_OUTPUT) {
+        writePoint = 'preview';
         events.push('preview');
         if (options.failAt === 'preview-output') throw new Error('preview-output-sentinel');
       } else if (kind === 'stdout' && value === SUCCESS_OUTPUT) {
+        writePoint = 'success-output';
         events.push('success-output');
         if (options.failAt === 'success-output') throw new Error('success-output-sentinel');
       }
       if (kind === 'stderr' && options.failAt === 'stderr-output') {
         throw new Error('stderr-output-sentinel');
       }
+      if (options.rejectWriterAt === writePoint) {
+        return Promise.reject(new Error(`${writePoint}-rejection-sentinel`));
+      }
       this.text += value;
+      if (options.resolveWriterAt?.has(writePoint)) {
+        return {
+          then(resolve) {
+            queueMicrotask(() => resolve(true));
+          },
+        };
+      }
       return true;
     },
   };
+}
+
+async function captureUnhandled(operation) {
+  const reasons = [];
+  const onUnhandled = (reason) => reasons.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const value = await operation();
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    return { value, reasons };
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
 }
 
 function setupDependencies(options = {}) {
@@ -187,7 +224,7 @@ function setupDependencies(options = {}) {
       }
       return Object.freeze({ status: 'ready', teamDomain: 'team' });
     },
-    async createServiceToken(client) {
+    createServiceToken(client) {
       events.push('cloudflare.create');
       if (options.failAt === 'create-blocked') {
         throw new Error('Text preview setup blocked: cloudflare.service-token');
@@ -203,7 +240,7 @@ function setupDependencies(options = {}) {
       events.push('keys.generate');
       failAt('keys.generate');
       generated = true;
-      return keys;
+      return options.generateResult ?? keys;
     },
     stdout,
     stderr,
@@ -319,6 +356,61 @@ test('success-output failure preserves complete remote credentials and reports o
   assert.equal(fake.stdout.text, PREVIEW_OUTPUT);
   assert.equal(fake.passedWriteBuffers.every(isWiped), true);
   assertNoSensitiveOutput(fake, ['success-output-sentinel']);
+});
+
+test('async preview writer rejection is awaited, performs zero remote writes, and never becomes unhandled', async () => {
+  const fake = setupDependencies({ rejectWriterAt: 'preview' });
+  const observed = await captureUnhandled(() => runTextPreviewSetup(fake.dependencies));
+  assert.equal(observed.value, 1);
+  assert.deepEqual(observed.reasons, []);
+  assert.equal(fake.events.includes('confirm'), false);
+  assert.equal(fake.events.includes('cloudflare.create'), false);
+  assert.deepEqual(fake.deleted, []);
+  assert.equal(fake.stderr.text, 'SETUP FAILED\n');
+  assertKeysWiped(fake.keys);
+});
+
+test('async success writer rejection is awaited, preserves credentials, and reports output blocked', async () => {
+  const fake = setupDependencies({ rejectWriterAt: 'success-output' });
+  const observed = await captureUnhandled(() => runTextPreviewSetup(fake.dependencies));
+  assert.equal(observed.value, 1);
+  assert.deepEqual(observed.reasons, []);
+  assert.deepEqual(fake.deleted, []);
+  assert.equal(fake.stderr.text, 'SETUP BLOCKED output\n');
+  assert.equal(fake.events.filter((event) => event === 'github.preflight').length, 1);
+  assert.equal(fake.passedWriteBuffers.every(isWiped), true);
+});
+
+test('async stderr writer rejection is swallowed by both orchestrator and CLI without becoming unhandled', async () => {
+  const fake = setupDependencies({ rejectWriterAt: 'stderr', confirmResult: false });
+  const runObserved = await captureUnhandled(() => runTextPreviewSetup(fake.dependencies));
+  assert.equal(runObserved.value, 1);
+  assert.deepEqual(runObserved.reasons, []);
+  assert.equal(fake.events.includes('cloudflare.create'), false);
+  assert.deepEqual(fake.deleted, []);
+  assertKeysWiped(fake.keys);
+
+  const io = {
+    stdin: { isTTY: false },
+    stdout: { isTTY: true, write() {} },
+    stderr: {
+      write() {
+        return Promise.reject(new Error('cli-stderr-rejection-sentinel'));
+      },
+    },
+  };
+  const cliObserved = await captureUnhandled(() => runTextPreviewSetupCli([], io));
+  assert.equal(cliObserved.value, 1);
+  assert.deepEqual(cliObserved.reasons, []);
+});
+
+test('resolved thenable writers remain compatible with normal setup output', async () => {
+  const fake = setupDependencies({
+    resolveWriterAt: new Set(['preview', 'success-output']),
+  });
+  assert.equal(await runTextPreviewSetup(fake.dependencies), 0);
+  assert.equal(fake.stdout.text, PREVIEW_OUTPUT + SUCCESS_OUTPUT);
+  assert.equal(fake.stderr.text, '');
 });
 
 test('missing token permissions print only official names in official order before keys or writes', async () => {
@@ -452,6 +544,63 @@ test('assemble failure after a safe token id deletes only that token and wipes h
   assert.equal(fake.stderr.text, 'SETUP FAILED\n');
   assertKeysWiped(fake.keys);
   assertNoSensitiveOutput(fake);
+});
+
+test('resolved malformed credential Buffer is intrinsically wiped after fixed failure and token cleanup', async () => {
+  const secretText = 'credential-buffer-sentinel';
+  const clientSecret = makeHostileBuffer(secretText);
+  const fake = setupDependencies({
+    credentialResult: Object.freeze({
+      id: SERVICE_TOKEN_ID,
+      clientId: CREDENTIAL.clientId,
+      clientSecret,
+    }),
+  });
+  assert.equal(await runTextPreviewSetup(fake.dependencies), 1);
+  assert.deepEqual(fake.deleted, ['cloudflare.service-token']);
+  assert.equal(fake.stderr.text, 'SETUP FAILED\n');
+  assert.equal(isWiped(clientSecret), true);
+  assertNoSensitiveOutput(fake, [secretText, 'hostile-fill-sentinel']);
+});
+
+test('rejecting key thenable retains and intrinsically wipes its own Buffer without leaking rejection', async () => {
+  const secretText = 'rejecting-key-buffer-sentinel';
+  const secretBuffer = makeHostileBuffer(secretText);
+  const generateResult = Object.freeze({
+    secretBuffer,
+    then(resolve, reject) {
+      queueMicrotask(() => reject(new Error(`key-rejection:${secretText}`)));
+    },
+  });
+  const fake = setupDependencies({ generateResult });
+  const observed = await captureUnhandled(() => runTextPreviewSetup(fake.dependencies));
+  assert.equal(observed.value, 1);
+  assert.deepEqual(observed.reasons, []);
+  assert.deepEqual(fake.deleted, []);
+  assert.equal(fake.events.includes('preview'), false);
+  assert.equal(fake.events.includes('cloudflare.create'), false);
+  assert.equal(fake.stderr.text, 'SETUP FAILED\n');
+  assert.equal(isWiped(secretBuffer), true);
+  assertNoSensitiveOutput(fake, [secretText, 'key-rejection']);
+});
+
+test('rejecting credential thenable retains and intrinsically wipes its own Buffer without guessing cleanup', async () => {
+  const secretText = 'rejecting-credential-buffer-sentinel';
+  const secretBuffer = makeHostileBuffer(secretText);
+  const credentialResult = Object.freeze({
+    secretBuffer,
+    then(resolve, reject) {
+      queueMicrotask(() => reject(new Error(`credential-rejection:${secretText}`)));
+    },
+  });
+  const fake = setupDependencies({ credentialResult });
+  const observed = await captureUnhandled(() => runTextPreviewSetup(fake.dependencies));
+  assert.equal(observed.value, 1);
+  assert.deepEqual(observed.reasons, []);
+  assert.deepEqual(fake.deleted, []);
+  assert.equal(fake.stderr.text, 'SETUP FAILED\n');
+  assert.equal(isWiped(secretBuffer), true);
+  assertNoSensitiveOutput(fake, [secretText, 'credential-rejection']);
 });
 
 test('malformed resolved token without a safe id blocks cleanup without guessing an id', async () => {

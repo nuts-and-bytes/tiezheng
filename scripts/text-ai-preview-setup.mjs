@@ -132,19 +132,19 @@ function captureWriter(value) {
   }
 }
 
-function writeFixed(writer, value) {
+async function writeFixed(writer, value) {
   if (writer === null) fail();
   try {
-    Reflect.apply(writer.method, writer.owner, [value]);
+    await Reflect.apply(writer.method, writer.owner, [value]);
   } catch {
     fail();
   }
 }
 
-function writeFixedNoThrow(writer, value) {
+async function writeFixedNoThrow(writer, value) {
   if (writer === null) return false;
   try {
-    Reflect.apply(writer.method, writer.owner, [value]);
+    await Reflect.apply(writer.method, writer.owner, [value]);
     return true;
   } catch {
     return false;
@@ -339,19 +339,21 @@ function intrinsicWipe(value) {
   }
 }
 
-function wipeGeneratedKeys(value) {
+function wipeSecretCandidates(candidates) {
   const buffers = new Set();
-  for (const name of ['aesKey', 'hmacKey']) {
-    const candidate = ownDataValue(value, name);
-    try {
-      if (Buffer.isBuffer(candidate)) buffers.add(candidate);
-    } catch {
-      // Continue the bounded data-property scan below.
+  for (const value of candidates) {
+    for (const name of ['aesKey', 'hmacKey', 'clientSecret']) {
+      const candidate = ownDataValue(value, name);
+      try {
+        if (Buffer.isBuffer(candidate)) buffers.add(candidate);
+      } catch {
+        // Continue the bounded data-property scan below.
+      }
     }
   }
 
   const seen = new WeakSet();
-  const stack = isObjectLike(value) ? [value] : [];
+  const stack = candidates.filter(isObjectLike);
   let nodes = 0;
   let properties = 0;
   while (stack.length > 0 && nodes < MAX_WIPE_NODES && properties < MAX_WIPE_PROPERTIES) {
@@ -417,7 +419,7 @@ async function compensateAttemptedResources(attempted, dependencies, cloudflareC
   return blocked;
 }
 
-function cleanupLocalSecrets(writes, keys) {
+function cleanupLocalSecrets(writes, candidates) {
   if (writes !== undefined) {
     try {
       wipeSetupWrites(writes);
@@ -425,7 +427,7 @@ function cleanupLocalSecrets(writes, keys) {
       // wipeSetupWrites already attempts intrinsic clearing before reporting malformed input.
     }
   }
-  wipeGeneratedKeys(keys);
+  wipeSecretCandidates(candidates);
 }
 
 export async function runTextPreviewSetup(dependencies) {
@@ -434,7 +436,7 @@ export async function runTextPreviewSetup(dependencies) {
   try {
     parsed = parseDependencies(dependencies);
   } catch {
-    writeFixedNoThrow(fallbackStderr, FAILED_OUTPUT);
+    await writeFixedNoThrow(fallbackStderr, FAILED_OUTPUT);
     return 1;
   }
 
@@ -447,6 +449,10 @@ export async function runTextPreviewSetup(dependencies) {
   let keys;
   let writes;
   let cloudflareClient;
+  let rawKeysCandidate;
+  let resolvedKeysCandidate;
+  let rawCredentialCandidate;
+  let resolvedCredentialCandidate;
   let phase = 'read-only-checks';
   try {
     const githubState = parseGitHubState(await invoke(parsed.github.inspectFirstRun));
@@ -465,25 +471,28 @@ export async function runTextPreviewSetup(dependencies) {
       cloudflareClient,
     ));
     if (cloudflareState.status === 'missing-permissions') {
-      writeFixed(parsed.stderr, renderMissingPermissions(cloudflareState.missingPermissions));
+      await writeFixed(parsed.stderr, renderMissingPermissions(cloudflareState.missingPermissions));
       return 1;
     }
 
-    keys = await invoke(parsed.generateKeys);
-    writeFixed(parsed.stdout, PREVIEW_OUTPUT);
+    rawKeysCandidate = invoke(parsed.generateKeys);
+    resolvedKeysCandidate = await rawKeysCandidate;
+    keys = resolvedKeysCandidate;
+    await writeFixed(parsed.stdout, PREVIEW_OUTPUT);
 
     phase = 'confirm';
     const confirmed = await invoke(parsed.confirm);
     if (confirmed === false) {
-      writeFixed(parsed.stderr, CANCELLED_OUTPUT);
+      await writeFixed(parsed.stderr, CANCELLED_OUTPUT);
       return 1;
     }
     if (confirmed !== true) fail();
 
     phase = 'create-token';
-    const resolvedCredential = await invoke(parsed.createServiceToken, cloudflareClient);
+    rawCredentialCandidate = invoke(parsed.createServiceToken, cloudflareClient);
+    resolvedCredentialCandidate = await rawCredentialCandidate;
     attempted.serviceTokenResolved = true;
-    const inspectedCredential = inspectResolvedCredential(resolvedCredential);
+    const inspectedCredential = inspectResolvedCredential(resolvedCredentialCandidate);
     attempted.serviceTokenId = inspectedCredential.safeId;
     if (!inspectedCredential.valid) fail();
 
@@ -513,25 +522,25 @@ export async function runTextPreviewSetup(dependencies) {
     await invoke(parsed.github.runDisabledPreflight, githubState.expectedSha);
 
     phase = 'report';
-    writeFixed(parsed.stdout, SUCCESS_OUTPUT);
+    await writeFixed(parsed.stdout, SUCCESS_OUTPUT);
 
     phase = 'complete';
     return 0;
   } catch (error) {
     if (phase === 'create-token' && isCloudflareBlockedError(error)) {
-      writeFixedNoThrow(parsed.stderr, 'SETUP BLOCKED cleanup=cloudflare.service-token\n');
+      await writeFixedNoThrow(parsed.stderr, 'SETUP BLOCKED cleanup=cloudflare.service-token\n');
       return 1;
     }
     if (phase === 'preflight') {
-      writeFixedNoThrow(parsed.stderr, PREFLIGHT_BLOCKED_OUTPUT);
+      await writeFixedNoThrow(parsed.stderr, PREFLIGHT_BLOCKED_OUTPUT);
       return 1;
     }
     if (phase === 'report') {
-      writeFixedNoThrow(parsed.stderr, REPORT_BLOCKED_OUTPUT);
+      await writeFixedNoThrow(parsed.stderr, REPORT_BLOCKED_OUTPUT);
       return 1;
     }
     const blocked = await compensateAttemptedResources(attempted, parsed, cloudflareClient);
-    writeFixedNoThrow(
+    await writeFixedNoThrow(
       parsed.stderr,
       blocked.length === 0
         ? FAILED_OUTPUT
@@ -539,7 +548,12 @@ export async function runTextPreviewSetup(dependencies) {
     );
     return 1;
   } finally {
-    cleanupLocalSecrets(writes, keys);
+    cleanupLocalSecrets(writes, [
+      rawKeysCandidate,
+      resolvedKeysCandidate,
+      rawCredentialCandidate,
+      resolvedCredentialCandidate,
+    ]);
   }
 }
 
@@ -648,12 +662,12 @@ export async function runTextPreviewSetupCli(argv, io = process, overrides = {})
       || dataBoolean(stdin, 'isTTY') !== true
       || dataBoolean(stdout, 'isTTY') !== true
     ) {
-      writeFixedNoThrow(stderrWriter, FAILED_OUTPUT);
+      await writeFixedNoThrow(stderrWriter, FAILED_OUTPUT);
       return 1;
     }
     return await runTextPreviewSetup(createRealDependencies(io, overrides));
   } catch {
-    writeFixedNoThrow(stderrWriter, FAILED_OUTPUT);
+    await writeFixedNoThrow(stderrWriter, FAILED_OUTPUT);
     return 1;
   }
 }
