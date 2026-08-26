@@ -8,6 +8,8 @@ const BASE64_32_PATTERN = /^[A-Za-z0-9+/]{43}=$/u;
 const HEX_32_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_WIPE_NODES = 10_000;
 const MAX_WIPE_PROPERTIES = 100_000;
+const MAX_WIPE_GROUP_LENGTH = 10_000;
+const TYPED_ARRAY_FILL = Uint8Array.prototype.fill;
 const SETUP_INPUT_NAMES = Object.freeze([
   'cloudflareApiToken',
   'arkApiKey',
@@ -102,12 +104,21 @@ export function parseTeamDomain(authDomain) {
 }
 
 function zeroBuffer(value) {
-  if (!Buffer.isBuffer(value)) return;
   try {
-    value.fill(0);
+    if (!Buffer.isBuffer(value)) return true;
+    Reflect.apply(TYPED_ARRAY_FILL, value, [0]);
+    return true;
   } catch {
-    // A hostile Buffer-like object must not replace the fixed failure path.
+    return false;
   }
+}
+
+function wipeBuffers(values) {
+  let failed = false;
+  for (const value of values) {
+    if (!zeroBuffer(value)) failed = true;
+  }
+  if (failed) fail();
 }
 
 export function generateSetupKeys(random = randomBytes) {
@@ -126,8 +137,7 @@ export function generateSetupKeys(random = randomBytes) {
   } catch {
     fail();
   } finally {
-    zeroBuffer(aes);
-    zeroBuffer(hmac);
+    wipeBuffers([aes, hmac]);
   }
 }
 
@@ -180,19 +190,35 @@ export function assembleSetupWrites(value) {
     fail();
   } finally {
     const keys = sourceKeys;
-    if (keys !== null && typeof keys === 'object') {
-      zeroBuffer(peekDataProperty(keys, 'aesKey'));
-      zeroBuffer(peekDataProperty(keys, 'hmacKey'));
+    if (keys !== null && (typeof keys === 'object' || typeof keys === 'function')) {
+      wipeBuffers([
+        peekDataProperty(keys, 'aesKey'),
+        peekDataProperty(keys, 'hmacKey'),
+      ]);
     }
   }
 }
 
-function collectBufferProperty(value, buffers) {
+function newWipeScan() {
+  return {
+    seen: new WeakSet(),
+    nodes: 0,
+    properties: 0,
+    complete: true,
+  };
+}
+
+function reserveWipeProperties(scan, count) {
+  if (!Number.isSafeInteger(count) || count < 0 || count > MAX_WIPE_PROPERTIES - scan.properties) {
+    scan.complete = false;
+    return false;
+  }
+  scan.properties += count;
+  return true;
+}
+
+function collectBufferProperty(value, buffers, scan = newWipeScan()) {
   const pending = [value];
-  const seen = new WeakSet();
-  let nodes = 0;
-  let properties = 0;
-  let complete = true;
   while (pending.length > 0) {
     const current = pending.pop();
     if (Buffer.isBuffer(current)) {
@@ -200,31 +226,27 @@ function collectBufferProperty(value, buffers) {
       continue;
     }
     if (current === null || (typeof current !== 'object' && typeof current !== 'function')) continue;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    nodes += 1;
-    if (nodes > MAX_WIPE_NODES) {
-      complete = false;
+    if (scan.seen.has(current)) continue;
+    scan.seen.add(current);
+    scan.nodes += 1;
+    if (scan.nodes > MAX_WIPE_NODES) {
+      scan.complete = false;
       continue;
     }
     let keys;
     try {
       keys = Reflect.ownKeys(current);
     } catch {
-      complete = false;
+      scan.complete = false;
       continue;
     }
+    if (!reserveWipeProperties(scan, keys.length)) continue;
     for (const key of keys) {
-      properties += 1;
-      if (properties > MAX_WIPE_PROPERTIES) {
-        complete = false;
-        break;
-      }
       let descriptor;
       try {
         descriptor = Object.getOwnPropertyDescriptor(current, key);
       } catch {
-        complete = false;
+        scan.complete = false;
         continue;
       }
       if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) continue;
@@ -233,26 +255,32 @@ function collectBufferProperty(value, buffers) {
       else if (child !== null && (typeof child === 'object' || typeof child === 'function')) pending.push(child);
     }
   }
-  return complete;
+  return scan.complete;
 }
 
-function inspectWriteGroup(group, buffers) {
+function inspectWriteGroup(group, buffers, scan) {
   if (!Array.isArray(group)) {
-    collectBufferProperty(group, buffers);
+    collectBufferProperty(group, buffers, scan);
     return false;
   }
   let valid = true;
-  let keys;
   try {
-    keys = Reflect.ownKeys(group);
+    if (!reserveWipeProperties(scan, 1)) return false;
     const lengthDescriptor = Object.getOwnPropertyDescriptor(group, 'length');
-    if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value') || !Number.isSafeInteger(lengthDescriptor.value)) valid = false;
+    if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')
+      || !Number.isSafeInteger(lengthDescriptor.value)
+      || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_WIPE_GROUP_LENGTH) return false;
+    const length = lengthDescriptor.value;
+    const keys = Reflect.ownKeys(group);
+    if (!reserveWipeProperties(scan, keys.length)) return false;
+    let indexCount = 0;
     for (const key of keys) {
       if (key === 'length') continue;
-      if (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= group.length) {
+      if (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= length) {
         valid = false;
         continue;
       }
+      indexCount += 1;
       const descriptor = Object.getOwnPropertyDescriptor(group, key);
       if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
         valid = false;
@@ -260,12 +288,16 @@ function inspectWriteGroup(group, buffers) {
       }
       const item = descriptor.value;
       if (item === null || typeof item !== 'object' || Array.isArray(item)) {
-        collectBufferProperty(item, buffers);
+        collectBufferProperty(item, buffers, scan);
         valid = false;
         continue;
       }
-      collectBufferProperty(item, buffers);
+      collectBufferProperty(item, buffers, scan);
       const itemKeys = Reflect.ownKeys(item);
+      if (!reserveWipeProperties(scan, itemKeys.length)) {
+        valid = false;
+        continue;
+      }
       if (itemKeys.length !== 2 || itemKeys.some((itemKey) => typeof itemKey !== 'string' || !['name', 'value'].includes(itemKey))) {
         valid = false;
         continue;
@@ -276,7 +308,7 @@ function inspectWriteGroup(group, buffers) {
         || valueDescriptor === undefined || !Object.hasOwn(valueDescriptor, 'value')
         || typeof nameDescriptor.value !== 'string' || !Buffer.isBuffer(valueDescriptor.value)) valid = false;
     }
-    if (group.length !== keys.filter((key) => typeof key === 'string' && /^(?:0|[1-9]\d*)$/u.test(key)).length) valid = false;
+    if (length !== indexCount) valid = false;
   } catch {
     valid = false;
   }
@@ -285,7 +317,8 @@ function inspectWriteGroup(group, buffers) {
 
 export function wipeSetupWrites(writes) {
   const buffers = new Set();
-  let valid = collectBufferProperty(writes, buffers);
+  const scan = newWipeScan();
+  let valid = collectBufferProperty(writes, buffers, scan);
   try {
     if (writes === null || typeof writes !== 'object' || Array.isArray(writes)) fail();
     const prototype = Object.getPrototypeOf(writes);
@@ -296,19 +329,19 @@ export function wipeSetupWrites(writes) {
     const variableDescriptor = Object.getOwnPropertyDescriptor(writes, 'variables');
     if (secretDescriptor === undefined || !Object.hasOwn(secretDescriptor, 'value')
       || variableDescriptor === undefined || !Object.hasOwn(variableDescriptor, 'value')) fail();
-    const secretsValid = inspectWriteGroup(secretDescriptor.value, buffers);
-    const variablesValid = inspectWriteGroup(variableDescriptor.value, buffers);
+    const secretsValid = inspectWriteGroup(secretDescriptor.value, buffers, scan);
+    const variablesValid = inspectWriteGroup(variableDescriptor.value, buffers, scan);
     valid = valid && secretsValid && variablesValid;
   } catch {
     valid = false;
     const secrets = peekDataProperty(writes, 'secrets');
     const variables = peekDataProperty(writes, 'variables');
-    const secretsValid = inspectWriteGroup(secrets, buffers);
-    const variablesValid = inspectWriteGroup(variables, buffers);
-    if (!secretsValid) collectBufferProperty(secrets, buffers);
-    if (!variablesValid) collectBufferProperty(variables, buffers);
+    const secretsValid = inspectWriteGroup(secrets, buffers, scan);
+    const variablesValid = inspectWriteGroup(variables, buffers, scan);
+    if (!secretsValid) collectBufferProperty(secrets, buffers, scan);
+    if (!variablesValid) collectBufferProperty(variables, buffers, scan);
   } finally {
-    for (const buffer of buffers) zeroBuffer(buffer);
+    wipeBuffers(buffers);
   }
   if (!valid) fail();
 }

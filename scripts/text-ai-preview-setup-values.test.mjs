@@ -131,9 +131,7 @@ test('generates deterministic encoded keys and wipes raw random buffers', () => 
 });
 
 test('fails closed and wipes valid raw buffers when random throws or returns malformed values', () => {
-  const first = Buffer.alloc(32, 0x41);
   expectFailure(() => generateSetupKeys(() => { throw new Error('sensitive random failure'); }));
-  assert.ok(first.every((byte) => byte === 0) === false);
   const malformed = Buffer.alloc(31, 0x41);
   const malformedSecond = Buffer.alloc(31, 0x42);
   let malformedCalls = 0;
@@ -274,4 +272,77 @@ test('clears buffers in array extra own data objects without invoking accessors 
   expectFailure(() => wipeSetupWrites(malformed));
   assert.ok(nested.every((byte) => byte === 0));
   assert.equal(accessorCalls, 0);
+});
+
+test('uses the intrinsic typed-array fill when a raw Buffer fill is overridden', () => {
+  const raw = Buffer.alloc(32, 0x41);
+  raw.fill = () => raw;
+  const other = Buffer.alloc(32, 0x42);
+  let calls = 0;
+  const keys = generateSetupKeys(() => {
+    calls += 1;
+    return calls === 1 ? raw : other;
+  });
+  assert.ok(raw.every((byte) => byte === 0));
+  assert.ok(other.every((byte) => byte === 0));
+  assert.equal(keys.aesKey.length, 44);
+  assert.equal(keys.hmacKey.length, 64);
+});
+
+test('fails closed on a Buffer Proxy while still wiping the other generated Buffer', () => {
+  const target = Buffer.alloc(32, 0x41);
+  const proxied = new Proxy(target, {});
+  const other = Buffer.alloc(32, 0x42);
+  let calls = 0;
+  expectFailure(() => generateSetupKeys(() => {
+    calls += 1;
+    return calls === 1 ? proxied : other;
+  }));
+  assert.ok(other.every((byte) => byte === 0));
+  assert.ok(target.every((byte) => byte !== 0));
+});
+
+test('rejects function-shaped keys and wipes both own data Buffers', () => {
+  const aesKey = Buffer.from('A'.repeat(43) + '=');
+  const hmacKey = Buffer.from('b'.repeat(64));
+  const keys = function keys() {};
+  Object.defineProperty(keys, 'aesKey', { value: aesKey, enumerable: true });
+  Object.defineProperty(keys, 'hmacKey', { value: hmacKey, enumerable: true });
+  expectFailure(() => assembleSetupWrites({
+    inputs: INPUTS,
+    teamDomain: 'team-name',
+    serviceClientId: 'client-id.access',
+    serviceClientSecret: 'service-secret-sentinel',
+    keys,
+  }));
+  assert.ok(aesKey.every((byte) => byte === 0));
+  assert.ok(hmacKey.every((byte) => byte === 0));
+});
+
+test('rejects oversized hostile groups before a second descriptor scan and wipes seen Buffers', () => {
+  const known = Buffer.from('known-secret');
+  const target = [];
+  for (let index = 0; index < 10_001; index += 1) target[index] = index === 0 ? { value: known } : 0;
+  let descriptorReads = 0;
+  const group = new Proxy(target, {
+    getOwnPropertyDescriptor(object, property) {
+      descriptorReads += 1;
+      return Reflect.getOwnPropertyDescriptor(object, property);
+    },
+  });
+  expectFailure(() => wipeSetupWrites({ secrets: group, variables: [] }));
+  assert.ok(known.every((byte) => byte === 0));
+  assert.ok(descriptorReads < 15_000);
+});
+
+test('continues wiping ordinary Buffers after one Buffer cleanup failure', () => {
+  const failingTarget = Buffer.alloc(32, 0x41);
+  const failing = new Proxy(failingTarget, {});
+  const ordinary = Buffer.alloc(32, 0x42);
+  expectFailure(() => wipeSetupWrites({
+    secrets: [{ name: 'failing', value: failing }, { name: 'ordinary', value: ordinary }],
+    variables: [],
+  }));
+  assert.ok(failingTarget.every((byte) => byte !== 0));
+  assert.ok(ordinary.every((byte) => byte === 0));
 });
