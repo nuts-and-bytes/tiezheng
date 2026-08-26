@@ -253,7 +253,7 @@ function verifyManualInputs(lines) {
 
   const inputsEnd = Math.min(blockEnd(lines, dispatchMappings[0].index), dispatchEnd);
   const inputs = directMappings(lines, dispatchMappings[0].index + 1, inputsEnd, 6);
-  requireEntryOrder(inputs, ['operation', 'target', 'confirmation']);
+  requireEntryOrder(inputs, ['operation', 'target', 'expected_sha', 'confirmation']);
   verifyInput(lines, inputs[0], inputsEnd, {
     type: 'choice',
     required: 'true',
@@ -266,6 +266,10 @@ function verifyManualInputs(lines) {
     options: TARGET_CHOICES,
   });
   verifyInput(lines, inputs[2], inputsEnd, {
+    type: 'string',
+    required: 'true',
+  });
+  verifyInput(lines, inputs[3], inputsEnd, {
     type: 'string',
     required: 'false',
   });
@@ -445,7 +449,7 @@ function verifyJobAndSteps(lines, source) {
     'steps',
   ]);
   if (
-    mappingByKey(properties, 'if').value !== "github.ref == 'refs/heads/main' && github.ref_protected == true"
+    mappingByKey(properties, 'if').value !== "github.ref == 'refs/heads/main' && github.ref_protected == true && github.sha == inputs.expected_sha"
     || mappingByKey(properties, 'environment').value !== 'text-ai-preview'
     || mappingByKey(properties, 'runs-on').value !== 'ubuntu-latest'
     || mappingByKey(properties, 'timeout-minutes').value !== '30'

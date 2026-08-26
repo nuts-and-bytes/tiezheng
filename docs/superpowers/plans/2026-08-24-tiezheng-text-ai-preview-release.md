@@ -1072,7 +1072,7 @@ const forbidden = [
 ];
 ```
 
-并要求：`workflow_dispatch`、environment `text-ai-preview`、`permissions: contents: read`、完整测试顺序、Worker dry-run、`PHOTO_AI_GATEWAY_ENABLED=false`、Preview branch、固定 origin、受限 operation choices、delete/enable confirmation、真实请求标记最多出现一次。
+并要求：`workflow_dispatch`、environment `text-ai-preview`、`permissions: contents: read`、完整测试顺序、Worker dry-run、`PHOTO_AI_GATEWAY_ENABLED=false`、Preview branch、固定 origin、受限 operation choices、必填 approved-SHA input、job 启动前的 exact SHA gate、delete/enable confirmation、真实请求标记最多出现一次。
 
 - [ ] **Step 2: 运行 verifier 测试确认 RED**
 
@@ -1122,12 +1122,15 @@ on:
         required: true
         default: user-1
         options: [user-1, user-2]
+      expected_sha:
+        type: string
+        required: true
       confirmation:
         type: string
         required: false
 ```
 
-单 job 使用 `environment: text-ai-preview`、`permissions: contents: read`、`timeout-minutes:30`。顺序固定：checkout、Node 22、npm ci、typecheck、unit、edge typecheck、edge tests、build、workflow verifier、Worker dry-run、operation dispatch。
+单 job 使用 `environment: text-ai-preview`、`permissions: contents: read`、`timeout-minutes:30`，并精确要求 `github.ref == 'refs/heads/main' && github.ref_protected == true && github.sha == inputs.expected_sha`。顺序固定：checkout、Node 22、npm ci、typecheck、unit、edge typecheck、edge tests、build、workflow verifier、Worker dry-run、operation dispatch。
 
 部署步骤必须：
 
@@ -1249,7 +1252,7 @@ git commit -m "docs: add text AI preview operations runbook"
 
 - [ ] **Step 1: 要求用户在 GitHub UI 输入 secret**
 
-在固定仓库 Settings → Environments → `text-ai-preview` 中设置 approval protection，并由用户直接输入 9 个 Environment secrets：`CLOUDFLARE_API_TOKEN`、`ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY`、`PHOTO_AI_ACCOUNT_HMAC_KEY`、`TEXT_AI_USER_1_EMAIL`、`TEXT_AI_USER_2_EMAIL`、`TEXT_AI_ADMIN_EMAIL`、`TEXT_AI_CF_ACCESS_CLIENT_ID`、`TEXT_AI_CF_ACCESS_CLIENT_SECRET`。不得通过聊天、shell history 或 workflow input 传值。
+在固定仓库 Settings → Environments → `text-ai-preview` 中启用单人受保护模式：只允许受保护的 `main` 部署，不配置 required reviewer，也不依赖 Environment reviewer 或 Prevent self-review。由用户直接输入 9 个 Environment secrets：`CLOUDFLARE_API_TOKEN`、`ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY`、`PHOTO_AI_ACCOUNT_HMAC_KEY`、`TEXT_AI_USER_1_EMAIL`、`TEXT_AI_USER_2_EMAIL`、`TEXT_AI_ADMIN_EMAIL`、`TEXT_AI_CF_ACCESS_CLIENT_ID`、`TEXT_AI_CF_ACCESS_CLIENT_SECRET`。不得通过聊天、shell history 或 workflow input 传值。
 
 - [ ] **Step 2: 检查 secret 名称而非值**
 
@@ -1267,7 +1270,7 @@ Expected: 名称集合与 runbook 完全一致；输出没有值。
 
 - [ ] **Step 4: 运行只读 preflight**
 
-所有 Task 11/12 dispatch 都先加载 runbook 第 6 节的固定函数与变量，使用固定仓库、批准 SHA、精确 dispatch URL/run ID/watch/view 仪式；不得复制旧版“最近一次 run”查询。每次 dispatch 前必须证明旧 `queued`/`in_progress`/`waiting`/`pending` run 为 0，旧审批全部拒绝或取消。Environment 出现 pending deployment 时，reviewer 必须在 GitHub UI 人工核对 exact head SHA 与当时 `main`；main 漂移时拒绝并取消，禁止批准。
+所有 Task 11/12 dispatch 都先加载 runbook 第 6 节的固定函数与变量，使用固定仓库、批准 SHA、精确 dispatch URL/run ID/watch/view 仪式；不得复制旧版“最近一次 run”查询。每次 dispatch 前必须证明旧 `queued`/`in_progress`/`waiting`/`pending` run 为 0，旧活动 run 必须全部取消或等待结束。单人受保护模式下，操作者必须在 dispatch 前再次核对远端 `main` 精确等于批准 SHA，并把同一 SHA 作为必填 `expected_sha` workflow input；workflow 在 job 启动前要求 `github.sha == inputs.expected_sha`，漂移时直接跳过且不得执行 dispatcher。
 
 ```bash
 run_text_preview_operation preflight user-1 ''

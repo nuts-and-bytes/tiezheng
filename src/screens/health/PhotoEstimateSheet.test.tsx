@@ -88,7 +88,8 @@ function sheet(overrides: Partial<ComponentProps<typeof PhotoEstimateSheet>> = {
 }
 
 async function reachSource() {
-  return screen.findByRole('dialog', { name: '拍照识别午餐' });
+  await screen.findByLabelText('从相册选择食物照片');
+  return screen.getByRole('dialog', { name: '拍照识别午餐' });
 }
 
 async function choosePhoto(user: ReturnType<typeof userEvent.setup>, value = prepared()) {

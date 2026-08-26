@@ -103,9 +103,14 @@ test('requires the exact operation choice contract and rejects arbitrary operati
   expectPolicyFailure(replaceOnce(source, '        required: true\n        options:\n', '        required: false\n        options:\n'));
 });
 
-test('requires the exact two-slot target and string confirmation contracts', () => {
+test('requires the exact two-slot target, approved SHA, and string confirmation contracts', () => {
   expectPolicyFailure(replaceOnce(source, '        default: user-1\n', '        default: user-2\n'));
   expectPolicyFailure(replaceOnce(source, '          - user-2\n', '          - user-2\n          - user-3\n'));
+  expectPolicyFailure(replaceOnce(
+    source,
+    '      expected_sha:\n        description: Approved 40-character commit SHA\n        type: string\n        required: true\n',
+    '      expected_sha:\n        description: Approved 40-character commit SHA\n        type: string\n        required: false\n',
+  ));
   expectPolicyFailure(replaceOnce(
     source,
     '      confirmation:\n        description: Fixed phrase for protected operations\n        type: string\n',
@@ -137,19 +142,20 @@ test('locks dispatch concurrency and hard-gates the protected main ref', () => {
     'concurrency:\n  group: text-ai-preview\n  cancel-in-progress: false\n\n',
   ));
   assert.ok(source.includes(
-    "  text-ai-preview:\n    if: github.ref == 'refs/heads/main' && github.ref_protected == true\n",
+    "  text-ai-preview:\n    if: github.ref == 'refs/heads/main' && github.ref_protected == true && github.sha == inputs.expected_sha\n",
   ));
   for (const [before, after] of [
     ['  group: text-ai-preview\n', '  group: text-ai-preview-${{ github.ref }}\n'],
     ['  cancel-in-progress: false\n', '  cancel-in-progress: true\n'],
     ["github.ref == 'refs/heads/main'", "github.ref == 'refs/heads/text-ai-preview'"],
     ['github.ref_protected == true', 'github.ref_protected == false'],
+    ['github.sha == inputs.expected_sha', 'github.sha != inputs.expected_sha'],
   ]) {
     expectPolicyFailure(replaceOnce(source, before, after));
   }
   expectPolicyFailure(replaceOnce(
     source,
-    "    if: github.ref == 'refs/heads/main' && github.ref_protected == true\n",
+    "    if: github.ref == 'refs/heads/main' && github.ref_protected == true && github.sha == inputs.expected_sha\n",
     '',
   ));
 });
@@ -910,12 +916,16 @@ test('runbook binds the unique job and dispatch step and drains every older acti
     'assert_no_stale_text_preview_runs() (',
     'for status in queued in_progress waiting pending; do',
     'assert_no_stale_text_preview_runs',
+    '-f expected_sha="$expected_sha"',
   ]) {
     assert.ok(runbookSource.includes(required), `missing runbook gate: ${required}`);
   }
-  assert.ok(runbookSource.includes('旧审批必须全部拒绝或取消'));
-  assert.ok(runbookSource.includes('pending deployment'));
-  assert.ok(runbookSource.includes('main 漂移时必须拒绝并取消，禁止批准'));
+  assert.ok(runbookSource.includes('旧活动 run 必须全部取消或等待结束'));
+  assert.ok(runbookSource.includes('单人受保护模式'));
+  assert.ok(runbookSource.includes('不配置 required reviewer'));
+  assert.ok(runbookSource.includes('不会出现 pending deployment 审批阶段'));
+  assert.ok(runbookSource.includes('dispatch 前再次核对远端 `main`'));
+  assert.equal(runbookSource.includes('required reviewer 必须'), false);
 });
 
 test('operations documentation fixes configuration, disabled preflight, and secret-name boundaries', () => {
@@ -933,6 +943,8 @@ test('operations documentation fixes configuration, disabled preflight, and secr
     '`deploy-disabled` 在任何 Cloudflare 写入前再次从本次 `0600` preflight 文件证明 `workerTextEnabled=false`',
     'Worker secret 名称只能在可信 Cloudflare Dashboard UI 中核对',
     '`preflight` 不能证明 Worker secret 名称集合',
+    '单人模式已由用户明确批准',
+    '不依赖 Environment reviewer 或 Prevent self-review',
     '标准流程完全禁止 `delete-account`',
     '同一 `requestId` 的一次自动 in-flight 轮询不算第二次供应商调用',
   ]) {
@@ -944,6 +956,17 @@ test('operations documentation fixes configuration, disabled preflight, and secr
 });
 
 test('release plan delegates every dispatch to the exact runbook ritual without latest-run races', () => {
+  const workflowContractStart = releasePlanSource.indexOf('workflow inputs：');
+  const workflowContractEnd = releasePlanSource.indexOf('部署步骤必须：', workflowContractStart);
+  const workflowContract = releasePlanSource.slice(workflowContractStart, workflowContractEnd);
+  assert.notEqual(workflowContractStart, -1);
+  assert.notEqual(workflowContractEnd, -1);
+  assert.ok(workflowContract.includes(
+    '      expected_sha:\n        type: string\n        required: true',
+  ));
+  assert.ok(workflowContract.includes(
+    "github.ref == 'refs/heads/main' && github.ref_protected == true && github.sha == inputs.expected_sha",
+  ));
   const taskEleven = releasePlanSource.slice(
     releasePlanSource.indexOf('### Task 11:'),
     releasePlanSource.indexOf('### Task 12:'),
@@ -984,6 +1007,8 @@ test('release plan delegates every dispatch to the exact runbook ritual without 
     assert.ok(releasePlanSource.includes(`run_text_preview_operation ${operation}`));
   }
   assert.ok(releasePlanSource.includes('固定仓库、批准 SHA、精确 dispatch URL/run ID/watch/view'));
-  assert.ok(releasePlanSource.includes('pending deployment'));
-  assert.ok(releasePlanSource.includes('main 漂移时拒绝并取消，禁止批准'));
+  assert.ok(releasePlanSource.includes('单人受保护模式'));
+  assert.ok(releasePlanSource.includes('不配置 required reviewer'));
+  assert.ok(releasePlanSource.includes('dispatch 前再次核对远端 `main`'));
+  assert.equal(releasePlanSource.includes('pending deployment'), false);
 });

@@ -18,10 +18,10 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 | 目标 commit SHA 是事先批准的 40 位 SHA，并与远程 `main` 一致 | NOT_RUN | 仅允许记录 SHA |
 | 操作仓库固定为 `nuts-and-bytes/tiezheng`，不依赖 cwd 或默认仓库 | NOT_RUN | 仅记录 PASS/FAIL |
 | workflow 只允许手动触发，目标 ref 为受保护 `main` | NOT_RUN | 仅记录布尔判断 |
-| 开始每次 dispatch 前，旧 `queued`/`in_progress`/`waiting`/`pending` run 均为 0；旧审批已拒绝或取消 | NOT_RUN | 仅记录四项为 0；不得记录旧输入 |
+| 开始每次 dispatch 前，旧 `queued`/`in_progress`/`waiting`/`pending` run 均为 0；旧活动 run 已取消或结束 | NOT_RUN | 仅记录四项为 0；不得记录旧输入 |
 | 每个 dispatch 都从本次返回的精确 URL 提取唯一纯数字 run ID | NOT_RUN | URL 缺失/格式不符即 BLOCKED；不记录 URL |
 | 未使用 `gh run list`、UI 或“最近一次”回退绑定 | NOT_RUN | 仅记录 PASS/FAIL |
-| Environment pending approval 时 reviewer 人工核对 exact head SHA 与当时 `main`；main 漂移即拒绝并取消 | NOT_RUN | 仅记录 PASS/FAIL，不记录人员身份 |
+| 单人模式已由用户明确批准；操作者在 dispatch 前核对 exact head SHA 与当时 `main`，并把同一 SHA 作为必填 workflow input | NOT_RUN | 仅记录 PASS/FAIL 与 SHA |
 | 每个精确 run 都已 watch 并核对 workflow_dispatch/main/SHA/completed/success/workflowName、唯一 `text-ai-preview` job success、唯一 `Dispatch fixed operation` step success | NOT_RUN | 仅记录 run ID/SHA/成功结论 |
 | checkout/setup-node 使用固定完整 SHA，checkout 不持久化凭证 | NOT_RUN | 仅记录 PASS/FAIL |
 | `npm test` 全量通过 | NOT_RUN | 仅记录 PASS/FAIL |
@@ -45,10 +45,10 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 | Environment 名精确为 `text-ai-preview` | NOT_RUN | 仅记录 PASS/FAIL |
 | Deployment branches 使用 Selected branches and tags | NOT_RUN | 不接受 Protected branches only |
 | 唯一 deployment branch rule 为 `main`，无 tag/通配规则 | NOT_RUN | 仅记录 PASS/FAIL |
-| required reviewer 已配置 | NOT_RUN | 不记录人员身份 |
-| Prevent self-review 已启用 | NOT_RUN | 仅记录布尔判断 |
-| 管理员不可绕过 protection rules | NOT_RUN | 仅记录布尔判断 |
-| 当前套餐支持上述 Environment 保护能力 | NOT_RUN | 不支持时 BLOCKED |
+| 单人受保护模式不配置 required reviewer，reviewer 集合为空 | NOT_RUN | 仅记录布尔判断 |
+| 不依赖 Environment reviewer 或 Prevent self-review；不存在 pending approval 放行步骤 | NOT_RUN | 仅记录 PASS/FAIL |
+| 管理员绕过开关不作为放行依据；workflow 自身硬门禁 protected `main` 与批准 SHA | NOT_RUN | 仅记录 PASS/FAIL |
+| 当前套餐支持 Environment secrets 与精确 deployment branch rule | NOT_RUN | 不支持时 BLOCKED |
 | 9 个 Environment secret 名称集合精确为 `CLOUDFLARE_API_TOKEN`、`ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY`、`PHOTO_AI_ACCOUNT_HMAC_KEY`、`TEXT_AI_USER_1_EMAIL`、`TEXT_AI_USER_2_EMAIL`、`TEXT_AI_ADMIN_EMAIL`、`TEXT_AI_CF_ACCESS_CLIENT_ID`、`TEXT_AI_CF_ACCESS_CLIENT_SECRET` | NOT_RUN | 只检查名称，不读取值 |
 | 2 个 Environment variable 名称集合精确为 `CLOUDFLARE_ACCOUNT_ID`、`TEXT_AI_TEAM_DOMAIN` | NOT_RUN | 不记录值 |
 | allowed email count 由 workflow 精确锁定为 2 | NOT_RUN | 不创建同名 Environment variable |

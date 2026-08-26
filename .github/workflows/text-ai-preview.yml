@@ -24,6 +24,10 @@ on:
         options:
           - user-1
           - user-2
+      expected_sha:
+        description: Approved 40-character commit SHA
+        type: string
+        required: true
       confirmation:
         description: Fixed phrase for protected operations
         type: string
@@ -35,7 +39,7 @@ concurrency:
 
 jobs:
   text-ai-preview:
-    if: github.ref == 'refs/heads/main' && github.ref_protected == true
+    if: github.ref == 'refs/heads/main' && github.ref_protected == true && github.sha == inputs.expected_sha
     environment: text-ai-preview
     permissions:
       contents: read

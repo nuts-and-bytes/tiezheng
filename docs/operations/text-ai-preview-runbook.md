@@ -1,6 +1,6 @@
 # 文字餐食 AI Preview 运维手册
 
-本文只适用于受保护的双账号文字 AI Preview。它不授权生产发布、照片 AI、额外账号、第二次真实模型请求或任何凭证外传。
+本文只适用于单人受保护模式下的双账号文字 AI Preview。它不授权生产发布、照片 AI、额外账号、第二次真实模型请求或任何凭证外传。
 
 ## 1. 固定边界
 
@@ -24,11 +24,11 @@
 1. **Deployment branches and tags** 选择 **Selected branches and tags**。
 2. 只添加一个 `Branch` 规则：`main`；不要添加 tag 规则或通配规则。
 3. 不得使用存在空规则歧义的 **Protected branches only**。GitHub 官方说明：如果仓库没有任何 branch protection rule，该选项会允许所有分支部署。
-4. 配置至少一名 required reviewer，并启用 **Prevent self-review**；触发 workflow 的人不能批准自己的部署。
-5. 关闭管理员绕过 protection rules 的能力。
-6. `main` 必须被 branch protection 或 ruleset 实际覆盖。workflow 自身还会校验 `github.ref == 'refs/heads/main'` 与 `github.ref_protected == true`。
+4. 单人模式已由用户明确批准；Environment 不配置 required reviewer，也不依赖 Environment reviewer 或 Prevent self-review。
+5. 单人受保护模式不会出现 pending deployment 审批阶段。每次 dispatch 前由当前操作者再次核对固定仓库、用户批准的 40 位 SHA 与远端 `main`，并把同一 SHA 作为必填 workflow input；workflow 在 job 启动前要求 `github.sha == inputs.expected_sha`。
+6. `main` 必须被 branch protection 或 ruleset 实际覆盖。workflow 同时校验 `github.ref == 'refs/heads/main'`、`github.ref_protected == true` 与批准 SHA；管理员绕过开关不作为放行依据。
 
-如果当前仓库可见性或 GitHub 套餐不支持 required reviewer、Prevent self-review、Environment secrets 或精确 deployment branch rule，结论是 `BLOCKED`；不得用无 reviewer、允许自批或宽化分支规则替代。GitHub 当前文档指出，部分套餐下 private repository 的 required reviewers 不可用。
+如果当前仓库不支持 Environment secrets、精确 deployment branch rule 或实际 `main` 保护，结论是 `BLOCKED`。单人模式放弃了职责分离：当前 GitHub 管理账号被接管时，第二人审批不再能阻止 dispatch；已接受的替代门禁是 manual-only workflow、受保护 `main`、批准 SHA 输入、固定操作/确认短语、关闭态 preflight、单次供应商尝试、额度与回滚。
 
 官方依据：
 
@@ -128,14 +128,14 @@ git diff --check
 
 ## 6. 首次配置与启用顺序
 
-以下命令只是受保护操作的调用格式。只有 Task 11/12 获得单独远程授权、workflow 已在受保护 `main`、Environment 审批通过后才能运行。不得依赖当前目录、默认仓库或“最近一次 run”。先由审批人把本次允许部署的 40 位 commit SHA 写入当前 shell；它不是 secret，但必须与远端 `main` 完全一致：
+以下命令只是受保护操作的调用格式。只有 Task 11/12 获得单独远程授权、workflow 已在受保护 `main` 且本次单人操作获得用户明确批准后才能运行。不得依赖当前目录、默认仓库或“最近一次 run”。由当前操作者把本次允许部署的 40 位 commit SHA 写入当前 shell；它不是 secret，但必须与远端 `main` 完全一致：
 
 ```bash
 export TEXT_AI_REPO='nuts-and-bytes/tiezheng'
 export TEXT_AI_EXPECTED_SHA='<批准的40位SHA>'
 ```
 
-开始任何 dispatch 前，必须证明该 workflow 的旧 `queued`、`in_progress`、`waiting`、`pending` run 数量分别为 0。若任一项非零，旧审批必须全部拒绝或取消，旧 run 必须结束，再重新从零开始核对；绝不能让旧的 enable 在新回滚之后继续执行。下面的 inventory 只用于排除旧活动 run，绝不用于给新 dispatch 绑定“最近一次” run ID：
+开始任何 dispatch 前，必须证明该 workflow 的旧 `queued`、`in_progress`、`waiting`、`pending` run 数量分别为 0。若任一项非零，旧活动 run 必须全部取消或等待结束，再重新从零开始核对；绝不能让旧的 enable 在新回滚之后继续执行。下面的 inventory 只用于排除旧活动 run，绝不用于给新 dispatch 绑定“最近一次” run ID：
 
 ```bash
 assert_no_stale_text_preview_runs() (
@@ -220,7 +220,8 @@ run_text_preview_operation() (
   fi
 
   dispatch_output="$(gh workflow run text-ai-preview.yml --ref main -R "$repo" \
-    -f operation="$operation" -f target="$target" -f confirmation="$confirmation")"
+    -f operation="$operation" -f target="$target" \
+    -f expected_sha="$expected_sha" -f confirmation="$confirmation")"
   run_id=''
   run_url_count=0
   while IFS= read -r line; do
@@ -233,12 +234,12 @@ run_text_preview_operation() (
     printf '%s\n' 'BLOCKED: exact dispatch run URL unavailable' >&2
     return 1
   fi
-  printf 'pending_run_id=%s\n' "$run_id"
+  printf 'dispatched_run_id=%s\n' "$run_id"
   verify_text_preview_run "$run_id" "$expected_sha"
 )
 ```
 
-当 Environment 显示 **pending deployment** 时，required reviewer 必须在可信 GitHub UI 中人工核对：仓库是固定仓库、run ID 是本次精确 run、`head SHA` 精确等于 `TEXT_AI_EXPECTED_SHA`，且此时远端 `main` 仍是同一 SHA。main 漂移时必须拒绝并取消，禁止批准；不得因为 workflow 名、分支名或提交标题看起来正确而放行。审批发生后仍要由 `verify_text_preview_run` 完成 job/step 级复核。
+单人受保护模式不配置 required reviewer，因此不会出现 pending deployment 审批阶段。操作者必须在 dispatch 前再次核对远端 `main` 精确等于 `TEXT_AI_EXPECTED_SHA`；同一 SHA 作为必填 `expected_sha` input 进入 workflow，SHA 不符时整个 job 被跳过且无法执行 dispatcher。完成后仍必须由 `verify_text_preview_run` 复核 exact head SHA、唯一 job 与唯一 dispatcher step；任何 waiting/pending 状态都视为 Environment 意外漂移并立即 `BLOCKED`。
 
 只允许把函数最后输出的 run ID、SHA 与固定成功结论写入 evidence，不记录 dispatch URL。若 dispatch 已发出但 URL 缺失或格式不符，本次操作立即结束为 `BLOCKED`；不得从 GitHub UI、`gh run list` 或任何“最近一次”结果补绑 run ID，也不得继续后续启用步骤。若该 operation 具有写入性，还必须按下文将其视为结果未知，并立即发起一次可精确绑定的 `disable-all`。
 
@@ -330,7 +331,7 @@ run_text_preview_operation disable-account user-2 ''
 ```
 
 - 目标只能是 `user-1` 或 `user-2`。
-- 无额外确认短语，但仍必须通过受保护 Environment reviewer；它的直接业务动作把文字与照片通道共用的目标 account flag 设为 false，因此也会取消该账号的照片 AI 资格。它不关闭文字 global、Worker、Access，也不主动清除既有计数或浏览器本地餐食。与其他管理操作相同，协调器会先执行到期 lease/counter 清理并写短期 operation replay，因此可能观察到正常的到期状态结算，但不会发供应商请求。
+- 无额外确认短语，但仍必须获得本次单人远程操作授权并通过批准 SHA 门禁；它的直接业务动作把文字与照片通道共用的目标 account flag 设为 false，因此也会取消该账号的照片 AI 资格。它不关闭文字 global、Worker、Access，也不主动清除既有计数或浏览器本地餐食。与其他管理操作相同，协调器会先执行到期 lease/counter 清理并写短期 operation replay，因此可能观察到正常的到期状态结算，但不会发供应商请求。
 - 禁用 user-2 后，在 user-1/global/Worker 都满足门禁时可用 `enable-second-account` 恢复。
 - 禁用 user-1 后没有直接的单步恢复操作；按第 9 节完整恢复顺序重新建立首次启用状态。
 
