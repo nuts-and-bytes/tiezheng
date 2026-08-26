@@ -563,6 +563,46 @@ test('resolved malformed credential Buffer is intrinsically wiped after fixed fa
   assertNoSensitiveOutput(fake, [secretText, 'hostile-fill-sentinel']);
 });
 
+test('candidate cleanup wipes only direct Buffers and never follows external client or IO references', async () => {
+  const rawSecret = makeHostileBuffer('raw-candidate-secret-sentinel');
+  const resolvedSecret = makeHostileBuffer('resolved-candidate-secret-sentinel');
+  const clientBuffer = Buffer.from('external-client-buffer-sentinel');
+  const ioBuffer = Buffer.from('external-io-buffer-sentinel');
+  const clientBefore = Buffer.from(clientBuffer);
+  const ioBefore = Buffer.from(ioBuffer);
+  const externalClient = Object.freeze({ bufferedResponse: clientBuffer });
+  const externalStdout = Object.freeze({ pendingOutput: ioBuffer });
+  const resolvedCredential = Object.freeze({
+    id: SERVICE_TOKEN_ID,
+    clientId: CREDENTIAL.clientId,
+    clientSecret: resolvedSecret,
+    client: externalClient,
+    io: externalStdout,
+  });
+  const credentialResult = Object.freeze({
+    directSecret: rawSecret,
+    client: externalClient,
+    io: externalStdout,
+    then(resolve) {
+      queueMicrotask(() => resolve(resolvedCredential));
+    },
+  });
+  const fake = setupDependencies({ credentialResult });
+  assert.equal(await runTextPreviewSetup(fake.dependencies), 1);
+  assert.deepEqual(fake.deleted, ['cloudflare.service-token']);
+  assert.equal(fake.stderr.text, 'SETUP FAILED\n');
+  assert.equal(isWiped(rawSecret), true);
+  assert.equal(isWiped(resolvedSecret), true);
+  assert.deepEqual(clientBuffer, clientBefore);
+  assert.deepEqual(ioBuffer, ioBefore);
+  assertNoSensitiveOutput(fake, [
+    'raw-candidate-secret-sentinel',
+    'resolved-candidate-secret-sentinel',
+    'external-client-buffer-sentinel',
+    'external-io-buffer-sentinel',
+  ]);
+});
+
 test('rejecting key thenable retains and intrinsically wipes its own Buffer without leaking rejection', async () => {
   const secretText = 'rejecting-key-buffer-sentinel';
   const secretBuffer = makeHostileBuffer(secretText);

@@ -61,7 +61,6 @@ const ID_PATTERN = /^(?=.{1,255}$)[A-Za-z0-9._-]+$/u;
 const TEAM_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const RESERVED_IDS = new Set(['.', '..', '__proto__', 'constructor', 'prototype']);
 const TYPED_ARRAY_FILL = Uint8Array.prototype.fill;
-const MAX_WIPE_NODES = 256;
 const MAX_WIPE_PROPERTIES = 4_096;
 
 function fail() {
@@ -341,8 +340,25 @@ function intrinsicWipe(value) {
 
 function wipeSecretCandidates(candidates) {
   const buffers = new Set();
+  const seen = new WeakSet();
+  const records = [];
+  const priorityNames = ['aesKey', 'hmacKey', 'clientSecret'];
   for (const value of candidates) {
-    for (const name of ['aesKey', 'hmacKey', 'clientSecret']) {
+    try {
+      if (Buffer.isBuffer(value)) {
+        buffers.add(value);
+        continue;
+      }
+      if (!isObjectLike(value) || seen.has(value)) continue;
+      seen.add(value);
+      records.push(value);
+    } catch {
+      continue;
+    }
+  }
+
+  for (const value of records) {
+    for (const name of priorityNames) {
       const candidate = ownDataValue(value, name);
       try {
         if (Buffer.isBuffer(candidate)) buffers.add(candidate);
@@ -352,32 +368,29 @@ function wipeSecretCandidates(candidates) {
     }
   }
 
-  const seen = new WeakSet();
-  const stack = candidates.filter(isObjectLike);
-  let nodes = 0;
   let properties = 0;
-  while (stack.length > 0 && nodes < MAX_WIPE_NODES && properties < MAX_WIPE_PROPERTIES) {
-    const current = stack.pop();
+  for (const value of records) {
+    if (properties >= MAX_WIPE_PROPERTIES) break;
+    let keys;
     try {
-      if (!isObjectLike(current) || seen.has(current)) continue;
-      seen.add(current);
-      nodes += 1;
-      if (Buffer.isBuffer(current)) {
-        buffers.add(current);
-        continue;
-      }
-      const keys = Reflect.ownKeys(current);
-      for (const key of keys) {
-        if (properties >= MAX_WIPE_PROPERTIES) break;
-        properties += 1;
-        const descriptor = Object.getOwnPropertyDescriptor(current, key);
-        if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) continue;
-        const child = descriptor.value;
-        if (Buffer.isBuffer(child)) buffers.add(child);
-        else if (isObjectLike(child)) stack.push(child);
-      }
+      keys = Reflect.ownKeys(value);
     } catch {
-      // Cleanup is best effort, bounded, and never changes the fixed public result.
+      continue;
+    }
+    for (const key of keys) {
+      if (priorityNames.includes(key)) continue;
+      if (properties >= MAX_WIPE_PROPERTIES) break;
+      properties += 1;
+      try {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (
+          descriptor !== undefined
+          && Object.hasOwn(descriptor, 'value')
+          && Buffer.isBuffer(descriptor.value)
+        ) buffers.add(descriptor.value);
+      } catch {
+        // Cleanup is best effort, bounded, and never changes the fixed public result.
+      }
     }
   }
   for (const buffer of buffers) intrinsicWipe(buffer);
