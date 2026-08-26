@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 
 import { SETUP_POLICY } from './text-ai-preview-setup-values.mjs';
-import { createGitHubSetupClient } from './text-ai-preview-setup-github.mjs';
+import {
+  createBoundedCommandRunnerForTest,
+  createGitHubSetupClient,
+} from './text-ai-preview-setup-github.mjs';
 
 const FAILURE = 'Text preview setup failed';
 const SHA = 'b'.repeat(40);
@@ -123,6 +127,111 @@ function isMutation(call) {
   return call.command === 'gh'
     && (call.args[0] === 'workflow' || ['set', 'delete'].includes(call.args[1]));
 }
+
+function controlledSpawn(onEnd = () => {}) {
+  const calls = [];
+  const spawnImpl = (command, args, options) => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter();
+    child.kills = [];
+    child.kill = (signal) => {
+      child.kills.push(signal);
+      return true;
+    };
+    child.stdin.end = (input) => {
+      child.input = input === undefined ? undefined : Buffer.from(input);
+      onEnd(child);
+    };
+    calls.push({ command, args: [...args], options, child });
+    return child;
+  };
+  spawnImpl.calls = calls;
+  return spawnImpl;
+}
+
+test('bounded runner fixes shell, environment, stdio and writes input only to child stdin', async () => {
+  const spawnImpl = controlledSpawn((child) => queueMicrotask(() => {
+    child.stdout.emit('data', Buffer.from('safe-output'));
+    child.stderr.emit('data', Buffer.from('safe-error'));
+    child.emit('close', 0);
+  }));
+  const runner = createBoundedCommandRunnerForTest(spawnImpl);
+  const input = Buffer.from('stdin-secret-sentinel');
+  const response = await runner('gh', ['secret', 'set', 'ARK_API_KEY'], { input, timeoutMs: 1_000 });
+  assert.deepEqual(response, { code: 0, stdout: 'safe-output', stderr: 'safe-error' });
+  assert.equal(Object.isFrozen(response), true);
+  assert.equal(spawnImpl.calls.length, 1);
+  const [{ command, args, options, child }] = spawnImpl.calls;
+  assert.equal(command, 'gh');
+  assert.deepEqual(args, ['secret', 'set', 'ARK_API_KEY']);
+  assert.equal(options.shell, false);
+  assert.deepEqual(options.stdio, ['pipe', 'pipe', 'pipe']);
+  const allowedEnv = new Set([
+    'PATH', 'HOME', 'XDG_CONFIG_HOME', 'LANG', 'LC_ALL',
+    'NO_COLOR', 'GH_PROMPT_DISABLED', 'GIT_TERMINAL_PROMPT',
+  ]);
+  assert.equal(Object.keys(options.env).every((name) => allowedEnv.has(name)), true);
+  assert.equal(options.env.NO_COLOR, '1');
+  assert.equal(options.env.GH_PROMPT_DISABLED, '1');
+  assert.equal(options.env.GIT_TERMINAL_PROMPT, '0');
+  assert.equal(Object.hasOwn(options.env, 'GH_TOKEN'), false);
+  assert.equal(JSON.stringify(options.env).includes('stdin-secret-sentinel'), false);
+  assert.deepEqual(child.input, Buffer.from('stdin-secret-sentinel'));
+  assert.equal(args.join(' ').includes('stdin-secret-sentinel'), false);
+});
+
+test('bounded runner hides a synchronous spawn failure', async () => {
+  const runner = createBoundedCommandRunnerForTest(() => {
+    throw new Error('spawn-private-sentinel');
+  });
+  await assertFailure(() => runner('git', ['status']), ['spawn-private-sentinel']);
+});
+
+test('bounded runner kills and rejects at its fixed timeout boundary', async () => {
+  const spawnImpl = controlledSpawn();
+  const runner = createBoundedCommandRunnerForTest(spawnImpl);
+  await assertFailure(() => runner('gh', ['auth', 'status'], { timeoutMs: 1 }));
+  assert.deepEqual(spawnImpl.calls[0].child.kills, ['SIGKILL']);
+});
+
+test('bounded runner caps combined stdout and stderr bytes', async () => {
+  const spawnImpl = controlledSpawn((child) => queueMicrotask(() => {
+    child.stdout.emit('data', Buffer.alloc(200_000));
+    child.stderr.emit('data', Buffer.alloc(62_145));
+  }));
+  const runner = createBoundedCommandRunnerForTest(spawnImpl);
+  await assertFailure(() => runner('gh', ['auth', 'status']));
+  assert.deepEqual(spawnImpl.calls[0].child.kills, ['SIGKILL']);
+});
+
+test('bounded runner decodes output as fatal UTF-8', async () => {
+  const spawnImpl = controlledSpawn((child) => queueMicrotask(() => {
+    child.stdout.emit('data', Buffer.from([0xc3, 0x28]));
+    child.emit('close', 0);
+  }));
+  const runner = createBoundedCommandRunnerForTest(spawnImpl);
+  await assertFailure(() => runner('gh', ['auth', 'status']));
+  assert.deepEqual(spawnImpl.calls[0].child.kills, ['SIGKILL']);
+});
+
+test('bounded runner rejects an illegal child close code', async () => {
+  const spawnImpl = controlledSpawn((child) => queueMicrotask(() => child.emit('close', null)));
+  const runner = createBoundedCommandRunnerForTest(spawnImpl);
+  await assertFailure(() => runner('git', ['status']));
+  assert.deepEqual(spawnImpl.calls[0].child.kills, ['SIGKILL']);
+});
+
+test('bounded runner settles once when child error and close both fire', async () => {
+  const spawnImpl = controlledSpawn((child) => queueMicrotask(() => {
+    child.emit('error', new Error('child-private-sentinel'));
+    child.emit('close', null);
+  }));
+  const runner = createBoundedCommandRunnerForTest(spawnImpl);
+  await assertFailure(() => runner('gh', ['auth', 'status']), ['child-private-sentinel']);
+  assert.deepEqual(spawnImpl.calls[0].child.kills, ['SIGKILL']);
+});
 
 test('client is frozen and exposes only the seven setup operations', () => {
   const github = createGitHubSetupClient(async () => result());
@@ -365,6 +474,8 @@ test('dispatch URL must contain exactly one canonical current-repository run URL
   const outputs = [
     '',
     `${RUN_URL}\n${RUN_URL}\n`,
+    `${RUN_URL}\nhttps://github.com/other/repo/actions/runs/456\n`,
+    `${RUN_URL}\nftp://example.com/private-run\n`,
     'https://github.com/other/repo/actions/runs/123\n',
     `${RUN_URL}/jobs/999\n`,
   ];

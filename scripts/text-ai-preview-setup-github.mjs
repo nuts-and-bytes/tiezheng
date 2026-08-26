@@ -111,90 +111,104 @@ function snapshotRunOptions(value) {
   }
 }
 
+function createBoundedCommandRunner(spawnCommand) {
+  if (typeof spawnCommand !== 'function') fail();
+  return async (command, args, options = undefined) => {
+    try {
+      if (command !== 'git' && command !== 'gh') fail();
+      const { input, timeoutMs } = snapshotRunOptions(options);
+      const safeArguments = snapshotArguments(args);
+      const safeInput = boundedInput(input);
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > WATCH_TIMEOUT) fail();
+      const env = Object.fromEntries(ALLOWED_ENV
+        .filter((name) => typeof process.env[name] === 'string')
+        .map((name) => [name, process.env[name]]));
+      env.NO_COLOR = '1';
+      env.GH_PROMPT_DISABLED = '1';
+      env.GIT_TERMINAL_PROMPT = '0';
+
+      return await new Promise((resolve, reject) => {
+        const child = Reflect.apply(spawnCommand, undefined, [command, safeArguments, {
+          shell: false,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env,
+        }]);
+        const stdout = [];
+        const stderr = [];
+        let bytes = 0;
+        let settled = false;
+        let timer;
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          callback(value);
+        };
+        const failCommand = () => {
+          if (settled) return;
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // The fixed public failure below is sufficient after a failed kill.
+          }
+          finish(reject, new Error(FAILURE));
+        };
+        const collect = (target) => (chunk) => {
+          if (!Buffer.isBuffer(chunk)) {
+            failCommand();
+            return;
+          }
+          bytes += chunk.length;
+          if (bytes > MAX_OUTPUT) {
+            failCommand();
+            return;
+          }
+          target.push(chunk);
+        };
+
+        child.stdout.on('data', collect(stdout));
+        child.stderr.on('data', collect(stderr));
+        child.stdin.on('error', failCommand);
+        child.once('error', failCommand);
+        child.once('close', (code) => {
+          if (!Number.isInteger(code) || code < 0 || code > 255) {
+            failCommand();
+            return;
+          }
+          try {
+            const outputDecoder = new TextDecoder('utf-8', { fatal: true });
+            const errorDecoder = new TextDecoder('utf-8', { fatal: true });
+            finish(resolve, Object.freeze({
+              code,
+              stdout: outputDecoder.decode(Buffer.concat(stdout)),
+              stderr: errorDecoder.decode(Buffer.concat(stderr)),
+            }));
+          } catch {
+            failCommand();
+          }
+        });
+        timer = setTimeout(failCommand, timeoutMs);
+        try {
+          if (safeInput === undefined) child.stdin.end();
+          else child.stdin.end(safeInput);
+        } catch {
+          failCommand();
+        }
+      });
+    } catch {
+      fail();
+    }
+  };
+}
+
+export function createBoundedCommandRunnerForTest(spawnCommand) {
+  return createBoundedCommandRunner(spawnCommand);
+}
+
+const BOUNDED_COMMAND_RUNNER = createBoundedCommandRunner(spawn);
+
 export async function runBoundedCommand(command, args, options = undefined) {
-  try {
-    if (command !== 'git' && command !== 'gh') fail();
-    const { input, timeoutMs } = snapshotRunOptions(options);
-    const safeArguments = snapshotArguments(args);
-    const safeInput = boundedInput(input);
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > WATCH_TIMEOUT) fail();
-    const env = Object.fromEntries(ALLOWED_ENV
-      .filter((name) => typeof process.env[name] === 'string')
-      .map((name) => [name, process.env[name]]));
-    env.NO_COLOR = '1';
-    env.GH_PROMPT_DISABLED = '1';
-    env.GIT_TERMINAL_PROMPT = '0';
-
-    return await new Promise((resolve, reject) => {
-      const child = spawn(command, safeArguments, {
-        shell: false,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env,
-      });
-      const stdout = [];
-      const stderr = [];
-      let bytes = 0;
-      let settled = false;
-      let timer;
-      const finish = (callback, value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        callback(value);
-      };
-      const failCommand = () => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // The fixed public failure below is sufficient after a failed kill.
-        }
-        finish(reject, new Error(FAILURE));
-      };
-      const collect = (target) => (chunk) => {
-        if (!Buffer.isBuffer(chunk)) {
-          failCommand();
-          return;
-        }
-        bytes += chunk.length;
-        if (bytes > MAX_OUTPUT) {
-          failCommand();
-          return;
-        }
-        target.push(chunk);
-      };
-
-      child.stdout.on('data', collect(stdout));
-      child.stderr.on('data', collect(stderr));
-      child.stdin.on('error', failCommand);
-      child.once('error', failCommand);
-      child.once('close', (code) => {
-        if (!Number.isInteger(code) || code < 0 || code > 255) {
-          failCommand();
-          return;
-        }
-        try {
-          const outputDecoder = new TextDecoder('utf-8', { fatal: true });
-          const errorDecoder = new TextDecoder('utf-8', { fatal: true });
-          finish(resolve, Object.freeze({
-            code,
-            stdout: outputDecoder.decode(Buffer.concat(stdout)),
-            stderr: errorDecoder.decode(Buffer.concat(stderr)),
-          }));
-        } catch {
-          failCommand();
-        }
-      });
-      timer = setTimeout(failCommand, timeoutMs);
-      try {
-        if (safeInput === undefined) child.stdin.end();
-        else child.stdin.end(safeInput);
-      } catch {
-        failCommand();
-      }
-    });
-  } catch {
-    fail();
-  }
+  return BOUNDED_COMMAND_RUNNER(command, args, options);
 }
 
 function dataProperty(value, name) {
@@ -337,13 +351,12 @@ function validateEmptyRunList(value) {
 function extractRunId(value) {
   if (typeof value !== 'string' || /\r/u.test(value)) fail();
   const pattern = new RegExp(`^https://github\\.com/${REPO}/actions/runs/([0-9]+)$`, 'u');
-  const matches = [];
-  for (const line of value.split('\n')) {
-    const match = pattern.exec(line);
-    if (match !== null) matches.push(match[1]);
-  }
-  if (matches.length !== 1 || !RUN_ID_PATTERN.test(matches[0])) fail();
-  return matches[0];
+  const urlTokens = value.match(/[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s]+/gu) ?? [];
+  if (urlTokens.length !== 1) fail();
+  const matchingLines = value.split('\n').filter((line) => line === urlTokens[0]);
+  const match = pattern.exec(urlTokens[0]);
+  if (matchingLines.length !== 1 || match === null || !RUN_ID_PATTERN.test(match[1])) fail();
+  return match[1];
 }
 
 function parseJobId(value, expectedSha) {
