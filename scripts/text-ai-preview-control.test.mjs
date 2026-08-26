@@ -18,6 +18,8 @@ import {
   preflightTextPreview,
   reconcileTextPreview,
   runTextPreviewControlCli,
+  TEXT_PREVIEW_SETUP_PERMISSION_NAMES,
+  verifyTextPreviewSetupToken,
 } from './text-ai-preview-control.mjs';
 
 const SENSITIVE = Object.freeze({
@@ -103,6 +105,15 @@ const REQUIRED_TOKEN_PERMISSION_NAMES = Object.freeze([
   'Access: Identity Providers Read',
   'Access: Service Tokens Read',
 ]);
+const EXPECTED_SETUP_PERMISSION_NAMES = Object.freeze([
+  'Account API Tokens Read',
+  'Workers Scripts Edit',
+  'Cloudflare Pages Edit',
+  'Access: Apps and Policies Edit',
+  'Access: Organizations, Identity Providers, and Groups Read',
+  'Access: Service Tokens Read',
+  'Access: Service Tokens Write',
+]);
 
 const USER_APP_PAYLOAD = Object.freeze({
   name: USER_APP_NAME,
@@ -170,6 +181,10 @@ function permissionGroupCatalog(names = REQUIRED_TOKEN_PERMISSION_NAMES) {
 }
 
 function tokenDetail(overrides = {}) {
+  return tokenDetailForPermissions(REQUIRED_TOKEN_PERMISSION_NAMES, overrides);
+}
+
+function tokenDetailForPermissions(permissionNames, overrides = {}) {
   return {
     id: TOKEN_ID,
     status: 'active',
@@ -177,13 +192,21 @@ function tokenDetail(overrides = {}) {
       id: 'token-policy-id',
       effect: 'allow',
       resources: { [ACCOUNT_RESOURCE_KEY]: '*' },
-      permission_groups: REQUIRED_TOKEN_PERMISSION_NAMES.map((_, index) => ({
+      permission_groups: permissionNames.map((_, index) => ({
         id: `permission-group-${index}`,
         name: `cosmetic-name-${index}`,
       })),
     }],
     ...overrides,
   };
+}
+
+function setupTokenResults(permissionNames = EXPECTED_SETUP_PERMISSION_NAMES) {
+  return new Map([
+    ['GET /tokens/verify', { id: TOKEN_ID, status: 'active' }],
+    [`GET /tokens/${TOKEN_ID}`, tokenDetailForPermissions(permissionNames)],
+    ['GET /tokens/permission_groups', permissionGroupCatalog(permissionNames)],
+  ]);
 }
 
 function adminSuccess(operationId = OPERATION_ID, statusOverrides = {}) {
@@ -525,6 +548,124 @@ test('preflight accepts only the documented account permission aliases resolved 
     loadTextPreviewConfig(validEnv()),
     fake.client,
   ));
+});
+
+test('setup token verification returns the account ID when all seven canonical permissions exist', async () => {
+  const fake = createFakeClient(setupTokenResults());
+
+  const result = await verifyTextPreviewSetupToken(SENSITIVE.accountId, fake.client);
+
+  assert.deepEqual(result, {
+    accountId: SENSITIVE.accountId,
+    missingPermissions: [],
+  });
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.missingPermissions), true);
+  assert.deepEqual(fake.calls.map(({ method, path }) => `${method} ${path}`), [
+    'GET /tokens/verify',
+    `GET /tokens/${TOKEN_ID}`,
+    'GET /tokens/permission_groups',
+  ]);
+});
+
+test('setup exports the fixed canonical permission names in order', () => {
+  assert.deepEqual(TEXT_PREVIEW_SETUP_PERMISSION_NAMES, EXPECTED_SETUP_PERMISSION_NAMES);
+  assert.equal(Object.isFrozen(TEXT_PREVIEW_SETUP_PERMISSION_NAMES), true);
+});
+
+test('setup reports exactly each missing canonical permission without writes', async () => {
+  for (const missingPermission of EXPECTED_SETUP_PERMISSION_NAMES) {
+    const permissionNames = EXPECTED_SETUP_PERMISSION_NAMES.filter((name) => name !== missingPermission);
+    const fake = createFakeClient(setupTokenResults(permissionNames));
+
+    const result = await verifyTextPreviewSetupToken(SENSITIVE.accountId, fake.client);
+
+    assert.deepEqual(result, {
+      accountId: SENSITIVE.accountId,
+      missingPermissions: [missingPermission],
+    });
+    assert.equal(fake.calls.every(({ method }) => method === 'GET'), true);
+  }
+});
+
+test('setup accepts the existing Workers, Pages, and Apps Write aliases', async () => {
+  const permissionNames = [
+    'Account API Tokens Read',
+    'Workers Scripts Write',
+    'Pages Write',
+    'Access: Apps and Policies Write',
+    'Access: Organizations, Identity Providers, and Groups Read',
+    'Access: Service Tokens Read',
+    'Access: Service Tokens Write',
+  ];
+  const fake = createFakeClient(setupTokenResults(permissionNames));
+
+  await assert.doesNotReject(() => verifyTextPreviewSetupToken(SENSITIVE.accountId, fake.client));
+});
+
+test('setup does not substitute the narrower Identity Providers permission', async () => {
+  const permissionNames = [
+    'Account API Tokens Read',
+    'Workers Scripts Edit',
+    'Cloudflare Pages Edit',
+    'Access: Apps and Policies Edit',
+    'Access: Identity Providers Read',
+    'Access: Service Tokens Read',
+    'Access: Service Tokens Write',
+  ];
+  const fake = createFakeClient(setupTokenResults(permissionNames));
+
+  const result = await verifyTextPreviewSetupToken(SENSITIVE.accountId, fake.client);
+
+  assert.deepEqual(result.missingPermissions, [
+    'Access: Organizations, Identity Providers, and Groups Read',
+  ]);
+});
+
+test('setup fails closed on malformed token structures and scopes', async () => {
+  const cases = [];
+
+  const mixedScopeCatalog = permissionGroupCatalog();
+  mixedScopeCatalog[0].scopes = ['com.cloudflare.api.account', 'com.cloudflare.api.user'];
+  cases.push(setupTokenResults());
+  cases.at(-1).set('GET /tokens/permission_groups', mixedScopeCatalog);
+
+  const nonAccountScopeCatalog = permissionGroupCatalog();
+  nonAccountScopeCatalog[0].scopes = ['com.cloudflare.edge.r2.bucket'];
+  cases.push(setupTokenResults());
+  cases.at(-1).set('GET /tokens/permission_groups', nonAccountScopeCatalog);
+
+  const wrongAccount = tokenDetailForPermissions(EXPECTED_SETUP_PERMISSION_NAMES);
+  wrongAccount.policies[0].resources = {
+    [`com.cloudflare.api.account.${'b'.repeat(32)}`]: '*',
+  };
+  cases.push(setupTokenResults());
+  cases.at(-1).set(`GET /tokens/${TOKEN_ID}`, wrongAccount);
+
+  const duplicateGroup = tokenDetailForPermissions(EXPECTED_SETUP_PERMISSION_NAMES);
+  duplicateGroup.policies[0].permission_groups[1].id =
+    duplicateGroup.policies[0].permission_groups[0].id;
+  cases.push(setupTokenResults());
+  cases.at(-1).set(`GET /tokens/${TOKEN_ID}`, duplicateGroup);
+
+  const accessorGroup = tokenDetailForPermissions(EXPECTED_SETUP_PERMISSION_NAMES);
+  Object.defineProperty(accessorGroup.policies[0].permission_groups[0], 'id', {
+    enumerable: true,
+    get: () => 'permission-group-0',
+  });
+  cases.push(setupTokenResults());
+  cases.at(-1).set(`GET /tokens/${TOKEN_ID}`, accessorGroup);
+
+  const prototypeDetail = tokenDetailForPermissions(EXPECTED_SETUP_PERMISSION_NAMES);
+  Object.setPrototypeOf(prototypeDetail, { polluted: true });
+  cases.push(setupTokenResults());
+  cases.at(-1).set(`GET /tokens/${TOKEN_ID}`, prototypeDetail);
+
+  for (const results of cases) {
+    const fake = createFakeClient(results);
+    await expectFixedRejection(() => verifyTextPreviewSetupToken(SENSITIVE.accountId, fake.client));
+    assert.equal(fake.calls.some(({ method }) => method !== 'GET'), false);
+  }
 });
 
 test('preflight and configure allow unused known non-account and multi-scope catalog entries', async () => {

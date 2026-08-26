@@ -90,6 +90,18 @@ const REQUIRED_TOKEN_CAPABILITY_ALIASES = Object.freeze([
   ]),
   Object.freeze(['Access: Service Tokens Read']),
 ]);
+const SETUP_TOKEN_CAPABILITY_ALIASES = Object.freeze([
+  Object.freeze(['Account API Tokens Read']),
+  Object.freeze(['Workers Scripts Edit', 'Workers Scripts Write']),
+  Object.freeze(['Cloudflare Pages Edit', 'Pages Write']),
+  Object.freeze(['Access: Apps and Policies Edit', 'Access: Apps and Policies Write']),
+  Object.freeze(['Access: Organizations, Identity Providers, and Groups Read']),
+  Object.freeze(['Access: Service Tokens Read']),
+  Object.freeze(['Access: Service Tokens Write']),
+]);
+export const TEXT_PREVIEW_SETUP_PERMISSION_NAMES = Object.freeze(
+  SETUP_TOKEN_CAPABILITY_ALIASES.map((aliases) => aliases[0]),
+);
 const VALID_CONFIGS = new WeakSet();
 const VALID_CLOUDFLARE_CONFIGS = new WeakSet();
 
@@ -432,7 +444,7 @@ function parsePermissionGroupCatalog(value) {
   return catalog;
 }
 
-function parseTokenDetails(value, tokenId, accountId, permissionCatalog) {
+function parseTokenDetails(value, tokenId, accountId, permissionCatalog, requiredAliases) {
   const token = snapshotRecord(value);
   rejectPrototypeKeys(token);
   if (
@@ -488,13 +500,36 @@ function parseTokenDetails(value, tokenId, accountId, permissionCatalog) {
         fail();
       }
       const { name } = permission;
-      for (let index = 0; index < REQUIRED_TOKEN_CAPABILITY_ALIASES.length; index += 1) {
-        if (REQUIRED_TOKEN_CAPABILITY_ALIASES[index].includes(name)) capabilities.add(index);
+      for (let index = 0; index < requiredAliases.length; index += 1) {
+        if (requiredAliases[index].includes(name)) capabilities.add(index);
       }
     }
   }
 
-  if (capabilities.size !== REQUIRED_TOKEN_CAPABILITY_ALIASES.length) fail();
+  return Object.freeze(requiredAliases
+    .map((aliases, index) => (capabilities.has(index) ? undefined : aliases[0]))
+    .filter((name) => name !== undefined));
+}
+
+async function verifyTokenCapabilities(accountId, client, requiredAliases) {
+  if (typeof accountId !== 'string' || !ACCOUNT_ID_PATTERN.test(accountId)) fail();
+  const get = clientGet(client);
+  const tokenId = parseTokenVerification(await get('/tokens/verify'));
+  const tokenDetails = await get(`/tokens/${tokenId}`);
+  const permissionCatalog = parsePermissionGroupCatalog(
+    await get('/tokens/permission_groups'),
+  );
+  const missingPermissions = parseTokenDetails(
+    tokenDetails,
+    tokenId,
+    accountId,
+    permissionCatalog,
+    requiredAliases,
+  );
+  return Object.freeze({
+    accountId,
+    missingPermissions,
+  });
 }
 
 function parsePagesProject(value) {
@@ -584,12 +619,12 @@ export async function preflightTextPreview(config, client) {
     if (!configIsValid(config)) fail();
     const get = clientGet(client);
 
-    const tokenId = parseTokenVerification(await get('/tokens/verify'));
-    const tokenDetails = await get(`/tokens/${tokenId}`);
-    const permissionCatalog = parsePermissionGroupCatalog(
-      await get('/tokens/permission_groups'),
+    const tokenCapabilities = await verifyTokenCapabilities(
+      config.accountId,
+      client,
+      REQUIRED_TOKEN_CAPABILITY_ALIASES,
     );
-    parseTokenDetails(tokenDetails, tokenId, config.accountId, permissionCatalog);
+    if (tokenCapabilities.missingPermissions.length > 0) fail();
     const project = parsePagesProject(await get('/pages/projects/tiezheng'));
     parseWorkerList(await get('/workers/scripts'));
     const workerSettings = parseWorkerSettings(
@@ -610,6 +645,14 @@ export async function preflightTextPreview(config, client) {
       photoAiGatewayEnabled: workerSettings.photoAiGatewayEnabled,
       workerTextEnabled: workerSettings.workerTextEnabled,
     });
+  } catch {
+    fail();
+  }
+}
+
+export async function verifyTextPreviewSetupToken(accountId, client) {
+  try {
+    return await verifyTokenCapabilities(accountId, client, SETUP_TOKEN_CAPABILITY_ALIASES);
   } catch {
     fail();
   }
