@@ -281,42 +281,73 @@ function reserveWipeProperties(scan, count) {
 }
 
 function collectBufferProperty(value, buffers, scan = newWipeScan()) {
-  const pending = [value];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (Buffer.isBuffer(current)) {
-      buffers.add(current);
+  const frames = [{ value, keys: null, index: 0, end: 0 }];
+  while (frames.length > 0) {
+    const frame = frames[frames.length - 1];
+    const current = frame.value;
+    if (frame.keys === null) {
+      if (Buffer.isBuffer(current)) {
+        buffers.add(current);
+        frames.pop();
+        continue;
+      }
+      if (current === null || (typeof current !== 'object' && typeof current !== 'function')) {
+        frames.pop();
+        continue;
+      }
+      if (scan.seen.has(current)) {
+        frames.pop();
+        continue;
+      }
+      scan.seen.add(current);
+      scan.nodes += 1;
+      if (scan.nodes > MAX_WIPE_NODES) {
+        scan.complete = false;
+        frames.pop();
+        continue;
+      }
+      let keys;
+      try {
+        keys = Reflect.ownKeys(current);
+      } catch {
+        scan.complete = false;
+        frames.pop();
+        continue;
+      }
+      const remaining = Math.max(0, MAX_WIPE_PROPERTIES - scan.properties);
+      frame.keys = keys;
+      frame.index = 0;
+      frame.end = Math.min(keys.length, remaining);
+      if (frame.end < keys.length) scan.complete = false;
+      if (frame.end === 0) {
+        frames.pop();
+        continue;
+      }
+    }
+    if (frame.index >= frame.end) {
+      frames.pop();
       continue;
     }
-    if (current === null || (typeof current !== 'object' && typeof current !== 'function')) continue;
-    if (scan.seen.has(current)) continue;
-    scan.seen.add(current);
-    scan.nodes += 1;
-    if (scan.nodes > MAX_WIPE_NODES) {
+    if (scan.properties >= MAX_WIPE_PROPERTIES) {
       scan.complete = false;
+      frames.pop();
       continue;
     }
-    let keys;
+    const key = frame.keys[frame.index];
+    frame.index += 1;
+    scan.properties += 1;
+    let descriptor;
     try {
-      keys = Reflect.ownKeys(current);
+      descriptor = Object.getOwnPropertyDescriptor(current, key);
     } catch {
       scan.complete = false;
       continue;
     }
-    const allowed = takeWipePropertyPrefix(scan, keys.length);
-    for (let keyIndex = 0; keyIndex < allowed; keyIndex += 1) {
-      const key = keys[keyIndex];
-      let descriptor;
-      try {
-        descriptor = Object.getOwnPropertyDescriptor(current, key);
-      } catch {
-        scan.complete = false;
-        continue;
-      }
-      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) continue;
-      const child = descriptor.value;
-      if (Buffer.isBuffer(child)) buffers.add(child);
-      else if (child !== null && (typeof child === 'object' || typeof child === 'function')) pending.push(child);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) continue;
+    const child = descriptor.value;
+    if (Buffer.isBuffer(child)) buffers.add(child);
+    else if (child !== null && (typeof child === 'object' || typeof child === 'function')) {
+      frames.push({ value: child, keys: null, index: 0, end: 0 });
     }
   }
   return scan.complete;

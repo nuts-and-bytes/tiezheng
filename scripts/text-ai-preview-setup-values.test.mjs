@@ -355,6 +355,15 @@ test('wipes a Buffer in the allowed prefix when an object exceeds the shared pro
   assert.ok(prefix.every((byte) => byte === 0));
 });
 
+test('prioritizes a standard entry child before exhausting an oversized secrets array budget', () => {
+  const known = Buffer.from('known-entry-secret');
+  const secrets = [];
+  secrets[0] = { name: 'known', value: known };
+  for (let index = 1; index < 100_001; index += 1) secrets[index] = 0;
+  expectFailure(() => wipeSetupWrites({ secrets, variables: [] }));
+  assert.ok(known.every((byte) => byte === 0));
+});
+
 test('uses intrinsic bytes instead of overridden Buffer some or toString during key validation', () => {
   const aesKey = Buffer.from('A'.repeat(43) + '=');
   const hmacKey = Buffer.from('b'.repeat(64));
