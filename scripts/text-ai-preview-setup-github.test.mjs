@@ -179,6 +179,14 @@ test('write validation fails closed, wipes a valid buffer, and never invokes the
   const runner = fakeRunner([]);
   await assertFailure(() => createGitHubSetupClient(runner).setSecret('ARK_API_KEY', 'not-a-buffer'));
   assert.equal(runner.calls.length, 0);
+
+  const accountRunner = fakeRunner([]);
+  const accountValue = Buffer.from(ACCOUNT_ID);
+  await assertFailure(() => (
+    createGitHubSetupClient(accountRunner).setVariable('CLOUDFLARE_ACCOUNT_ID', accountValue)
+  ));
+  assert.equal(accountRunner.calls.length, 0);
+  assert.ok(accountValue.every((byte) => byte === 0));
 });
 
 test('delete operations use exact fixed-name argv and no stdin', async () => {
@@ -196,6 +204,12 @@ test('delete operations use exact fixed-name argv and no stdin', async () => {
       args: ['variable', 'delete', 'TEXT_AI_TEAM_DOMAIN', '--env', ENVIRONMENT, '--repo', REPO],
     },
   ]);
+
+  const accountRunner = fakeRunner([]);
+  await assertFailure(() => (
+    createGitHubSetupClient(accountRunner).deleteVariable('CLOUDFLARE_ACCOUNT_ID')
+  ));
+  assert.equal(accountRunner.calls.length, 0);
 });
 
 test('read-only inspection requires clean protected main and empty setup targets', async () => {
@@ -244,6 +258,8 @@ test('inspection failure matrix stops before any mutation and sanitizes output',
     ['branch policy missing', 7, result(policies([]))],
     ['branch policy duplicate', 7, result(policies([{ name: 'main' }, { name: 'main' }]))],
     ['branch policy drift', 7, result(policies([{ name: 'release' }]))],
+    ['branch policy missing type', 7, result(policies([{ name: 'main' }]))],
+    ['branch policy tag type', 7, result(policies([{ name: 'main', type: 'tag' }]))],
     ['branch policy total drift', 7, result('[{"total_count":2,"branch_policies":[{"name":"main"}]}]')],
     ['secret already exists', 8, result(names(['ARK_API_KEY']))],
     ['variable target drift', 9, result(names(['CLOUDFLARE_ACCOUNT_ID', 'TEXT_AI_TEAM_DOMAIN']))],

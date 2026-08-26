@@ -18,6 +18,7 @@ const WORKFLOW_NAME = 'Text AI Preview Control';
 const JOB_NAME = 'text-ai-preview';
 const STEP_NAME = 'Dispatch fixed operation';
 const ACCOUNT_VARIABLE = 'CLOUDFLARE_ACCOUNT_ID';
+const WRITABLE_VARIABLE_NAMES = Object.freeze(['TEXT_AI_TEAM_DOMAIN']);
 const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'pending']);
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
@@ -325,7 +326,7 @@ function validatePolicies(value) {
   if (declaredTotals.some((total) => total !== items.length)) fail();
   if (items.length !== 1) fail();
   const policy = plainRecord(items[0]);
-  if (policy.name !== 'main') fail();
+  if (policy.name !== 'main' || policy.type !== 'branch') fail();
 }
 
 function validateEmptyRunList(value) {
@@ -487,7 +488,7 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
 
   async function setVariable(name, value) {
     const args = ['variable', 'set', name, '--env', ENVIRONMENT, '--repo', REPO];
-    return writeValue(SETUP_POLICY.variableNames, name, value, args);
+    return writeValue(WRITABLE_VARIABLE_NAMES, name, value, args);
   }
 
   async function deleteValue(allowedNames, name, args) {
@@ -506,7 +507,7 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
   }
 
   async function deleteVariable(name) {
-    return deleteValue(SETUP_POLICY.variableNames, name, [
+    return deleteValue(WRITABLE_VARIABLE_NAMES, name, [
       'variable', 'delete', name, '--env', ENVIRONMENT, '--repo', REPO,
     ]);
   }
