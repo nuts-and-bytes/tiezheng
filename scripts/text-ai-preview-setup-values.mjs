@@ -6,6 +6,8 @@ const TEAM_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const CLIENT_ID_PATTERN = /^(?=.{8,255}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.access$/u;
 const BASE64_32_PATTERN = /^[A-Za-z0-9+/]{43}=$/u;
 const HEX_32_PATTERN = /^[a-f0-9]{64}$/u;
+const MAX_WIPE_NODES = 10_000;
+const MAX_WIPE_PROPERTIES = 100_000;
 const SETUP_INPUT_NAMES = Object.freeze([
   'cloudflareApiToken',
   'arkApiKey',
@@ -186,21 +188,52 @@ export function assembleSetupWrites(value) {
 }
 
 function collectBufferProperty(value, buffers) {
-  if (Buffer.isBuffer(value)) {
-    buffers.add(value);
-    return;
-  }
-  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return;
-  try {
-    for (const key of Reflect.ownKeys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (descriptor !== undefined && Object.hasOwn(descriptor, 'value') && Buffer.isBuffer(descriptor.value)) {
-        buffers.add(descriptor.value);
-      }
+  const pending = [value];
+  const seen = new WeakSet();
+  let nodes = 0;
+  let properties = 0;
+  let complete = true;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (Buffer.isBuffer(current)) {
+      buffers.add(current);
+      continue;
     }
-  } catch {
-    // The caller will report one fixed error after wiping what was collected.
+    if (current === null || (typeof current !== 'object' && typeof current !== 'function')) continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    nodes += 1;
+    if (nodes > MAX_WIPE_NODES) {
+      complete = false;
+      continue;
+    }
+    let keys;
+    try {
+      keys = Reflect.ownKeys(current);
+    } catch {
+      complete = false;
+      continue;
+    }
+    for (const key of keys) {
+      properties += 1;
+      if (properties > MAX_WIPE_PROPERTIES) {
+        complete = false;
+        break;
+      }
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(current, key);
+      } catch {
+        complete = false;
+        continue;
+      }
+      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) continue;
+      const child = descriptor.value;
+      if (Buffer.isBuffer(child)) buffers.add(child);
+      else if (child !== null && (typeof child === 'object' || typeof child === 'function')) pending.push(child);
+    }
   }
+  return complete;
 }
 
 function inspectWriteGroup(group, buffers) {
@@ -252,7 +285,7 @@ function inspectWriteGroup(group, buffers) {
 
 export function wipeSetupWrites(writes) {
   const buffers = new Set();
-  let valid = true;
+  let valid = collectBufferProperty(writes, buffers);
   try {
     if (writes === null || typeof writes !== 'object' || Array.isArray(writes)) fail();
     const prototype = Object.getPrototypeOf(writes);
@@ -263,13 +296,17 @@ export function wipeSetupWrites(writes) {
     const variableDescriptor = Object.getOwnPropertyDescriptor(writes, 'variables');
     if (secretDescriptor === undefined || !Object.hasOwn(secretDescriptor, 'value')
       || variableDescriptor === undefined || !Object.hasOwn(variableDescriptor, 'value')) fail();
-    valid = inspectWriteGroup(secretDescriptor.value, buffers) && inspectWriteGroup(variableDescriptor.value, buffers);
+    const secretsValid = inspectWriteGroup(secretDescriptor.value, buffers);
+    const variablesValid = inspectWriteGroup(variableDescriptor.value, buffers);
+    valid = valid && secretsValid && variablesValid;
   } catch {
     valid = false;
     const secrets = peekDataProperty(writes, 'secrets');
     const variables = peekDataProperty(writes, 'variables');
-    if (!inspectWriteGroup(secrets, buffers)) collectBufferProperty(secrets, buffers);
-    if (!inspectWriteGroup(variables, buffers)) collectBufferProperty(variables, buffers);
+    const secretsValid = inspectWriteGroup(secrets, buffers);
+    const variablesValid = inspectWriteGroup(variables, buffers);
+    if (!secretsValid) collectBufferProperty(secrets, buffers);
+    if (!variablesValid) collectBufferProperty(variables, buffers);
   } finally {
     for (const buffer of buffers) zeroBuffer(buffer);
   }

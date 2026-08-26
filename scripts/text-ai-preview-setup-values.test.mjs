@@ -237,3 +237,41 @@ test('wipeSetupWrites clears all values and fails closed for malformed structure
   expectFailure(() => wipeSetupWrites(withExtra));
   assert.ok([...valid.secrets, ...valid.variables].every(({ value }) => value.every((byte) => byte === 0)));
 });
+
+test('scans variables even when the malformed secrets group fails first', () => {
+  const variableValue = Buffer.from('variable-secret');
+  const malformed = {
+    secrets: [{ value: 'not-a-buffer' }],
+    variables: [{ name: 'TEXT_AI_TEAM_DOMAIN', value: variableValue }],
+  };
+  expectFailure(() => wipeSetupWrites(malformed));
+  assert.ok(variableValue.every((byte) => byte === 0));
+});
+
+test('clears directly visible buffers on malformed top-level extras', () => {
+  const extra = Buffer.from('top-level-secret');
+  const malformed = { secrets: [], variables: [], extra };
+  expectFailure(() => wipeSetupWrites(malformed));
+  assert.ok(extra.every((byte) => byte === 0));
+});
+
+test('clears buffers in array extra own data objects without invoking accessors or looping', () => {
+  const nested = Buffer.from('nested-secret');
+  const cycle = {};
+  cycle.self = cycle;
+  cycle.nested = nested;
+  let accessorCalls = 0;
+  Object.defineProperty(cycle, 'secretAccessor', {
+    get() {
+      accessorCalls += 1;
+      throw new Error('accessor must not run');
+    },
+    enumerable: true,
+  });
+  const secrets = [];
+  Object.defineProperty(secrets, 'extra', { value: cycle, enumerable: true });
+  const malformed = { secrets, variables: [] };
+  expectFailure(() => wipeSetupWrites(malformed));
+  assert.ok(nested.every((byte) => byte === 0));
+  assert.equal(accessorCalls, 0);
+});
