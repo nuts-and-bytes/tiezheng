@@ -60,6 +60,18 @@ function validateAndGetMethods(input, output, label, hidden, maxBytes) {
   return { methods, write: write.value, wasRaw: raw.value === true };
 }
 
+function readPromptOptions(options) {
+  if ((typeof options !== 'object' && typeof options !== 'function') || options === null) throw failure();
+  const values = {};
+  for (const name of ['input', 'output', 'label', 'hidden', 'maxBytes']) {
+    const property = dataProperty(options, name);
+    if (!property.ok) throw failure();
+    values[name] = property.value;
+  }
+  if (values.maxBytes === undefined) values.maxBytes = 4096;
+  return values;
+}
+
 function safeCall(fn, receiver, ...args) {
   try {
     fn.call(receiver, ...args);
@@ -70,9 +82,14 @@ function safeCall(fn, receiver, ...args) {
 }
 
 export async function readTtyLine(options = {}) {
-  const { input, output, label, hidden, maxBytes = 4096 } = options ?? {};
   let validated;
+  let input;
+  let output;
+  let label;
+  let hidden;
+  let maxBytes;
   try {
+    ({ input, output, label, hidden, maxBytes } = readPromptOptions(options));
     validated = validateAndGetMethods(input, output, label, hidden, maxBytes);
   } catch {
     throw failure();
@@ -91,82 +108,124 @@ export async function readTtyLine(options = {}) {
     let dataRegistered = false;
     let errorRegistered = false;
     let endRegistered = false;
+    let externalDepth = 0;
+    let externalFailure = false;
+    let pendingOutcome;
 
-    const cleanupAndFinish = (error, value) => {
+    const cleanupAndFinish = (outcome) => {
       if (settled) return;
       settled = true;
+      pendingOutcome = undefined;
       let cleanupOk = true;
       if (dataRegistered && !safeCall(methods.off, input, 'data', onData)) cleanupOk = false;
       if (errorRegistered && !safeCall(methods.off, input, 'error', onError)) cleanupOk = false;
       if (endRegistered && !safeCall(methods.off, input, 'end', onEnd)) cleanupOk = false;
 
-      let restoreOk = safeCall(methods.setRawMode, input, wasRaw);
+      const restoreOk = safeCall(methods.setRawMode, input, wasRaw);
       const pauseOk = safeCall(methods.pause, input);
-      bytes.fill(0);
-      if (!cleanupOk || !restoreOk || !pauseOk || error) {
+      if (!cleanupOk || !restoreOk || !pauseOk || outcome.kind === 'failure') {
+        bytes.fill(0);
         reject(failure());
       } else {
+        let value;
+        try {
+          value = Buffer.from(bytes);
+        } catch {
+          bytes.fill(0);
+          reject(failure());
+          return;
+        }
+        bytes.fill(0);
         resolve(value);
       }
     };
 
-    const onError = () => cleanupAndFinish(failure());
-    const onEnd = () => cleanupAndFinish(failure());
+    const settleWhenReady = (outcome) => {
+      if (settled) return;
+      if (externalDepth > 0) {
+        if (!pendingOutcome || outcome.kind === 'failure') pendingOutcome = outcome;
+        return;
+      }
+      cleanupAndFinish(outcome);
+    };
+
+    const invokeExternal = (fn, receiver, ...args) => {
+      externalDepth += 1;
+      let threw = false;
+      try {
+        fn.call(receiver, ...args);
+      } catch {
+        threw = true;
+        externalFailure = true;
+      }
+      externalDepth -= 1;
+      if (externalDepth === 0 && !settled) {
+        const outcome = externalFailure ? { kind: 'failure' } : pendingOutcome;
+        externalFailure = false;
+        pendingOutcome = undefined;
+        if (outcome) cleanupAndFinish(outcome);
+      }
+      return !threw;
+    };
+
+    const onError = () => settleWhenReady({ kind: 'failure' });
+    const onEnd = () => settleWhenReady({ kind: 'failure' });
     const onData = (chunk) => {
-      if (settled || !Buffer.isBuffer(chunk)) return cleanupAndFinish(failure());
-      for (const byte of chunk) {
-        if (byte === 0x03) return cleanupAndFinish(failure());
-        if (byte === 0x0d || byte === 0x0a) {
-          let writeOk = true;
-          try {
-            write.call(output, '\n');
-          } catch {
-            writeOk = false;
+      if (settled) return;
+      try {
+        if (!Buffer.isBuffer(chunk)) return settleWhenReady({ kind: 'failure' });
+        for (const byte of chunk) {
+          if (byte === 0x03) return settleWhenReady({ kind: 'failure' });
+          if (byte === 0x0d || byte === 0x0a) {
+            try {
+              write.call(output, '\n');
+            } catch {
+              return settleWhenReady({ kind: 'failure' });
+            }
+            return settleWhenReady({ kind: 'success' });
           }
-          return cleanupAndFinish(writeOk ? undefined : failure(), Buffer.from(bytes));
-        }
-        if (byte === 0x08 || byte === 0x7f) {
-          if (bytes.length > 0) {
-            bytes.pop();
-            if (!hidden) {
-              try {
-                write.call(output, '\b \b');
-              } catch {
-                return cleanupAndFinish(failure());
+          if (byte === 0x08 || byte === 0x7f) {
+            if (bytes.length > 0) {
+              bytes.pop();
+              if (!hidden) {
+                try {
+                  write.call(output, '\b \b');
+                } catch {
+                  return settleWhenReady({ kind: 'failure' });
+                }
               }
             }
+            continue;
           }
-          continue;
-        }
-        if (byte < 0x20 || byte > 0x7e || bytes.length >= maxBytes) {
-          return cleanupAndFinish(failure());
-        }
-        bytes.push(byte);
-        if (!hidden) {
-          try {
-            write.call(output, Buffer.from([byte]));
-          } catch {
-            return cleanupAndFinish(failure());
+          if (byte < 0x20 || byte > 0x7e || bytes.length >= maxBytes) {
+            return settleWhenReady({ kind: 'failure' });
+          }
+          bytes.push(byte);
+          if (!hidden) {
+            try {
+              write.call(output, Buffer.from([byte]));
+            } catch {
+              return settleWhenReady({ kind: 'failure' });
+            }
           }
         }
+      } catch {
+        settleWhenReady({ kind: 'failure' });
       }
     };
 
     try {
       dataRegistered = true;
-      methods.on.call(input, 'data', onData);
-      if (settled) return;
+      if (!invokeExternal(methods.on, input, 'data', onData) || settled) return;
       errorRegistered = true;
-      methods.once.call(input, 'error', onError);
-      if (settled) return;
+      if (!invokeExternal(methods.once, input, 'error', onError) || settled) return;
       endRegistered = true;
-      methods.once.call(input, 'end', onEnd);
-      if (settled) return;
-      methods.setRawMode.call(input, true);
-      if (settled) return;
-      methods.resume.call(input);
+      if (!invokeExternal(methods.once, input, 'end', onEnd) || settled) return;
+      if (!invokeExternal(methods.setRawMode, input, true) || settled) return;
+      invokeExternal(methods.resume, input);
     } catch {
-      cleanupAndFinish(failure());
+      externalFailure = true;
+      if (externalDepth === 0) cleanupAndFinish({ kind: 'failure' });
     }
   });
 }

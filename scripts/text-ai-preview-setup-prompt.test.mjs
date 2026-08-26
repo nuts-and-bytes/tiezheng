@@ -43,9 +43,9 @@ class FakeTTY extends EventEmitter {
     return this;
   }
 
-  emit(type, value) {
+  emit(type, value, ...rest) {
     if (type === 'data' && Buffer.isBuffer(value)) this.emittedBuffers.push(value);
-    return super.emit(type, value);
+    return super.emit(type, value, ...rest);
   }
 }
 
@@ -70,6 +70,22 @@ function assertFixedFailure(promise) {
     assert.equal(error.stack.includes('secret-sentinel'), false);
     return true;
   });
+}
+
+async function assertNoSecretBufferOnFailure(run) {
+  const originalFrom = Buffer.from;
+  const secretBuffers = [];
+  Buffer.from = function probedBufferFrom(...args) {
+    const value = originalFrom.apply(Buffer, args);
+    if (value.toString('utf8').includes('secret-sentinel')) secretBuffers.push(value);
+    return value;
+  };
+  try {
+    await run(secretBuffers);
+  } finally {
+    Buffer.from = originalFrom;
+  }
+  assert.equal(secretBuffers.length, 0);
 }
 
 test('hidden prompts never echo secret bytes and restore raw mode', async () => {
@@ -145,6 +161,44 @@ test('resume synchronous data emission is not lost', async () => {
   const value = await readTtyLine({ input, output, label: 'user-1 email', hidden: false });
   assert.equal(value.toString(), 'sync-value');
   assert.equal(input.resumeCalls, 1);
+});
+
+test('synchronous newListener data completion waits until on returns and removes the listener', async () => {
+  const input = new FakeTTY();
+  input.on('newListener', (event, listener) => {
+    if (event === 'data') listener(Buffer.from('newlistener-secret-sentinel\r'));
+  });
+  const output = fakeOutput();
+  const value = await readTtyLine({ input, output, label: 'Cloudflare API Token', hidden: true });
+
+  assert.equal(value.toString(), 'newlistener-secret-sentinel');
+  assert.equal(input.listenerCount('data'), 0);
+  assert.equal(input.paused, 1);
+  assert.equal(output.text.includes('newlistener-secret-sentinel'), false);
+});
+
+test('setRawMode and resume failures override synchronous successful data outcomes', async () => {
+  for (const operation of ['setRawMode', 'resume']) {
+    const input = new FakeTTY();
+    const original = input[operation];
+    input[operation] = function reentrantOperation(value) {
+      if (operation === 'setRawMode' && value === true) {
+        this.emit('data', Buffer.from('pending-secret-sentinel\r'));
+        throw new Error('setRawMode secret-sentinel');
+      }
+      if (operation === 'resume') {
+        this.emit('data', Buffer.from('pending-secret-sentinel\r'));
+        throw new Error('resume secret-sentinel');
+      }
+      return original.call(this, value);
+    };
+    const pending = readTtyLine({ input, output: fakeOutput(), label: 'Cloudflare API Token', hidden: true });
+    await assertFixedFailure(pending);
+    assert.equal(input.listenerCount('data'), 0);
+    assert.equal(input.listenerCount('error'), 0);
+    assert.equal(input.listenerCount('end'), 0);
+    assert.equal(input.paused, 1);
+  }
 });
 
 test('rejects control, high-bit, non-Buffer, and overflow input with fixed failure', async () => {
@@ -255,6 +309,54 @@ test('all setup failures restore and pause even when operations throw', async ()
   await assertFixedFailure(readTtyLine({ input: new FakeTTY(), output, label: 'user-1 email', hidden: false }));
 });
 
+test('newline failures do not allocate an orphan hidden secret Buffer', async () => {
+  const scenarios = [
+    () => {
+      const input = new FakeTTY();
+      const output = fakeOutput();
+      output.write = function write(value) {
+        if (value === '\n') throw new Error('newline secret-sentinel');
+        this.writes.push(value);
+        return true;
+      };
+      return { input, output };
+    },
+    () => {
+      const input = new FakeTTY();
+      const originalOff = input.off;
+      input.off = function off(...args) {
+        if (args[0] === 'data') throw new Error('off secret-sentinel');
+        return originalOff.call(this, ...args);
+      };
+      return { input, output: fakeOutput() };
+    },
+    () => {
+      const input = new FakeTTY();
+      const originalSetRawMode = input.setRawMode;
+      input.setRawMode = function setRawMode(value) {
+        if (value === false) throw new Error('restore secret-sentinel');
+        return originalSetRawMode.call(this, value);
+      };
+      return { input, output: fakeOutput() };
+    },
+    () => {
+      const input = new FakeTTY();
+      input.pause = () => { throw new Error('pause secret-sentinel'); };
+      return { input, output: fakeOutput() };
+    },
+  ];
+
+  for (const makeScenario of scenarios) {
+    const { input, output } = makeScenario();
+    const pending = readTtyLine({ input, output, label: 'Cloudflare API Token', hidden: true });
+    const secretChunk = Buffer.from('secret-sentinel\r');
+    await assertNoSecretBufferOnFailure(async () => {
+      input.emit('data', secretChunk);
+      await assertFixedFailure(pending);
+    });
+  }
+});
+
 test('restore and listener cleanup failures stay fixed while remaining cleanup runs', async () => {
   const input = new FakeTTY();
   const originalSetRawMode = input.setRawMode;
@@ -277,6 +379,27 @@ test('restore and listener cleanup failures stay fixed while remaining cleanup r
   assert.equal(setRawModeCalls, 2);
   assert.equal(offCalls, 3);
   assert.equal(input.paused, 1);
+});
+
+test('Buffer iterator failures are fixed and still clean up the TTY', async () => {
+  const input = new FakeTTY();
+  const output = fakeOutput();
+  const pending = readTtyLine({ input, output, label: 'Cloudflare API Token', hidden: true });
+  const chunk = Buffer.from('iterator-secret-sentinel');
+  Object.defineProperty(chunk, Symbol.iterator, {
+    configurable: true,
+    value() {
+      throw new Error('iterator secret-sentinel');
+    },
+  });
+
+  assert.doesNotThrow(() => input.emit('data', chunk));
+  await assertFixedFailure(pending);
+  assert.deepEqual(input.rawTransitions, [true, false]);
+  assert.equal(input.paused, 1);
+  assert.equal(input.listenerCount('data'), 0);
+  assert.equal(input.listenerCount('error'), 0);
+  assert.equal(input.listenerCount('end'), 0);
 });
 
 test('promptSetupInputs reads in order, returns a frozen object, and never echoes secrets', async () => {
@@ -303,6 +426,20 @@ test('promptSetupInputs reads in order, returns a frozen object, and never echoe
   assert.equal(Object.isFrozen(result), true);
   assert.equal(output.text.includes('secret-sentinel'), false);
   assert.equal(output.text, 'Cloudflare API Token: \nARK_API_KEY: \nuser-1 email: one@example.com\nuser-2 email: two@example.com\n');
+});
+
+test('options accessors fail with the fixed error without invoking getters', async () => {
+  const options = {};
+  let accessed = 0;
+  Object.defineProperty(options, 'input', {
+    configurable: true,
+    get() {
+      accessed += 1;
+      throw new Error('options secret-sentinel');
+    },
+  });
+  await assertFixedFailure(readTtyLine(options));
+  assert.equal(accessed, 0);
 });
 
 test('promptSetupInputs clears earlier returned buffers after a later failure', async () => {
