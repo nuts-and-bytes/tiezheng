@@ -346,3 +346,80 @@ test('continues wiping ordinary Buffers after one Buffer cleanup failure', () =>
   assert.ok(failingTarget.every((byte) => byte !== 0));
   assert.ok(ordinary.every((byte) => byte === 0));
 });
+
+test('wipes a Buffer in the allowed prefix when an object exceeds the shared property budget', () => {
+  const prefix = Buffer.from('prefix-secret');
+  const oversized = { first: prefix };
+  for (let index = 0; index < 100_000; index += 1) oversized[`property${index}`] = 0;
+  expectFailure(() => wipeSetupWrites({ secrets: oversized, variables: [] }));
+  assert.ok(prefix.every((byte) => byte === 0));
+});
+
+test('uses intrinsic bytes instead of overridden Buffer some or toString during key validation', () => {
+  const aesKey = Buffer.from('A'.repeat(43) + '=');
+  const hmacKey = Buffer.from('b'.repeat(64));
+  aesKey[0] = 0x21;
+  hmacKey[0] = 0x42;
+  aesKey.some = () => false;
+  aesKey.toString = () => 'A'.repeat(43) + '=';
+  hmacKey.some = () => false;
+  hmacKey.toString = () => 'b'.repeat(64);
+  expectFailure(() => assembleSetupWrites({
+    inputs: INPUTS,
+    teamDomain: 'team-name',
+    serviceClientId: 'client-id.access',
+    serviceClientSecret: 'service-secret-sentinel',
+    keys: { aesKey, hmacKey },
+  }));
+  assert.ok(aesKey.every((byte) => byte === 0));
+  assert.ok(hmacKey.every((byte) => byte === 0));
+});
+
+test('generates encoded keys from raw bytes when raw Buffer toString is overridden', () => {
+  const rawAes = Buffer.alloc(32, 0x41);
+  const rawHmac = Buffer.alloc(32, 0x42);
+  const expectedAes = Buffer.alloc(32, 0x41).toString('base64');
+  const expectedHmac = Buffer.alloc(32, 0x42).toString('hex');
+  rawAes.toString = () => 'forged-aes';
+  rawHmac.toString = () => 'forged-hmac';
+  let calls = 0;
+  const keys = generateSetupKeys(() => {
+    calls += 1;
+    return calls === 1 ? rawAes : rawHmac;
+  });
+  assert.equal(keys.aesKey.toString('ascii'), expectedAes);
+  assert.equal(keys.hmacKey.toString('ascii'), expectedHmac);
+  assert.ok(rawAes.every((byte) => byte === 0));
+  assert.ok(rawHmac.every((byte) => byte === 0));
+});
+
+test('intrinsically wipes the temporary decoded AES key buffer', () => {
+  const aesText = Buffer.alloc(32, 0x41).toString('base64');
+  const aesKey = Buffer.from(aesText);
+  const hmacKey = Buffer.from('b'.repeat(64));
+  const originalFrom = Buffer.from;
+  let decoded;
+  Buffer.from = function wrappedFrom(value, encoding) {
+    const result = originalFrom(value, encoding);
+    if (value === aesText && encoding === 'base64') {
+      decoded = result;
+      decoded.fill = () => decoded;
+    }
+    return result;
+  };
+  let writes;
+  try {
+    writes = assembleSetupWrites({
+      inputs: INPUTS,
+      teamDomain: 'team-name',
+      serviceClientId: 'client-id.access',
+      serviceClientSecret: 'service-secret-sentinel',
+      keys: { aesKey, hmacKey },
+    });
+  } finally {
+    Buffer.from = originalFrom;
+  }
+  assert.ok(decoded);
+  assert.ok(decoded.every((byte) => byte === 0));
+  wipeSetupWrites(writes);
+});

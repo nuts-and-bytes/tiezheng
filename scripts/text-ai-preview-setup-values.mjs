@@ -10,6 +10,13 @@ const MAX_WIPE_NODES = 10_000;
 const MAX_WIPE_PROPERTIES = 100_000;
 const MAX_WIPE_GROUP_LENGTH = 10_000;
 const TYPED_ARRAY_FILL = Uint8Array.prototype.fill;
+const TYPED_ARRAY_SLICE = Uint8Array.prototype.slice;
+const TYPED_ARRAY_SOME = Uint8Array.prototype.some;
+const TYPED_ARRAY_BYTE_LENGTH_GET = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  'byteLength',
+).get;
+const BUFFER_TO_STRING = Buffer.prototype.toString;
 const SETUP_INPUT_NAMES = Object.freeze([
   'cloudflareApiToken',
   'arkApiKey',
@@ -121,6 +128,35 @@ function wipeBuffers(values) {
   if (failed) fail();
 }
 
+function bufferByteLength(value) {
+  try {
+    if (!Buffer.isBuffer(value)) fail();
+    const length = Reflect.apply(TYPED_ARRAY_BYTE_LENGTH_GET, value, []);
+    if (!Number.isSafeInteger(length) || length < 0) fail();
+    return length;
+  } catch {
+    fail();
+  }
+}
+
+function encodeRawBuffer(value, expectedLength, encoding) {
+  let snapshot;
+  let copy;
+  try {
+    const length = bufferByteLength(value);
+    if (length !== expectedLength) fail();
+    snapshot = Reflect.apply(TYPED_ARRAY_SLICE, value, [0, length]);
+    copy = Buffer.from(snapshot);
+    if (bufferByteLength(copy) !== length) fail();
+    const text = Reflect.apply(BUFFER_TO_STRING, copy, [encoding]);
+    return Buffer.from(text, 'ascii');
+  } catch {
+    fail();
+  } finally {
+    wipeBuffers([snapshot, copy]);
+  }
+}
+
 export function generateSetupKeys(random = randomBytes) {
   let aes;
   let hmac;
@@ -128,11 +164,11 @@ export function generateSetupKeys(random = randomBytes) {
     if (typeof random !== 'function') fail();
     aes = random(32);
     hmac = random(32);
-    if (!Buffer.isBuffer(hmac) || hmac.length !== 32) fail();
-    if (!Buffer.isBuffer(aes) || aes.length !== 32) fail();
+    if (!Buffer.isBuffer(hmac) || bufferByteLength(hmac) !== 32) fail();
+    if (!Buffer.isBuffer(aes) || bufferByteLength(aes) !== 32) fail();
     return Object.freeze({
-      aesKey: Buffer.from(aes.toString('base64'), 'ascii'),
-      hmacKey: Buffer.from(hmac.toString('hex'), 'ascii'),
+      aesKey: encodeRawBuffer(aes, 32, 'base64'),
+      hmacKey: encodeRawBuffer(hmac, 32, 'hex'),
     });
   } catch {
     fail();
@@ -142,17 +178,37 @@ export function generateSetupKeys(random = randomBytes) {
 }
 
 function asciiBufferText(value, pattern) {
-  if (!Buffer.isBuffer(value) || value.some((byte) => byte > 0x7f)) fail();
-  const text = value.toString('ascii');
-  if (!pattern.test(text)) fail();
-  return text;
+  let snapshot;
+  let copy;
+  try {
+    const length = bufferByteLength(value);
+    snapshot = Reflect.apply(TYPED_ARRAY_SLICE, value, [0, length]);
+    copy = Buffer.from(snapshot);
+    if (bufferByteLength(copy) !== length) fail();
+    if (Reflect.apply(TYPED_ARRAY_SOME, copy, [(byte) => byte > 0x7f])) fail();
+    const text = Reflect.apply(BUFFER_TO_STRING, copy, ['ascii']);
+    if (!pattern.test(text)) fail();
+    return text;
+  } catch {
+    fail();
+  } finally {
+    wipeBuffers([snapshot, copy]);
+  }
 }
 
 function validEncodedKeys(keys) {
   const parsed = exactDataRecord(keys, ['aesKey', 'hmacKey']);
   const aesText = asciiBufferText(parsed.aesKey, BASE64_32_PATTERN);
-  const decoded = Buffer.from(aesText, 'base64');
-  if (decoded.length !== 32 || decoded.toString('base64') !== aesText) fail();
+  let decoded;
+  try {
+    decoded = Buffer.from(aesText, 'base64');
+    if (bufferByteLength(decoded) !== 32
+      || Reflect.apply(BUFFER_TO_STRING, decoded, ['base64']) !== aesText) fail();
+  } catch {
+    fail();
+  } finally {
+    wipeBuffers([decoded]);
+  }
   asciiBufferText(parsed.hmacKey, HEX_32_PATTERN);
   return parsed;
 }
@@ -208,13 +264,20 @@ function newWipeScan() {
   };
 }
 
-function reserveWipeProperties(scan, count) {
-  if (!Number.isSafeInteger(count) || count < 0 || count > MAX_WIPE_PROPERTIES - scan.properties) {
+function takeWipePropertyPrefix(scan, count) {
+  if (!Number.isSafeInteger(count) || count < 0) {
     scan.complete = false;
-    return false;
+    return 0;
   }
-  scan.properties += count;
-  return true;
+  const remaining = Math.max(0, MAX_WIPE_PROPERTIES - scan.properties);
+  const allowed = Math.min(count, remaining);
+  scan.properties += allowed;
+  if (allowed < count) scan.complete = false;
+  return allowed;
+}
+
+function reserveWipeProperties(scan, count) {
+  return takeWipePropertyPrefix(scan, count) === count;
 }
 
 function collectBufferProperty(value, buffers, scan = newWipeScan()) {
@@ -240,8 +303,9 @@ function collectBufferProperty(value, buffers, scan = newWipeScan()) {
       scan.complete = false;
       continue;
     }
-    if (!reserveWipeProperties(scan, keys.length)) continue;
-    for (const key of keys) {
+    const allowed = takeWipePropertyPrefix(scan, keys.length);
+    for (let keyIndex = 0; keyIndex < allowed; keyIndex += 1) {
+      const key = keys[keyIndex];
       let descriptor;
       try {
         descriptor = Object.getOwnPropertyDescriptor(current, key);
@@ -272,9 +336,11 @@ function inspectWriteGroup(group, buffers, scan) {
       || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_WIPE_GROUP_LENGTH) return false;
     const length = lengthDescriptor.value;
     const keys = Reflect.ownKeys(group);
-    if (!reserveWipeProperties(scan, keys.length)) return false;
+    const allowedKeys = takeWipePropertyPrefix(scan, keys.length);
+    if (allowedKeys < keys.length) valid = false;
     let indexCount = 0;
-    for (const key of keys) {
+    for (let keyIndex = 0; keyIndex < allowedKeys; keyIndex += 1) {
+      const key = keys[keyIndex];
       if (key === 'length') continue;
       if (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= length) {
         valid = false;
@@ -294,16 +360,34 @@ function inspectWriteGroup(group, buffers, scan) {
       }
       collectBufferProperty(item, buffers, scan);
       const itemKeys = Reflect.ownKeys(item);
-      if (!reserveWipeProperties(scan, itemKeys.length)) {
+      const allowedItemKeys = takeWipePropertyPrefix(scan, itemKeys.length);
+      const itemDescriptors = new Map();
+      for (let itemKeyIndex = 0; itemKeyIndex < allowedItemKeys; itemKeyIndex += 1) {
+        const itemKey = itemKeys[itemKeyIndex];
+        let itemDescriptor;
+        try {
+          itemDescriptor = Object.getOwnPropertyDescriptor(item, itemKey);
+        } catch {
+          valid = false;
+          continue;
+        }
+        itemDescriptors.set(itemKey, itemDescriptor);
+        if (itemDescriptor !== undefined && Object.hasOwn(itemDescriptor, 'value')) {
+          const child = itemDescriptor.value;
+          if (Buffer.isBuffer(child)) buffers.add(child);
+          else if (child !== null && (typeof child === 'object' || typeof child === 'function')) {
+            collectBufferProperty(child, buffers, scan);
+          }
+        }
+      }
+      if (allowedItemKeys < itemKeys.length
+        || itemKeys.length !== 2
+        || itemKeys.some((itemKey) => typeof itemKey !== 'string' || !['name', 'value'].includes(itemKey))) {
         valid = false;
         continue;
       }
-      if (itemKeys.length !== 2 || itemKeys.some((itemKey) => typeof itemKey !== 'string' || !['name', 'value'].includes(itemKey))) {
-        valid = false;
-        continue;
-      }
-      const nameDescriptor = Object.getOwnPropertyDescriptor(item, 'name');
-      const valueDescriptor = Object.getOwnPropertyDescriptor(item, 'value');
+      const nameDescriptor = itemDescriptors.get('name');
+      const valueDescriptor = itemDescriptors.get('value');
       if (nameDescriptor === undefined || !Object.hasOwn(nameDescriptor, 'value')
         || valueDescriptor === undefined || !Object.hasOwn(valueDescriptor, 'value')
         || typeof nameDescriptor.value !== 'string' || !Buffer.isBuffer(valueDescriptor.value)) valid = false;
