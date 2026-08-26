@@ -4,9 +4,11 @@ import { SETUP_POLICY, parseTeamDomain } from './text-ai-preview-setup-values.mj
 const FAILURE_MESSAGE = 'Text preview setup failed';
 const BLOCKED_MESSAGE = 'Text preview setup blocked: cloudflare.service-token';
 const PAGE_SIZE = 20;
+const MAX_RECORD_PROPERTIES = 64;
 const ID_PATTERN = /^(?=.{1,255}$)[A-Za-z0-9._-]+$/u;
 const CLIENT_ID_PATTERN = /^(?=.{8,255}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.access$/u;
 const SECRET_PATTERN = /[\u0000-\u001f\u007f]/u;
+const RESERVED_IDS = new Set(['.', '..', '__proto__', 'constructor', 'prototype']);
 
 function fail() {
   throw new Error(FAILURE_MESSAGE);
@@ -36,8 +38,10 @@ function snapshotRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) fail();
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) fail();
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.length > MAX_RECORD_PROPERTIES) fail();
   const result = new Map();
-  for (const key of Reflect.ownKeys(value)) {
+  for (const key of ownKeys) {
     if (typeof key !== 'string') fail();
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) fail();
@@ -54,21 +58,32 @@ function snapshotDenseArray(value) {
   if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')) fail();
   const length = lengthDescriptor.value;
   if (!Number.isSafeInteger(length) || length < 0 || length >= PAGE_SIZE) fail();
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.length !== length + 1) fail();
+  const indexKeys = new Set();
+  let hasLength = false;
+  for (const key of ownKeys) {
+    if (typeof key !== 'string') fail();
+    if (key === 'length') {
+      if (hasLength) fail();
+      hasLength = true;
+      continue;
+    }
+    if (!/^(0|[1-9]\d*)$/u.test(key) || Number(key) >= length) fail();
+    indexKeys.add(key);
+  }
+  if (!hasLength || indexKeys.size !== length) fail();
   const items = [];
   for (let index = 0; index < length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
     if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) fail();
     items.push(descriptor.value);
   }
-  for (const key of Reflect.ownKeys(value)) {
-    if (key === 'length') continue;
-    if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/u.test(key) || Number(key) >= length) fail();
-  }
   return items;
 }
 
 function validId(value) {
-  return typeof value === 'string' && ID_PATTERN.test(value);
+  return typeof value === 'string' && ID_PATTERN.test(value) && !RESERVED_IDS.has(value);
 }
 
 function validClientId(value) {
@@ -83,12 +98,23 @@ function validSecret(value) {
     && !SECRET_PATTERN.test(value);
 }
 
+function validInventoryName(value) {
+  return typeof value === 'string'
+    && value.length >= 1
+    && value.trim() === value
+    && !SECRET_PATTERN.test(value);
+}
+
 function parseInventory(value) {
   const items = snapshotDenseArray(value);
+  const seenIds = new Set();
   for (const item of items) {
     const record = snapshotRecord(item);
+    const id = record.get('id');
     const name = record.get('name');
-    if (!record.has('name') || typeof name !== 'string') fail();
+    if (!record.has('id') || !validId(id) || seenIds.has(id)) fail();
+    seenIds.add(id);
+    if (!record.has('name') || !validInventoryName(name)) fail();
     if (name === SETUP_POLICY.serviceTokenName) fail();
   }
   return items;
@@ -106,11 +132,36 @@ function readResponseRecord(value) {
       state.malformed = true;
       return state;
     }
+    let idDescriptor;
+    try {
+      idDescriptor = Object.getOwnPropertyDescriptor(value, 'id');
+      if (idDescriptor === undefined || !Object.hasOwn(idDescriptor, 'value')) {
+        state.malformed = true;
+      } else {
+        state.data.set('id', idDescriptor.value);
+        if (validId(idDescriptor.value)) state.id = idDescriptor.value;
+      }
+    } catch {
+      state.malformed = true;
+    }
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) state.malformed = true;
-    for (const key of Reflect.ownKeys(value)) {
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.length > MAX_RECORD_PROPERTIES) {
+      state.malformed = true;
+      return state;
+    }
+    let sawIdKey = false;
+    for (const key of ownKeys) {
       if (typeof key !== 'string') {
         state.malformed = true;
+        continue;
+      }
+      if (key === 'id') {
+        sawIdKey = true;
+        if (idDescriptor === undefined || !Object.hasOwn(idDescriptor, 'value')) {
+          state.malformed = true;
+        }
         continue;
       }
       let descriptor;
@@ -125,8 +176,8 @@ function readResponseRecord(value) {
         continue;
       }
       state.data.set(key, descriptor.value);
-      if (key === 'id' && validId(descriptor.value)) state.id = descriptor.value;
     }
+    if (!sawIdKey) state.malformed = true;
   } catch {
     state.malformed = true;
   }
@@ -169,8 +220,10 @@ export async function inspectCloudflareSetup(accountId, client) {
     const token = await verifyTextPreviewSetupToken(accountId, client);
     const tokenRecord = snapshotRecord(token);
     const missingPermissions = tokenRecord.get('missingPermissions');
-    const missing = snapshotDenseArrayAllowEmpty(missingPermissions);
-    if (missing.some((permission) => typeof permission !== 'string')) fail();
+    const missing = snapshotDenseArray(missingPermissions);
+    for (const permission of missing) {
+      if (typeof permission !== 'string') fail();
+    }
     if (missing.length > 0) {
       return Object.freeze({ status: 'missing-permissions', missingPermissions });
     }
@@ -183,33 +236,12 @@ export async function inspectCloudflareSetup(accountId, client) {
   }
 }
 
-function snapshotDenseArrayAllowEmpty(value) {
-  if (!Array.isArray(value)) fail();
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Array.prototype) fail();
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
-  if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')) fail();
-  const length = lengthDescriptor.value;
-  if (!Number.isSafeInteger(length) || length < 0 || length >= PAGE_SIZE) fail();
-  const items = [];
-  for (let index = 0; index < length; index += 1) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) fail();
-    items.push(descriptor.value);
-  }
-  for (const key of Reflect.ownKeys(value)) {
-    if (key === 'length') continue;
-    if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/u.test(key) || Number(key) >= length) fail();
-  }
-  return items;
-}
-
 export async function createSetupServiceToken(client) {
-  const body = {
+  const body = Object.freeze({
     name: SETUP_POLICY.serviceTokenName,
     duration: SETUP_POLICY.serviceTokenDuration,
     enabled: true,
-  };
+  });
   let response;
   try {
     const post = ownMethod(client, 'post');

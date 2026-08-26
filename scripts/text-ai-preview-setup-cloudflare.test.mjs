@@ -97,6 +97,14 @@ function validCreated(overrides = {}) {
   };
 }
 
+function withExtraFields(value, count = 65) {
+  const result = { ...value };
+  for (let index = 0; index < count; index += 1) {
+    result[`extra_${index}`] = `value-${index}`;
+  }
+  return result;
+}
+
 async function assertFailure(action, message = FAILURE, forbidden = []) {
   await assert.rejects(action, (error) => {
     assert.equal(error?.constructor, Error);
@@ -154,6 +162,7 @@ test('inspect returns only canonical missing permissions and stops after token v
   const result = await inspectCloudflareSetup(ACCOUNT_ID, client);
   assert.deepEqual(result, { status: 'missing-permissions', missingPermissions: missing });
   assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.missingPermissions), true);
   assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [
     'GET /tokens/verify',
     `GET /tokens/${TOKEN_ID}`,
@@ -231,6 +240,85 @@ test('create succeeds only for exact primitive fields and freezes the redacted r
   });
   assert.equal(Object.isFrozen(result), true);
   assert.equal('name' in result, false);
+});
+
+test('reserved ids are rejected without direct delete or malformed-response delete', async () => {
+  const reserved = ['.', '..', '__proto__', 'constructor', 'prototype'];
+  let directDeleteCalls = 0;
+  const direct = fakeClient({
+    'DELETE /access/service_tokens/constructor': () => { directDeleteCalls += 1; },
+  });
+  for (const id of reserved) {
+    await assertFailure(() => deleteSetupServiceToken(direct.client, id));
+  }
+  assert.equal(directDeleteCalls, 0);
+  for (const id of reserved) {
+    const { client, calls } = fakeClient({
+      'POST /access/service_tokens': validCreated({ id }),
+      'GET /access/service_tokens': [{ id: 'other', name: 'other-token' }],
+    });
+    await assertFailure(() => createSetupServiceToken(client), FAILURE, ['secret-value']);
+    assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [
+      'POST /access/service_tokens',
+      'GET /access/service_tokens',
+    ]);
+  }
+});
+
+test('inventory requires unique strict ids and normalized nonempty names', async () => {
+  const invalidInventories = [
+    [{ name: 'other-token' }],
+    [{ id: '.', name: 'other-token' }],
+    [{ id: 'valid-id', name: '' }],
+    [{ id: 'valid-id', name: ' other-token' }],
+    [{ id: 'valid-id', name: 'other-token ' }],
+    [{ id: 'valid-id', name: 'other\u0000token' }],
+    [{ id: 'valid-id', name: new String('other-token') }],
+    [{ id: 'valid-id', name: 'other-token' }, { id: 'valid-id', name: 'another-token' }],
+  ];
+  for (const inventory of invalidInventories) {
+    const inspectClient = fakeClient(setupRoutes({ inventory }));
+    await assertFailure(() => inspectCloudflareSetup(ACCOUNT_ID, inspectClient.client));
+    assert.equal(inspectClient.calls.some(({ method }) => method !== 'GET'), false);
+
+    const createClient = fakeClient({
+      'POST /access/service_tokens': validCreated({ id: undefined }),
+      'GET /access/service_tokens': inventory,
+    });
+    await assertFailure(() => createSetupServiceToken(createClient.client), BLOCKED, ['secret-value']);
+    assert.equal(createClient.calls.filter(({ method }) => method === 'DELETE').length, 0);
+  }
+});
+
+test('POST body is frozen and mutation attempts cannot change its exact primitive shape', async () => {
+  const expected = {
+    name: SETUP_POLICY.serviceTokenName,
+    duration: SETUP_POLICY.serviceTokenDuration,
+    enabled: true,
+  };
+  let bodySeen;
+  const { client, calls } = fakeClient({
+    'POST /access/service_tokens': (body) => {
+      bodySeen = body;
+      assert.equal(Object.isFrozen(body), true);
+      for (const mutation of [
+        () => { body.name = 'tampered'; },
+        () => { delete body.enabled; },
+        () => { body.extra = 'tampered'; },
+      ]) {
+        assert.throws(mutation, TypeError);
+      }
+      assert.deepEqual(body, expected);
+      throw new Error('sentinel-secret');
+    },
+    'GET /access/service_tokens': [{ id: 'other', name: 'other-token' }],
+  });
+  await assertFailure(() => createSetupServiceToken(client), FAILURE, ['sentinel-secret']);
+  assert.equal(Object.isFrozen(bodySeen), true);
+  assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [
+    'POST /access/service_tokens',
+    'GET /access/service_tokens',
+  ]);
 });
 
 test('create compensates a safely observed id with one delete, then hides the failure', async () => {
@@ -363,6 +451,55 @@ test('malformed response with observed id still blocks when delete compensation 
     'POST /access/service_tokens',
     'DELETE /access/service_tokens/service-token-1',
   ]);
+});
+
+test('organization and inventory records over the own-key budget fail before descriptor traversal', async () => {
+  const organization = withExtraFields({ auth_domain: 'preview.cloudflareaccess.com' });
+  const inspectOrganization = fakeClient(setupRoutes({ organization }));
+  await assertFailure(() => inspectCloudflareSetup(ACCOUNT_ID, inspectOrganization.client));
+  assert.equal(inspectOrganization.calls.some(({ method }) => method !== 'GET'), false);
+
+  const inventory = [{ ...withExtraFields({ id: 'other-id', name: 'other-token' }) }];
+  const inspectInventory = fakeClient(setupRoutes({ inventory }));
+  await assertFailure(() => inspectCloudflareSetup(ACCOUNT_ID, inspectInventory.client));
+  assert.equal(inspectInventory.calls.some(({ method }) => method !== 'GET'), false);
+});
+
+test('oversized create response with safe id deletes once, while accessor/no-id inventories without descriptor traversal', async () => {
+  let safeIdDescriptorReads = 0;
+  const oversizedWithId = new Proxy(withExtraFields(validCreated()), {
+    getOwnPropertyDescriptor(target, key) {
+      safeIdDescriptorReads += 1;
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  const safeIdClient = fakeClient({
+    'POST /access/service_tokens': oversizedWithId,
+    'DELETE /access/service_tokens/service-token-1': {},
+  });
+  await assertFailure(() => createSetupServiceToken(safeIdClient.client), FAILURE, ['secret-value']);
+  assert.equal(safeIdClient.calls.filter(({ method }) => method === 'DELETE').length, 1);
+  assert.equal(safeIdDescriptorReads, 1);
+
+  let accessorDescriptorReads = 0;
+  const oversizedAccessorId = withExtraFields(validCreated());
+  Object.defineProperty(oversizedAccessorId, 'id', {
+    get() {
+      throw new Error('id getter sentinel');
+    },
+  });
+  const accessorClient = fakeClient({
+    'POST /access/service_tokens': new Proxy(oversizedAccessorId, {
+      getOwnPropertyDescriptor(target, key) {
+        accessorDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    }),
+    'GET /access/service_tokens': [{ id: 'other-id', name: 'other-token' }],
+  });
+  await assertFailure(() => createSetupServiceToken(accessorClient.client), FAILURE, ['id getter sentinel']);
+  assert.equal(accessorClient.calls.filter(({ method }) => method === 'DELETE').length, 0);
+  assert.equal(accessorDescriptorReads, 1);
 });
 
 test('delete validates strict primitive id before calling client and hides failures', async () => {
