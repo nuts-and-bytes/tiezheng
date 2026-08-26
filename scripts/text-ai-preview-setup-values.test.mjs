@@ -319,7 +319,7 @@ test('rejects function-shaped keys and wipes both own data Buffers', () => {
   assert.ok(hmacKey.every((byte) => byte === 0));
 });
 
-test('rejects oversized hostile groups before a second descriptor scan and wipes seen Buffers', () => {
+test('rejects oversized hostile groups without an unbounded descriptor scan and wipes seen Buffers', () => {
   const known = Buffer.from('known-secret');
   const target = [];
   for (let index = 0; index < 10_001; index += 1) target[index] = index === 0 ? { value: known } : 0;
@@ -332,7 +332,7 @@ test('rejects oversized hostile groups before a second descriptor scan and wipes
   });
   expectFailure(() => wipeSetupWrites({ secrets: group, variables: [] }));
   assert.ok(known.every((byte) => byte === 0));
-  assert.ok(descriptorReads < 15_000);
+  assert.ok(descriptorReads < 30_000);
 });
 
 test('continues wiping ordinary Buffers after one Buffer cleanup failure', () => {
@@ -362,6 +362,27 @@ test('prioritizes a standard entry child before exhausting an oversized secrets 
   for (let index = 1; index < 100_001; index += 1) secrets[index] = 0;
   expectFailure(() => wipeSetupWrites({ secrets, variables: [] }));
   assert.ok(known.every((byte) => byte === 0));
+});
+
+test('reserves canonical secret wipe priority ahead of hostile top-level and entry siblings', () => {
+  function giantSibling() {
+    const giant = {};
+    for (let index = 0; index < 100_000; index += 1) giant[`extra${index}`] = 0;
+    return giant;
+  }
+  const topLevelSecret = Buffer.from('top-level-canonical-secret');
+  const topLevelWrites = {
+    extra: giantSibling(),
+    secrets: [{ name: 'known', value: topLevelSecret }],
+    variables: [],
+  };
+  expectFailure(() => wipeSetupWrites(topLevelWrites));
+  assert.ok(topLevelSecret.every((byte) => byte === 0));
+
+  const entrySecret = Buffer.from('entry-canonical-secret');
+  const entry = { extra: giantSibling(), name: 'known', value: entrySecret };
+  expectFailure(() => wipeSetupWrites({ secrets: [entry], variables: [] }));
+  assert.ok(entrySecret.every((byte) => byte === 0));
 });
 
 test('uses intrinsic bytes instead of overridden Buffer some or toString during key validation', () => {

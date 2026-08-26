@@ -264,6 +264,80 @@ function newWipeScan() {
   };
 }
 
+function canonicalGroupPrepass(group, buffers) {
+  let valid = true;
+  if (!Array.isArray(group)) return false;
+  let lengthDescriptor;
+  try {
+    lengthDescriptor = Object.getOwnPropertyDescriptor(group, 'length');
+  } catch {
+    return false;
+  }
+  if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')
+    || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return false;
+  const length = lengthDescriptor.value;
+  if (length > MAX_WIPE_GROUP_LENGTH) valid = false;
+  const limit = Math.min(length, MAX_WIPE_GROUP_LENGTH);
+  for (let index = 0; index < limit; index += 1) {
+    let itemDescriptor;
+    try {
+      itemDescriptor = Object.getOwnPropertyDescriptor(group, String(index));
+    } catch {
+      valid = false;
+      continue;
+    }
+    if (itemDescriptor === undefined || !Object.hasOwn(itemDescriptor, 'value')) {
+      valid = false;
+      continue;
+    }
+    const item = itemDescriptor.value;
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      valid = false;
+      continue;
+    }
+    let nameDescriptor;
+    let valueDescriptor;
+    try {
+      nameDescriptor = Object.getOwnPropertyDescriptor(item, 'name');
+    } catch {
+      valid = false;
+    }
+    try {
+      valueDescriptor = Object.getOwnPropertyDescriptor(item, 'value');
+    } catch {
+      valid = false;
+    }
+    if (valueDescriptor !== undefined && Object.hasOwn(valueDescriptor, 'value')) {
+      if (Buffer.isBuffer(valueDescriptor.value)) buffers.add(valueDescriptor.value);
+      else valid = false;
+    } else {
+      valid = false;
+    }
+    if (nameDescriptor === undefined || !Object.hasOwn(nameDescriptor, 'value')
+      || typeof nameDescriptor.value !== 'string') valid = false;
+  }
+  return valid;
+}
+
+function canonicalPrepass(writes, buffers) {
+  let valid = true;
+  for (const name of ['secrets', 'variables']) {
+    let descriptor;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(writes, name);
+    } catch {
+      valid = false;
+      continue;
+    }
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
+      valid = false;
+      continue;
+    }
+    if (!canonicalGroupPrepass(descriptor.value, buffers)) valid = false;
+  }
+  return valid;
+}
+
 function takeWipePropertyPrefix(scan, count) {
   if (!Number.isSafeInteger(count) || count < 0) {
     scan.complete = false;
@@ -432,6 +506,12 @@ function inspectWriteGroup(group, buffers, scan) {
 
 export function wipeSetupWrites(writes) {
   const buffers = new Set();
+  let canonicalValid;
+  try {
+    canonicalValid = canonicalPrepass(writes, buffers);
+  } catch {
+    canonicalValid = false;
+  }
   const scan = newWipeScan();
   let valid = collectBufferProperty(writes, buffers, scan);
   try {
@@ -446,7 +526,7 @@ export function wipeSetupWrites(writes) {
       || variableDescriptor === undefined || !Object.hasOwn(variableDescriptor, 'value')) fail();
     const secretsValid = inspectWriteGroup(secretDescriptor.value, buffers, scan);
     const variablesValid = inspectWriteGroup(variableDescriptor.value, buffers, scan);
-    valid = valid && secretsValid && variablesValid;
+    valid = canonicalValid && valid && secretsValid && variablesValid;
   } catch {
     valid = false;
     const secrets = peekDataProperty(writes, 'secrets');
