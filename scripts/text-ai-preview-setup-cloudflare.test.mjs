@@ -192,6 +192,35 @@ test('inspect fails closed for malformed organization and inventory shapes', asy
   }
 });
 
+test('inspect requires every inventory item to own a primitive name without invoking accessors', async () => {
+  let getterReads = 0;
+  const accessorItem = {};
+  Object.defineProperty(accessorItem, 'name', {
+    get() {
+      getterReads += 1;
+      return 'other-token';
+    },
+  });
+  const hostileItem = Object.create({ inherited: true });
+  Object.defineProperty(hostileItem, 'name', {
+    value: 'other-token',
+    enumerable: true,
+  });
+  const symbolItem = { name: 'other-token', [Symbol('sentinel')]: true };
+  for (const inventory of [
+    [{ id: 'missing-name' }],
+    [symbolItem],
+    [hostileItem],
+    [accessorItem],
+    Object.assign([], [, { name: 'other-token' }]),
+  ]) {
+    const { client, calls } = fakeClient(setupRoutes({ inventory }));
+    await assertFailure(() => inspectCloudflareSetup(ACCOUNT_ID, client));
+    assert.equal(calls.some(({ method }) => method !== 'GET'), false);
+  }
+  assert.equal(getterReads, 0);
+});
+
 test('create succeeds only for exact primitive fields and freezes the redacted result', async () => {
   const { client } = fakeClient({ 'POST /access/service_tokens': validCreated() });
   const result = await createSetupServiceToken(client);
@@ -260,6 +289,80 @@ test('create blocks after unknown id when inventory is unreliable or fixed name 
     assert.equal(calls.filter(({ method }) => method === 'POST').length, 1);
     assert.equal(calls.filter(({ method }) => method === 'DELETE').length, 0);
   }
+});
+
+test('unknown-id compensation blocks for nameless, symbol, or hostile inventory items without writes', async () => {
+  const hostileItem = Object.create({ inherited: true });
+  Object.defineProperty(hostileItem, 'name', { value: 'other-token', enumerable: true });
+  const symbolItem = { name: 'other-token', [Symbol('sentinel')]: true };
+  for (const inventory of [
+    [{ id: 'missing-name' }],
+    [symbolItem],
+    [hostileItem],
+  ]) {
+    const { client, calls } = fakeClient({
+      'POST /access/service_tokens': validCreated({ id: undefined }),
+      'GET /access/service_tokens': inventory,
+    });
+    await assertFailure(() => createSetupServiceToken(client), BLOCKED, ['secret-value']);
+    assert.equal(calls.filter(({ method }) => method === 'POST').length, 1);
+    assert.equal(calls.filter(({ method }) => method === 'DELETE').length, 0);
+  }
+});
+
+test('malformed create responses use inventory for unknown ids and delete safely observed ids', async () => {
+  let getterReads = 0;
+  const accessorId = validCreated();
+  Object.defineProperty(accessorId, 'id', {
+    get() {
+      getterReads += 1;
+      return 'service-token-1';
+    },
+  });
+  const unknownIdCases = [null, 'not-a-record', accessorId];
+  for (const response of unknownIdCases) {
+    const { client, calls } = fakeClient({
+      'POST /access/service_tokens': response,
+      'GET /access/service_tokens': [{ id: 'other', name: 'other-token' }],
+    });
+    await assertFailure(() => createSetupServiceToken(client), FAILURE, ['secret-value']);
+    assert.equal(calls.filter(({ method }) => method === 'DELETE').length, 0);
+  }
+  assert.equal(getterReads, 0);
+
+  const symbolResponse = validCreated();
+  symbolResponse[Symbol('sentinel')] = true;
+  const hostileResponse = Object.assign(Object.create({ inherited: true }), validCreated());
+  let accessorReads = 0;
+  const fieldAccessorResponse = validCreated();
+  Object.defineProperty(fieldAccessorResponse, 'duration', {
+    get() {
+      accessorReads += 1;
+      return SETUP_POLICY.serviceTokenDuration;
+    },
+  });
+  for (const response of [symbolResponse, hostileResponse, fieldAccessorResponse]) {
+    const { client, calls } = fakeClient({
+      'POST /access/service_tokens': response,
+      'DELETE /access/service_tokens/service-token-1': {},
+    });
+    await assertFailure(() => createSetupServiceToken(client), FAILURE, ['secret-value']);
+    assert.equal(calls.filter(({ method }) => method === 'DELETE').length, 1);
+  }
+  assert.equal(accessorReads, 0);
+});
+
+test('malformed response with observed id still blocks when delete compensation fails', async () => {
+  const response = validCreated({ enabled: false });
+  const { client, calls } = fakeClient({
+    'POST /access/service_tokens': response,
+    'DELETE /access/service_tokens/service-token-1': new Error('sentinel-secret'),
+  });
+  await assertFailure(() => createSetupServiceToken(client), BLOCKED, ['sentinel-secret', 'secret-value']);
+  assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [
+    'POST /access/service_tokens',
+    'DELETE /access/service_tokens/service-token-1',
+  ]);
 });
 
 test('delete validates strict primitive id before calling client and hides failures', async () => {

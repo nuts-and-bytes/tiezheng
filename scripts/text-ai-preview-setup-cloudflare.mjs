@@ -88,7 +88,7 @@ function parseInventory(value) {
   for (const item of items) {
     const record = snapshotRecord(item);
     const name = record.get('name');
-    if (name !== undefined && typeof name !== 'string') fail();
+    if (!record.has('name') || typeof name !== 'string') fail();
     if (name === SETUP_POLICY.serviceTokenName) fail();
   }
   return items;
