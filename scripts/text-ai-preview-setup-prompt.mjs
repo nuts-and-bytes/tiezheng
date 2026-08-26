@@ -149,6 +149,14 @@ export async function readTtyLine(options = {}) {
       cleanupAndFinish(outcome);
     };
 
+    const drainPending = () => {
+      if (externalDepth !== 0 || settled) return;
+      const outcome = externalFailure ? { kind: 'failure' } : pendingOutcome;
+      externalFailure = false;
+      pendingOutcome = undefined;
+      if (outcome) cleanupAndFinish(outcome);
+    };
+
     const invokeExternal = (fn, receiver, ...args) => {
       externalDepth += 1;
       let threw = false;
@@ -159,12 +167,7 @@ export async function readTtyLine(options = {}) {
         externalFailure = true;
       }
       externalDepth -= 1;
-      if (externalDepth === 0 && !settled) {
-        const outcome = externalFailure ? { kind: 'failure' } : pendingOutcome;
-        externalFailure = false;
-        pendingOutcome = undefined;
-        if (outcome) cleanupAndFinish(outcome);
-      }
+      drainPending();
       return !threw;
     };
 
@@ -172,6 +175,7 @@ export async function readTtyLine(options = {}) {
     const onEnd = () => settleWhenReady({ kind: 'failure' });
     const onData = (chunk) => {
       if (settled) return;
+      externalDepth += 1;
       try {
         if (!Buffer.isBuffer(chunk)) return settleWhenReady({ kind: 'failure' });
         for (const byte of chunk) {
@@ -211,6 +215,9 @@ export async function readTtyLine(options = {}) {
         }
       } catch {
         settleWhenReady({ kind: 'failure' });
+      } finally {
+        externalDepth -= 1;
+        drainPending();
       }
     };
 

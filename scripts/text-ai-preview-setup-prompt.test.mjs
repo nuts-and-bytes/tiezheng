@@ -201,6 +201,68 @@ test('setRawMode and resume failures override synchronous successful data outcom
   }
 });
 
+test('outer newline write failure overrides a nested completion', async () => {
+  const input = new FakeTTY();
+  const nestedChunk = Buffer.from('nested-write-secret-sentinel\r');
+  const output = fakeOutput();
+  let nestedEmitted = false;
+  output.write = function write(value) {
+    this.writes.push(value);
+    if (value === '\n' && !nestedEmitted) {
+      nestedEmitted = true;
+      input.emit('data', nestedChunk);
+      throw new Error('outer newline secret-sentinel');
+    }
+    return true;
+  };
+  const pending = readTtyLine({ input, output, label: 'Cloudflare API Token', hidden: true });
+  input.emit('data', Buffer.from('\r'));
+
+  await assertFixedFailure(pending);
+  assert.deepEqual(input.rawTransitions, [true, false]);
+  assert.equal(input.paused, 1);
+  assert.equal(input.listenerCount('data'), 0);
+  assert.equal(input.listenerCount('error'), 0);
+  assert.equal(input.listenerCount('end'), 0);
+  assert.equal(output.text.includes('nested-write-secret-sentinel'), false);
+});
+
+test('iterator failure overrides a nested completion from the same data handler', async () => {
+  const input = new FakeTTY();
+  const nestedChunk = Buffer.from('nested-iterator-secret-sentinel\r');
+  const outerChunk = Buffer.from('a');
+  let step = 0;
+  Object.defineProperty(outerChunk, Symbol.iterator, {
+    configurable: true,
+    value() {
+      return {
+        next() {
+          if (step === 0) {
+            step += 1;
+            return { value: 0x61, done: false };
+          }
+          if (step === 1) {
+            step += 1;
+            input.emit('data', nestedChunk);
+          }
+          throw new Error('iterator-after-nested secret-sentinel');
+        },
+      };
+    },
+  });
+  const output = fakeOutput();
+  const pending = readTtyLine({ input, output, label: 'Cloudflare API Token', hidden: true });
+  input.emit('data', outerChunk);
+
+  await assertFixedFailure(pending);
+  assert.deepEqual(input.rawTransitions, [true, false]);
+  assert.equal(input.paused, 1);
+  assert.equal(input.listenerCount('data'), 0);
+  assert.equal(input.listenerCount('error'), 0);
+  assert.equal(input.listenerCount('end'), 0);
+  assert.equal(output.text.includes('nested-iterator-secret-sentinel'), false);
+});
+
 test('rejects control, high-bit, non-Buffer, and overflow input with fixed failure', async () => {
   const chunks = [
     Buffer.from([0x03]),
