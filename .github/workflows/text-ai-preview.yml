@@ -159,6 +159,70 @@ jobs:
           NODE
           }
 
+          assert_worker_disabled_preflight() {
+            node --input-type=module <<'NODE'
+          import { constants } from 'node:fs';
+          import { open } from 'node:fs/promises';
+          import { TextDecoder } from 'node:util';
+
+          const path = process.env.TEXT_AI_PREFLIGHT_FILE;
+          if (
+            typeof path !== 'string'
+            || path.length === 0
+            || typeof process.getuid !== 'function'
+          ) {
+            throw new Error('invalid preflight path');
+          }
+          const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+          try {
+            const before = await handle.stat({ bigint: true });
+            if (
+              !before.isFile()
+              || before.nlink !== 1n
+              || before.uid !== BigInt(process.getuid())
+              || (before.mode & 0o777n) !== 0o600n
+              || before.size === 0n
+              || before.size > 4096n
+            ) {
+              throw new Error('invalid preflight result');
+            }
+            const bytes = await handle.readFile();
+            const after = await handle.stat({ bigint: true });
+            const stableFields = Object.freeze(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs']);
+            if (
+              stableFields.some((field) => before[field] !== after[field])
+              || before.mode !== after.mode
+              || before.uid !== after.uid
+              || before.nlink !== after.nlink
+              || BigInt(bytes.length) !== before.size
+              || bytes.includes(0)
+            ) {
+              throw new Error('preflight result drifted');
+            }
+            const raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            if (!raw.endsWith('\n') || raw.includes('\r') || raw.slice(0, -1).includes('\n')) {
+              throw new Error('invalid preflight result');
+            }
+            const value = JSON.parse(raw);
+            const expectedKeys = ['command', 'status', 'workerTextEnabled'];
+            if (
+              value === null
+              || typeof value !== 'object'
+              || Array.isArray(value)
+              || Object.keys(value).length !== expectedKeys.length
+              || expectedKeys.some((key, index) => Object.keys(value)[index] !== key)
+              || value.command !== 'preflight'
+              || value.status !== 'ready'
+              || value.workerTextEnabled !== false
+            ) {
+              throw new Error('disabled preflight required');
+            }
+          } finally {
+            await handle.close();
+          }
+          NODE
+          }
+
           capture_status_pair() {
             node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-1 > "$TEXT_AI_USER_1_STATUS_FILE"
             node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2 > "$TEXT_AI_USER_2_STATUS_FILE"
@@ -373,20 +437,37 @@ jobs:
           import { chmod, writeFile } from 'node:fs/promises';
           const path = process.env.TEXT_AI_SECRET_FILE;
           if (typeof path !== 'string' || path.length === 0) throw new Error('invalid secret path');
-          const secretNames = Object.freeze(['ARK_API_KEY', 'PHOTO_AI_CACHE_AES_KEY']);
-          const secretFile = {};
-          for (const name of secretNames) {
-            const value = process.env[name];
-            if (
-              typeof value !== 'string'
-              || value.length === 0
-              || value.length > 4096
-              || /[\u0000-\u001f\u007f]/u.test(value)
-            ) {
-              throw new Error('missing worker secret');
-            }
-            secretFile[name] = value;
+          const arkKey = process.env.ARK_API_KEY;
+          if (
+            typeof arkKey !== 'string'
+            || arkKey.length === 0
+            || arkKey.length > 4096
+            || arkKey.trim() !== arkKey
+            || /\p{Cc}/u.test(arkKey)
+          ) {
+            throw new Error('invalid worker secret');
           }
+          const aesKey = process.env.PHOTO_AI_CACHE_AES_KEY;
+          if (
+            typeof aesKey !== 'string'
+            || aesKey.length === 0
+            || aesKey.length > 4096
+            || aesKey.trim() !== aesKey
+            || /\p{Cc}/u.test(aesKey)
+          ) {
+            throw new Error('invalid worker secret');
+          }
+          const decodedAesKey = Buffer.from(aesKey, 'base64');
+          if (
+            decodedAesKey.length !== 32
+            || decodedAesKey.toString('base64') !== aesKey
+          ) {
+            throw new Error('invalid worker secret');
+          }
+          const secretFile = Object.freeze({
+            ARK_API_KEY: arkKey,
+            PHOTO_AI_CACHE_AES_KEY: aesKey,
+          });
           await writeFile(path, `${JSON.stringify(secretFile)}\n`, { flag: 'wx', mode: 0o600 });
           await chmod(path, 0o600);
           NODE
@@ -414,6 +495,7 @@ jobs:
               :
               ;;
             deploy-disabled)
+              assert_worker_disabled_preflight
               node scripts/text-ai-preview-control.mjs configure > /dev/null
               deploy_worker_disabled
               deploy_pages_preview
@@ -422,12 +504,12 @@ jobs:
               if [ "$TEXT_AI_TARGET" != 'user-1' ] || [ "$TEXT_AI_CONFIRMATION" != 'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT' ]; then
                 exit 1
               fi
+              write_worker_secret_file
               capture_status_pair
               assert_enable_admin_preconditions
               node scripts/text-ai-preview-control.mjs configure > /dev/null
               node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1 > /dev/null
               node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1 > /dev/null
-              write_worker_secret_file
               deploy_worker_enabled
               ;;
             status)

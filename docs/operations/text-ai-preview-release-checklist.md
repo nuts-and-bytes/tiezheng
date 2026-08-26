@@ -18,9 +18,11 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 | 目标 commit SHA 是事先批准的 40 位 SHA，并与远程 `main` 一致 | NOT_RUN | 仅允许记录 SHA |
 | 操作仓库固定为 `nuts-and-bytes/tiezheng`，不依赖 cwd 或默认仓库 | NOT_RUN | 仅记录 PASS/FAIL |
 | workflow 只允许手动触发，目标 ref 为受保护 `main` | NOT_RUN | 仅记录布尔判断 |
+| 开始每次 dispatch 前，旧 `queued`/`in_progress`/`waiting`/`pending` run 均为 0；旧审批已拒绝或取消 | NOT_RUN | 仅记录四项为 0；不得记录旧输入 |
 | 每个 dispatch 都从本次返回的精确 URL 提取唯一纯数字 run ID | NOT_RUN | URL 缺失/格式不符即 BLOCKED；不记录 URL |
 | 未使用 `gh run list`、UI 或“最近一次”回退绑定 | NOT_RUN | 仅记录 PASS/FAIL |
-| 每个精确 run 都已 watch 并核对 workflow_dispatch/main/SHA/completed/success/workflowName | NOT_RUN | 仅记录 run ID/SHA/成功结论 |
+| Environment pending approval 时 reviewer 人工核对 exact head SHA 与当时 `main`；main 漂移即拒绝并取消 | NOT_RUN | 仅记录 PASS/FAIL，不记录人员身份 |
+| 每个精确 run 都已 watch 并核对 workflow_dispatch/main/SHA/completed/success/workflowName、唯一 `text-ai-preview` job success、唯一 `Dispatch fixed operation` step success | NOT_RUN | 仅记录 run ID/SHA/成功结论 |
 | checkout/setup-node 使用固定完整 SHA，checkout 不持久化凭证 | NOT_RUN | 仅记录 PASS/FAIL |
 | `npm test` 全量通过 | NOT_RUN | 仅记录 PASS/FAIL |
 | `npm run typecheck` 通过 | NOT_RUN | 仅记录 PASS/FAIL |
@@ -50,6 +52,10 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 | 9 个 Environment secret 名称集合精确为 `CLOUDFLARE_API_TOKEN`、`ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY`、`PHOTO_AI_ACCOUNT_HMAC_KEY`、`TEXT_AI_USER_1_EMAIL`、`TEXT_AI_USER_2_EMAIL`、`TEXT_AI_ADMIN_EMAIL`、`TEXT_AI_CF_ACCESS_CLIENT_ID`、`TEXT_AI_CF_ACCESS_CLIENT_SECRET` | NOT_RUN | 只检查名称，不读取值 |
 | 2 个 Environment variable 名称集合精确为 `CLOUDFLARE_ACCOUNT_ID`、`TEXT_AI_TEAM_DOMAIN` | NOT_RUN | 不记录值 |
 | allowed email count 由 workflow 精确锁定为 2 | NOT_RUN | 不创建同名 Environment variable |
+| account ID 为 32 位小写 hex；team domain 是小写 slug，不含协议或完整 Access 域名 | NOT_RUN | 只在可信 GitHub UI 核对，不记录值 |
+| user-1/user-2 为规范小写且不同，admin 精确等于 user-1 | NOT_RUN | 只在可信 GitHub UI 核对，不记录邮箱 |
+| Access client ID 全小写并以 `.access` 结尾；HMAC 至少 32 字符且无空白 | NOT_RUN | 只在可信 GitHub UI 核对，不记录值 |
+| Ark key 为 1–4096、无首尾空白/Unicode 控制字符；AES 为 canonical Base64 且解码恰好 32 字节 | NOT_RUN | 只读 preflight 可先执行；workflow 在任何远端写入前验证，特别早于 status POST；不记录值 |
 
 ## C. Cloudflare 只读 preflight
 
@@ -65,7 +71,7 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 | `Access: Service Tokens Read` 已验证 | NOT_RUN | 内部以 detail/catalog ID 关联；仅记录 PASS/FAIL，不记录 ID/API 响应 |
 | token active、detail 与 permission catalog ID 关联通过 | NOT_RUN | 仅记录 PASS/FAIL，不记录 ID/API 响应 |
 | Pages `production_branch` 精确为 `main` | NOT_RUN | 仅记录 PASS/FAIL |
-| Worker 照片开关在 preflight 时为 false，文字开关是规范布尔值 | NOT_RUN | 仅记录布尔判断 |
+| 首次 preflight 的 Worker 照片开关与文字开关都精确为 false | NOT_RUN | 只读 run 即使成功但文字为 true 仍 BLOCKED |
 | OTP provider 与精确 service token 唯一存在 | NOT_RUN | 不记录资源 ID/client ID |
 | `preflight` 精确 run 成功且零 Cloudflare 写入 | NOT_RUN | 仅记录 run ID/SHA/成功结论 |
 
@@ -73,7 +79,8 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 
 | 检查项 | 状态 | 脱敏记录 |
 | --- | --- | --- |
-| `deploy-disabled` 只在 `preflight` 成功后以精确 run 执行 | NOT_RUN | 仅记录 run ID/SHA/成功结论 |
+| `deploy-disabled` 只在首次 `preflight` 成功且 `workerTextEnabled=false` 后以精确 run 执行 | NOT_RUN | 仅记录 run ID/SHA/成功结论 |
+| `deploy-disabled` 在 configure/Worker/Pages 首次写入前，从本次拥有者正确、单链接、稳定的 `0600` 文件再次证明 Worker text=false | NOT_RUN | true/缺失/额外字段/权限或文件漂移均零写入退出 |
 | Pages Preview branch 精确为 `text-ai-preview` | NOT_RUN | 仅记录 PASS/FAIL |
 | Pages production 配置哈希在 Preview 配置前后不变 | NOT_RUN | 仅记录 PASS/FAIL，不记录哈希值 |
 | 用户与管理 Access Application 均存在且 audience 隔离 | NOT_RUN | 不记录 audience/资源 ID |
@@ -82,7 +89,7 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 | 用户与管理 Access session duration 均为 `30m` | NOT_RUN | 仅记录 PASS/FAIL |
 | OTP policy 与 service-auth policy 均精确存在 | NOT_RUN | 不记录 provider/service token ID |
 | Pages Preview Service Binding 为 `PHOTO_AI_GATEWAY` → `tiezheng-photo-ai-gateway` | NOT_RUN | 只记录名称与 PASS/FAIL |
-| Worker secret 名称精确为 `ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY` | NOT_RUN | 不读取值 |
+| Worker secret 名称精确为 `ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY` | NOT_RUN | 只能在可信 Cloudflare Dashboard UI 核对名称且不读值；workflow preflight 不能证明此项 |
 | Worker disabled 配置为 text=false、photo=false、attempts=1 | NOT_RUN | 仅记录布尔判断 |
 | Preview 前端 text=true、photo=false | NOT_RUN | 仅记录布尔判断 |
 | disabled smoke：未登录被 Access 拦截 | NOT_RUN | 不记录 Cookie/IP |
@@ -94,12 +101,13 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 
 | 检查项 | 状态 | 脱敏记录 |
 | --- | --- | --- |
-| 首次启用前 Worker text/global/user-1/user-2 均为 false | NOT_RUN | 内部 status 保持静默 |
+| 首次启用先在本地验证 ARK/AES，再捕获状态；Worker text/global/user-1/user-2 均为 false | NOT_RUN | 无效 secret 必须零远端写入；内部 status 保持静默 |
 | `enable-admin-preview` 只在 `deploy-disabled` 成功后以精确 run 执行，只启用 user-1/global，Worker text=true | NOT_RUN | 仅记录 run ID/SHA/成功结论与布尔判断 |
 | 从 `enable-admin-preview` dispatch 开始，任一 workflow、OTP/session、`status`、浏览器或第二账号门禁异常都立即触发 `disable-all` 与关闭复核 | NOT_RUN | 无异常时仅在后续门禁全部成功且 F 全 PASS 后标 PASS；有异常时仅在关闭复核成功后标 PASS |
 | user-1 OTP 与 30m session 通过 | NOT_RUN | 不记录邮箱/OTP/JWT |
 | 唯一真实模型请求只在 Task 12 浏览器执行一次 | NOT_RUN | 不记录餐食/模型原文 |
 | Task 12 餐食提交总数不超过 1；成功或失败都未刷新、重试或换账号重发 | NOT_RUN | 仅记录 PASS/FAIL |
+| 同一 `requestId` 仅允许一次自动 in-flight 轮询；未刷新、未生成新 requestId、未人工重试 | NOT_RUN | 自动轮询只查询同一次操作，不算第二次供应商调用 |
 | 若唯一请求失败、超时或结果未知，已立即精确执行 `disable-all` 并完成关闭复核 | NOT_RUN | 未触发时仅在唯一请求成功且 F 全 PASS 后标 PASS；触发时仅在关闭复核成功后标 PASS |
 | 只新增一条本地餐次记录且刷新仍存在 | NOT_RUN | 不记录餐食正文 |
 | 每次显式 `status` 只针对一个 target，且只输出 `textGlobalEnabled`、`accountEnabled`、`accountRemaining`、`globalRemaining`、`budgetSpentMicros`、`budgetReservedMicros`、`resetAt` | NOT_RUN | 不复制字段值到本表 |
@@ -151,7 +159,7 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 
 | 检查项 | 状态 | 脱敏记录 |
 | --- | --- | --- |
-| 标准双账号 Preview 未批准、未派发、未执行 `delete-account` | NOT_RUN | 正常成功路径必须为 PASS；只记录 PASS/FAIL |
+| 标准流程完全禁止 `delete-account`；本次未批准、未派发、未执行 | NOT_RUN | 正常成功路径必须为 PASS；只记录 PASS/FAIL |
 | 另行批准明确唯一 target slot，并确认文字与照片共用状态不可恢复 | NOT_RUN | 不记录账号身份值；未批准不得继续 |
 | 另行批准确认会删除所有通道 active lease、幂等键、分钟/日计数、共用 account flag 与缓存状态 | NOT_RUN | 只记录 PASS/FAIL |
 | 文字 global=false、照片 global=false，且 Worker text=false、photo=false | NOT_RUN | 只记录布尔判断 |

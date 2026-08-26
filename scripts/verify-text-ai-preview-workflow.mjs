@@ -5,8 +5,8 @@ import { pathToFileURL } from 'node:url';
 
 const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 const MAX_WORKFLOW_BYTES = 1_048_576;
-const EXPECTED_DISPATCH_SHA256 = 'a832ab9fd1189278367b7faf91a2dc7fcafd8602ef7c1d6181f05c20205520cf';
-const EXPECTED_OPERATION_CASE_SHA256 = 'ff10cd022ef4036a462e643de34c6eb764faad1da1e36a033ee17f338656bc9a';
+const EXPECTED_DISPATCH_SHA256 = '5efa3a7b367efc06f89f6ff733c243a12cd0dd01c297d634b8adb7103b9264cf';
+const EXPECTED_OPERATION_CASE_SHA256 = '1f9867044d07529750db2dcecf75d1cbdaf853efdd390cf51221f29319d13d4c';
 const CHECKOUT_ACTION = 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5';
 const SETUP_NODE_ACTION = 'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020';
 const OPERATION_CHOICES = Object.freeze([
@@ -368,8 +368,14 @@ function verifyShellPolicy(allRunScripts, dispatchScript) {
     'const canonicalStatus = Object.freeze({\n  textGlobalEnabled: value.textGlobalEnabled,',
     'process.stdout.write(`${JSON.stringify(canonicalStatus)}\\n`);',
     'trap cleanup_preview_temp_files EXIT\nif [ "$TEXT_AI_OPERATION" != \'disable-all\' ]; then\n  run_full_preflight\nfi\n\ncase "$TEXT_AI_OPERATION" in',
-    'deploy-disabled)\n    node scripts/text-ai-preview-control.mjs configure > /dev/null\n    deploy_worker_disabled\n    deploy_pages_preview',
-    'enable-admin-preview)\n    if [ "$TEXT_AI_TARGET" != \'user-1\' ] || [ "$TEXT_AI_CONFIRMATION" != \'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT\' ]; then\n      exit 1\n    fi\n    capture_status_pair\n    assert_enable_admin_preconditions',
+    'deploy-disabled)\n    assert_worker_disabled_preflight\n    node scripts/text-ai-preview-control.mjs configure > /dev/null\n    deploy_worker_disabled\n    deploy_pages_preview',
+    "const stableFields = Object.freeze(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs']);",
+    '(before.mode & 0o777n) !== 0o600n',
+    'value.workerTextEnabled !== false',
+    'enable-admin-preview)\n    if [ "$TEXT_AI_TARGET" != \'user-1\' ] || [ "$TEXT_AI_CONFIRMATION" != \'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT\' ]; then\n      exit 1\n    fi\n    write_worker_secret_file\n    capture_status_pair\n    assert_enable_admin_preconditions\n    node scripts/text-ai-preview-control.mjs configure > /dev/null',
+    'arkKey.trim() !== arkKey',
+    "const decodedAesKey = Buffer.from(aesKey, 'base64');",
+    'decodedAesKey.length !== 32\n  || decodedAesKey.toString(\'base64\') !== aesKey',
     'enable-second-account)\n    if [ "$TEXT_AI_TARGET" != \'user-2\' ]; then\n      exit 1\n    fi\n    capture_status_pair\n    assert_enable_second_preconditions',
     'disable-all)\n    disable_failure_mask=0',
     "TEXT_AI_DISABLE_ACCESS_ATTEMPTED='false'\n    if [ \"$disable_failure_mask\" -eq 0 ]; then\n      TEXT_AI_DISABLE_ACCESS_ATTEMPTED='true'\n      if node scripts/text-ai-preview-control.mjs disable-access > /dev/null; then",
@@ -382,7 +388,9 @@ function verifyShellPolicy(allRunScripts, dispatchScript) {
   }
 
   const exactCounts = new Map([
+    ['assert_worker_disabled_preflight', 2],
     ['write_worker_secret_file', 2],
+    ['/\\p{Cc}/u', 2],
     ['deploy_worker_disabled', 3],
     ['deploy_worker_enabled', 2],
     ['deploy_pages_preview', 2],
@@ -395,8 +403,7 @@ function verifyShellPolicy(allRunScripts, dispatchScript) {
     ['DELETE_TEXT_PREVIEW_ACCOUNT_STATE', 1],
     ['# REAL_TEXT_AI_REQUEST_BUDGET: 1', 1],
     ['# NO_REAL_MEAL_REQUEST_IN_WORKFLOW', 1],
-    ["node --input-type=module <<'NODE'", 7],
-    ["const secretNames = Object.freeze(['ARK_API_KEY', 'PHOTO_AI_CACHE_AES_KEY']);", 1],
+    ["node --input-type=module <<'NODE'", 8],
     ["{ flag: 'wx', mode: 0o600 }", 1],
     ['await chmod(path, 0o600);', 1],
     ['await Promise.all(paths.map((path) => rm(path, { force: true })));', 1],

@@ -1131,17 +1131,16 @@ on:
 
 部署步骤必须：
 
-1. 调用 `scripts/text-ai-preview-control.mjs preflight`；
-2. `deploy-disabled`/`enable-admin-preview` 调用 `configure`；
-3. 在 `$RUNNER_TEMP` 生成仅含 `ARK_API_KEY` 与 `PHOTO_AI_CACHE_AES_KEY` 的 0600 JSON secret file；
+1. 除 `disable-all` 外先调用 `scripts/text-ai-preview-control.mjs preflight`；
+2. `deploy-disabled` 在任何写入前，从本次 `0600` preflight 文件严格证明 `workerTextEnabled=false`，再依次 `configure`、部署 text/photo false Worker、部署 Preview Pages；
+3. `enable-admin-preview` 在只读 preflight 与确认短语通过后、任何远端写入前，先校验 ARK/AES 格式并在 `$RUNNER_TEMP` 生成仅含这两个值的 `0600` JSON secret file；随后才 POST 两个 status、验证关闭前置状态、`configure`、启用 user-1/global、部署 text enabled Worker；
 4. Wrangler deploy 使用源码 config、secret file 和全部非 secret vars，照片 false、admin true、origin 精确 Preview、attempts 1；
 5. Preview build 只设置 `VITE_ENABLE_TEXT_AI=true`；
 6. Pages deploy 使用 `--project-name=tiezheng --branch=text-ai-preview --commit-hash=$GITHUB_SHA`；
-7. `enable-admin-preview` 先启用 user-1 和 text global，再以 text enabled 部署 Worker；
-8. `enable-second-account` 只调用管理 endpoint，不部署或调用模型；
-9. `disable-all` 先禁用 text global，再部署 text false Worker，最后 `disable-access`；
-10. `delete-account` 要求 confirmation 精确 `DELETE_TEXT_PREVIEW_ACCOUNT_STATE`；
-11. `enable-admin-preview` 要求 confirmation 精确 `ENABLE_ONE_TEXT_PREVIEW_ACCOUNT`。
+7. `enable-second-account` 只调用管理 endpoint，不部署或调用模型；
+8. `disable-all` 先禁用 text global，再部署 text false Worker，最后 `disable-access`；
+9. 标准流程完全禁止 `delete-account`；另行流程仍要求 confirmation 精确 `DELETE_TEXT_PREVIEW_ACCOUNT_STATE`；
+10. `enable-admin-preview` 要求 confirmation 精确 `ENABLE_ONE_TEXT_PREVIEW_ACCOUNT`。
 
 workflow 不执行真实餐食请求；真实的一次请求保留给浏览器验收，避免 CI 日志接触餐食正文。
 
@@ -1190,11 +1189,11 @@ git commit -m "ci: add protected text AI preview workflow"
 
 runbook 必须给出固定信息：
 
-- GitHub Environment 名、八个人工 secret、team domain 与 allowed-email-count variables；
+- GitHub Environment 名、九个人工 secret、account ID 与 team domain 两个 variables；allowed email count 由 workflow 固定为 2，不是 Environment variable；
 - Cloudflare token 所需权限：Workers Scripts Edit、Pages Edit、Access Apps and Policies Write、Access Identity Providers Read、Access Service Tokens Read；
 - 先 `preflight`、再 `deploy-disabled`、再 `enable-admin-preview`；
 - user-1 管理员单次真实请求、user-2 OTP；
-- status/disable-account/delete-account；
+- status/disable-account；标准流程完全禁止 delete-account，破坏性跨通道删除只保留另行批准的附录边界；
 - 回滚顺序和每一步预期状态；
 - 禁止复制 audience、邮箱、JWT、OTP、密钥和餐食正文到 evidence。
 
@@ -1250,14 +1249,14 @@ git commit -m "docs: add text AI preview operations runbook"
 
 - [ ] **Step 1: 要求用户在 GitHub UI 输入 secret**
 
-在仓库 Settings → Environments → `text-ai-preview` 中设置 approval protection，并由用户直接输入：`ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY`、`PHOTO_AI_ACCOUNT_HMAC_KEY`、两个用户邮箱、管理员邮箱、Access service client ID/secret。不得通过聊天、shell history 或 workflow input 传值。
+在固定仓库 Settings → Environments → `text-ai-preview` 中设置 approval protection，并由用户直接输入 9 个 Environment secrets：`CLOUDFLARE_API_TOKEN`、`ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY`、`PHOTO_AI_ACCOUNT_HMAC_KEY`、`TEXT_AI_USER_1_EMAIL`、`TEXT_AI_USER_2_EMAIL`、`TEXT_AI_ADMIN_EMAIL`、`TEXT_AI_CF_ACCESS_CLIENT_ID`、`TEXT_AI_CF_ACCESS_CLIENT_SECRET`。不得通过聊天、shell history 或 workflow input 传值。
 
 - [ ] **Step 2: 检查 secret 名称而非值**
 
 Run:
 
 ```bash
-gh secret list --env text-ai-preview --json name --jq '.[].name'
+gh secret list -R nuts-and-bytes/tiezheng --env text-ai-preview --json name --jq '.[].name'
 ```
 
 Expected: 名称集合与 runbook 完全一致；输出没有值。
@@ -1268,21 +1267,21 @@ Expected: 名称集合与 runbook 完全一致；输出没有值。
 
 - [ ] **Step 4: 运行只读 preflight**
 
+所有 Task 11/12 dispatch 都先加载 runbook 第 6 节的固定函数与变量，使用固定仓库、批准 SHA、精确 dispatch URL/run ID/watch/view 仪式；不得复制旧版“最近一次 run”查询。每次 dispatch 前必须证明旧 `queued`/`in_progress`/`waiting`/`pending` run 为 0，旧审批全部拒绝或取消。Environment 出现 pending deployment 时，reviewer 必须在 GitHub UI 人工核对 exact head SHA 与当时 `main`；main 漂移时拒绝并取消，禁止批准。
+
 ```bash
-gh workflow run text-ai-preview.yml -f operation=preflight -f target=user-1 -f confirmation=''
-gh run watch --exit-status "$(gh run list --workflow text-ai-preview.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')"
+run_text_preview_operation preflight user-1 ''
 ```
 
-Expected: 只读 PASS；若 Cloudflare token 权限不足或远端照片开关为 true，停止并列出缺失权限名/照片状态，不做远端写入。
+Expected: 只读 PASS 且 `workerTextEnabled=false`；若 Cloudflare token 权限不足、远端照片开关为 true 或 Worker 文字开关不是 false，停止并列出安全的缺失权限名/开关布尔状态，不做远端写入。
 
 - [ ] **Step 5: 部署 disabled Worker 和 Pages Preview**
 
 ```bash
-gh workflow run text-ai-preview.yml -f operation=deploy-disabled -f target=user-1 -f confirmation=''
-gh run watch --exit-status "$(gh run list --workflow text-ai-preview.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')"
+run_text_preview_operation deploy-disabled user-1 ''
 ```
 
-Expected: Preview 静态站 200；未登录文字 API 被 Access 拦截；登录后 session 为 `service-disabled`；豆包用量不变；生产首页仍无文字 AI 入口。
+Expected: workflow 在任何 configure/Worker/Pages 写入前，从本次 `0600` preflight 文件再次严格证明 `workerTextEnabled=false`；随后 Preview 静态站 200，未登录文字 API 被 Access 拦截，登录后 session 为 `service-disabled`，豆包用量不变，生产首页仍无文字 AI 入口。
 
 - [ ] **Step 6: 记录脱敏 disabled evidence**
 
@@ -1297,18 +1296,14 @@ Expected: Preview 静态站 200；未登录文字 API 被 Access 拦截；登录
 - [ ] **Step 1: 启用管理员 Preview**
 
 ```bash
-gh workflow run text-ai-preview.yml \
-  -f operation=enable-admin-preview \
-  -f target=user-1 \
-  -f confirmation=ENABLE_ONE_TEXT_PREVIEW_ACCOUNT
-gh run watch --exit-status "$(gh run list --workflow text-ai-preview.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')"
+run_text_preview_operation enable-admin-preview user-1 ENABLE_ONE_TEXT_PREVIEW_ACCOUNT
 ```
 
-Expected: user-1 enabled、text global enabled、Worker text flag true、photo flag false、attempts 1。
+Expected: 只读 preflight 可先执行；Ark/AES 格式必须先于任何远端写入通过，特别早于会写 replay/cleanup 的 status POST；无效 secret 零远端写入。随后 user-1 enabled、text global enabled、Worker text flag true、photo flag false、attempts 1。
 
 - [ ] **Step 2: 浏览器执行唯一真实餐食请求**
 
-使用 user-1 OTP 登录 `https://text-ai-preview.tiezheng.pages.dev/health`，提交固定描述“牛肉面一碗，少油，约 500 g”。只点击估算一次。验证完整热量/蛋白质范围，人工把最终热量改为 900 后确认。
+使用 user-1 OTP 登录 `https://text-ai-preview.tiezheng.pages.dev/health`，提交固定描述“牛肉面一碗，少油，约 500 g”。只点击估算一次。验证完整热量/蛋白质范围，人工把最终热量改为 900 后确认。同一 `requestId` 的自动 in-flight 轮询只查询同一次操作，不计为第二次供应商调用；禁止刷新、生成新 `requestId` 或人工重试。
 
 Expected: 只新增一条当前餐次记录；刷新仍存在；请求失败时不自动或手动重试，立即进入回滚检查。
 
@@ -1318,13 +1313,12 @@ Expected: 只新增一条当前餐次记录；刷新仍存在；请求失败时�
 
 - [ ] **Step 4: 扫描日志与浏览器存储**
 
-检查 GitHub job log、Cloudflare Worker/Pages log、Access 邻接日志、Durable Object 状态和浏览器存储。禁止出现餐食描述、候选原文、邮箱、账号键、JWT、OTP、密钥、IP 和 Cookie。任何命中立即 `disable-all` 并按 runbook 轮换对应 secret。
+检查 GitHub job log、Cloudflare Worker/Pages log、Access 邻接日志、Durable Object 状态和浏览器存储。禁止出现餐食描述、候选原文、邮箱、账号键、JWT、OTP、密钥、IP 和 Cookie。任何命中按 runbook 第 11 节先区分内容泄露与凭证泄露，再执行对应 revoke/关闭/迁移顺序；不得用已泄露 bearer credential 先关闸。
 
 - [ ] **Step 5: 启用第二账号**
 
 ```bash
-gh workflow run text-ai-preview.yml -f operation=enable-second-account -f target=user-2 -f confirmation=''
-gh run watch --exit-status "$(gh run list --workflow text-ai-preview.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')"
+run_text_preview_operation enable-second-account user-2 ''
 ```
 
 user-2 只验证 OTP、session enabled 和剩余额度，不提交餐食估算。

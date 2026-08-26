@@ -59,7 +59,18 @@ Environment variables 名称必须恰好包含以下 2 个：
 
 不要创建 `TEXT_AI_ALLOWED_EMAIL_COUNT` Environment variable；workflow 固定注入精确值 `2`。
 
-Worker secret 名称只有 `ARK_API_KEY` 与 `PHOTO_AI_CACHE_AES_KEY`。`PHOTO_AI_ACCOUNT_HMAC_KEY` 由受保护控制面写入 Pages Preview 的 secret binding，不属于 Worker secret 文件。
+值格式也属于发布门禁，GitHub UI 保存前必须逐项核对：
+
+- `CLOUDFLARE_ACCOUNT_ID` 必须是 32 位小写十六进制。
+- `TEXT_AI_TEAM_DOMAIN` 只能填写小写 team slug，不含协议、路径或 `.cloudflareaccess.com` 完整域名。
+- `TEXT_AI_USER_1_EMAIL` 与 `TEXT_AI_USER_2_EMAIL` 必须是已规范化的小写邮箱且互不相同；workflow 不会替操作者做大小写或空白修正。
+- `TEXT_AI_ADMIN_EMAIL` 必须精确等于 `TEXT_AI_USER_1_EMAIL`。
+- `TEXT_AI_CF_ACCESS_CLIENT_ID` 必须全小写并以 `.access` 结尾。
+- `PHOTO_AI_ACCOUNT_HMAC_KEY` 至少 32 个字符且不得包含任何空白。
+- `ARK_API_KEY` 长度为 1–4096，首尾不得有空白，也不得含 CR、LF 或其他控制字符。
+- `PHOTO_AI_CACHE_AES_KEY` 必须是 canonical Base64，解码后恰好 32 字节；首尾不得有空白，也不得含 CR、LF 或其他控制字符。
+
+Worker secret 名称只有 `ARK_API_KEY` 与 `PHOTO_AI_CACHE_AES_KEY`。`PHOTO_AI_ACCOUNT_HMAC_KEY` 由受保护控制面写入 Pages Preview 的 secret binding，不属于 Worker secret 文件。Worker secret 名称只能在可信 Cloudflare Dashboard UI 中核对，只看名称，不读取、复制或显示值；`preflight` 不能证明 Worker secret 名称集合，它只检查 Worker 的文字/照片 plain-text 开关。GitHub Environment 的 9 个 secret 名称也只在可信 GitHub Settings UI 核对，不读取值。
 
 只允许检查 secret 名称集合，不允许读取或输出值。API key 的设置路径仅为上述 GitHub UI；禁止使用带值的 CLI 命令或示例密钥。
 
@@ -124,7 +135,27 @@ export TEXT_AI_REPO='nuts-and-bytes/tiezheng'
 export TEXT_AI_EXPECTED_SHA='<批准的40位SHA>'
 ```
 
-每个 operation 都必须使用下面的同一套精确绑定函数。`gh workflow run` 必须返回当前 dispatch 的精确 URL；函数只从该 URL 提取纯数字 run ID，然后依次等待该 ID，并验证 event、branch、head SHA、状态、结论和 workflow 名。URL 缺失、格式不符、远端 `main` 漂移、等待超时或任一 metadata 不符都立即 `BLOCKED`；严禁回退到 `gh run list` 的 latest run。
+开始任何 dispatch 前，必须证明该 workflow 的旧 `queued`、`in_progress`、`waiting`、`pending` run 数量分别为 0。若任一项非零，旧审批必须全部拒绝或取消，旧 run 必须结束，再重新从零开始核对；绝不能让旧的 enable 在新回滚之后继续执行。下面的 inventory 只用于排除旧活动 run，绝不用于给新 dispatch 绑定“最近一次” run ID：
+
+```bash
+assert_no_stale_text_preview_runs() (
+  set -euo pipefail
+  repo='nuts-and-bytes/tiezheng'
+
+  for status in queued in_progress waiting pending; do
+    count="$(gh run list -R "$repo" --workflow text-ai-preview.yml \
+      --event workflow_dispatch --status "$status" --limit 100 \
+      --json databaseId --jq 'length')"
+    if [[ ! "$count" =~ ^[0-9]+$ ]] || [ "$count" -ne 0 ]; then
+      printf '%s\n' 'BLOCKED: older active preview run exists' >&2
+      return 1
+    fi
+    printf '%s=%s\n' "$status" "$count"
+  done
+)
+```
+
+每个 operation 都必须使用下面的同一套精确绑定函数。`gh workflow run` 必须返回当前 dispatch 的精确 URL；函数只从该 URL 提取纯数字 run ID，然后依次等待该 ID，并验证 event、branch、head SHA、状态、结论、workflow 名、唯一 `text-ai-preview` job 及唯一 `Dispatch fixed operation` step。URL 缺失、格式不符、远端 `main` 漂移、等待超时、job/step 被跳过或任一 metadata 不符都立即 `BLOCKED`；严禁回退到 `gh run list` 的 latest run。
 
 ```bash
 verify_text_preview_run() (
@@ -141,7 +172,7 @@ verify_text_preview_run() (
   watch_exit=0
   gh run watch "$run_id" --exit-status -R "$repo" || watch_exit=$?
   if ! run_json="$(gh run view "$run_id" -R "$repo" \
-    --json event,headBranch,headSha,status,conclusion,workflowName)"; then
+    --json event,headBranch,headSha,status,conclusion,workflowName,jobs)"; then
     printf '%s\n' 'BLOCKED: run metadata unavailable' >&2
     return 1
   fi
@@ -152,6 +183,12 @@ verify_text_preview_run() (
     and .status == "completed"
     and .conclusion == "success"
     and .workflowName == "Text AI Preview Control"
+    and (.jobs | type == "array" and length == 1)
+    and .jobs[0].name == "text-ai-preview"
+    and .jobs[0].conclusion == "success"
+    and (.jobs[0].steps | type == "array")
+    and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation")] | length == 1)
+    and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation" and .conclusion == "success")] | length == 1)
   ' >/dev/null <<<"$run_json"; then
     printf '%s\n' 'BLOCKED: run metadata mismatch' >&2
     return 1
@@ -175,6 +212,7 @@ run_text_preview_operation() (
     printf '%s\n' 'BLOCKED: unapproved repository or SHA' >&2
     return 1
   fi
+  assert_no_stale_text_preview_runs
   remote_main_sha="$(gh api "repos/$repo/commits/main" --jq '.sha')"
   if [ "$remote_main_sha" != "$expected_sha" ]; then
     printf '%s\n' 'BLOCKED: remote main SHA drifted' >&2
@@ -195,9 +233,12 @@ run_text_preview_operation() (
     printf '%s\n' 'BLOCKED: exact dispatch run URL unavailable' >&2
     return 1
   fi
+  printf 'pending_run_id=%s\n' "$run_id"
   verify_text_preview_run "$run_id" "$expected_sha"
 )
 ```
+
+当 Environment 显示 **pending deployment** 时，required reviewer 必须在可信 GitHub UI 中人工核对：仓库是固定仓库、run ID 是本次精确 run、`head SHA` 精确等于 `TEXT_AI_EXPECTED_SHA`，且此时远端 `main` 仍是同一 SHA。main 漂移时必须拒绝并取消，禁止批准；不得因为 workflow 名、分支名或提交标题看起来正确而放行。审批发生后仍要由 `verify_text_preview_run` 完成 job/step 级复核。
 
 只允许把函数最后输出的 run ID、SHA 与固定成功结论写入 evidence，不记录 dispatch URL。若 dispatch 已发出但 URL 缺失或格式不符，本次操作立即结束为 `BLOCKED`；不得从 GitHub UI、`gh run list` 或任何“最近一次”结果补绑 run ID，也不得继续后续启用步骤。若该 operation 具有写入性，还必须按下文将其视为结果未知，并立即发起一次可精确绑定的 `disable-all`。
 
@@ -209,13 +250,15 @@ run_text_preview_operation() (
 run_text_preview_operation preflight user-1 ''
 ```
 
-预期：只读检查通过；日志只出现安全的 `command/status/workerTextEnabled` 结果，不出现远端对象正文或敏感值。
+首次 `preflight` 只有 `workerTextEnabled=false` 才可继续；如果结果为 true，即使只读 run 自身成功，也必须标记 `BLOCKED`，先完成关闭处置，不得运行 `deploy-disabled`。预期日志只出现安全的 `command/status/workerTextEnabled` 结果，不出现远端对象正文或敏感值。
 
 ### 6.2 `deploy-disabled`
 
 ```bash
 run_text_preview_operation deploy-disabled user-1 ''
 ```
+
+`deploy-disabled` 在任何 Cloudflare 写入前再次从本次 `0600` preflight 文件证明 `workerTextEnabled=false`。该文件必须是当前 runner 用户拥有、单链接的普通文件，字段、顺序、值、权限与读取前后 identity/size/time 都严格稳定；true、缺字段、额外字段、非 `0600` 或读取期间漂移一律在 `configure`、Worker deploy、Pages deploy 之前退出，零远端写入。
 
 它按固定配置执行：
 
@@ -234,19 +277,21 @@ run_text_preview_operation deploy-disabled user-1 ''
 run_text_preview_operation enable-admin-preview user-1 ENABLE_ONE_TEXT_PREVIEW_ACCOUNT
 ```
 
-workflow 在任何启用写入前，先静默捕获 user-1 与 user-2 的管理状态并严格验证：
+只读 `run_full_preflight` 可先执行。workflow 收到精确 target/确认短语后，必须在任何远端写入前先本地验证 Ark key 和 AES key 的第 3 节格式并生成 `0600` secret file；这特别包括早于会产生 replay/cleanup 写入的管理 `status` POST。secret 格式不符时直接退出，既不捕获 status，也不产生任何远端写入。
+
+secret 格式通过后，workflow 才静默捕获 user-1 与 user-2 的管理状态并严格验证：
 
 - Worker 文字开关为 false；
 - 文字 global 为 false；
 - user-1 与 user-2 的 account flag 都为 false。
 
-这些启用前状态只写入权限为 `0600` 的 runner 临时文件，退出时删除，不打印到日志。门禁通过后才配置 Access、启用 user-1、启用文字 global、写入两个 Worker secret，并把 Worker 文字开关部署为 true。任一前置状态不符时退出，不尝试“修正后继续”。
+这些启用前状态只写入权限为 `0600` 的 runner 临时文件，退出时删除，不打印到日志。状态门禁通过后才配置 Access、启用 user-1、启用文字 global，并把 Worker 文字开关部署为 true。任一状态前置条件不符时退出，不尝试“修正后继续”。
 
 从 `enable-admin-preview` dispatch 开始，不能再假定闸门保持关闭。其后任何 workflow、OTP/session、显式 `status`、浏览器请求或第二账号门禁出现非成功、超时或结果未知，都必须立即发起一次精确绑定的 `disable-all` 并完成第 8 节关闭复核。关闭未确认成功就是 `BLOCKED`，不得继续验收或直接重试 enable。
 
 ### 6.4 唯一真实请求与第二账号
 
-唯一真实餐食请求只能由 user-1 在 Task 12 的受控浏览器验收中手动点击一次。请求前后各运行一次显式 `status` 形成差值；失败、超时或结果未知时禁止刷新、重试或换账号重发，必须立即运行并完整核验第 8 节的 `disable-all` 与关闭复核。关闭未确认成功就标为 `BLOCKED`。
+唯一真实餐食请求只能由 user-1 在 Task 12 的受控浏览器验收中手动点击一次。同一 `requestId` 的一次自动 in-flight 轮询不算第二次供应商调用；它只是在查询同一次已受理操作，仍禁止刷新、生成新 `requestId`、人工重试或换账号重发。请求前后各运行一次显式 `status` 形成差值；失败、超时或结果未知时必须立即运行并完整核验第 8 节的 `disable-all` 与关闭复核。关闭未确认成功就标为 `BLOCKED`。
 
 user-2 只能完成 OTP 登录、session 与 `status` 验证，不得输入或发送餐食内容。启用 user-2：
 
@@ -291,7 +336,7 @@ run_text_preview_operation disable-account user-2 ''
 
 ### 7.3 `delete-account` 不在标准流程内
 
-标准 Preview 发布、回滚与恢复禁止运行 `delete-account`；release checklist 必须证明本次没有批准、派发或执行该 operation。它会删除文字与照片共用状态，因此不能作为日常账号管理、发布回滚或计数修复手段。只有另行取得明确的破坏性跨通道授权后，才能进入附录 A；该附录不参与本次标准 GREEN 判定。
+标准流程完全禁止 `delete-account`；标准 Preview 发布、回滚与恢复都不得批准、派发或执行该 operation，release checklist 必须证明本次没有发生。它会删除文字与照片共用状态，因此不能作为日常账号管理、发布回滚或计数修复手段。只有另行取得明确的破坏性跨通道授权后，才能进入附录 A；该附录不参与本次标准 GREEN 判定。
 
 ## 8. 紧急关闭：`disable-all`
 

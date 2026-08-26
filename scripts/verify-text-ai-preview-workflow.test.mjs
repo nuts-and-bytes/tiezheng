@@ -15,6 +15,12 @@ import { verifyTextPreviewWorkflow } from './verify-text-ai-preview-workflow.mjs
 
 const WORKFLOW_PATH = resolve('.github/workflows/text-ai-preview.yml');
 const source = await readFile(WORKFLOW_PATH, 'utf8');
+const runbookSource = await readFile(resolve('docs/operations/text-ai-preview-runbook.md'), 'utf8');
+const checklistSource = await readFile(resolve('docs/operations/text-ai-preview-release-checklist.md'), 'utf8');
+const releasePlanSource = await readFile(
+  resolve('docs/superpowers/plans/2026-08-24-tiezheng-text-ai-preview-release.md'),
+  'utf8',
+);
 const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 
 function extractDispatchScript(value) {
@@ -214,8 +220,8 @@ test('injects and writes Worker secrets only for the first enabled deployment', 
   assert.equal(enabledDeploy.includes('--secrets-file "$TEXT_AI_SECRET_FILE"'), true);
   expectPolicyFailure(replaceOnce(
     source,
-    'deploy-disabled)\n              node scripts/text-ai-preview-control.mjs configure > /dev/null\n              deploy_worker_disabled',
-    'deploy-disabled)\n              node scripts/text-ai-preview-control.mjs configure > /dev/null\n              write_worker_secret_file\n              deploy_worker_disabled',
+    'deploy-disabled)\n              assert_worker_disabled_preflight\n              node scripts/text-ai-preview-control.mjs configure > /dev/null\n              deploy_worker_disabled',
+    'deploy-disabled)\n              assert_worker_disabled_preflight\n              node scripts/text-ai-preview-control.mjs configure > /dev/null\n              write_worker_secret_file\n              deploy_worker_disabled',
   ));
 });
 
@@ -307,12 +313,122 @@ test('runs strict full preflight for every operation except disable-all', () => 
   ));
 });
 
+test('deploy-disabled proves an exact false 0600 preflight file before every remote write', () => {
+  const branch = [
+    'deploy-disabled)',
+    '              assert_worker_disabled_preflight',
+    '              node scripts/text-ai-preview-control.mjs configure > /dev/null',
+    '              deploy_worker_disabled',
+    '              deploy_pages_preview',
+  ].join('\n');
+  assert.ok(source.includes(branch));
+  assert.ok(source.includes("const expectedKeys = ['command', 'status', 'workerTextEnabled'];"));
+  assert.ok(source.includes('value.workerTextEnabled !== false'));
+  assert.ok(source.includes('(before.mode & 0o777n) !== 0o600n'));
+  assert.ok(source.includes("const stableFields = Object.freeze(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs']);"));
+
+  for (const [before, after] of [
+    ['value.workerTextEnabled !== false', 'value.workerTextEnabled !== true'],
+    ['(before.mode & 0o777n) !== 0o600n', '(before.mode & 0o777n) !== 0o644n'],
+    ['              assert_worker_disabled_preflight\n', ''],
+    [
+      '              assert_worker_disabled_preflight\n              node scripts/text-ai-preview-control.mjs configure > /dev/null\n',
+      '              node scripts/text-ai-preview-control.mjs configure > /dev/null\n              assert_worker_disabled_preflight\n',
+    ],
+  ]) {
+    expectPolicyFailure(replaceOnce(source, before, after));
+  }
+
+  const stubbedDispatch = replaceOnce(
+    dispatchScript,
+    'trap cleanup_preview_temp_files EXIT\n',
+    [
+      'node() {',
+      "  if [ \"${1:-}\" = 'scripts/text-ai-preview-control.mjs' ] && [ \"${2:-}\" = 'preflight' ]; then",
+      "    command printf '%s' \"$PREFLIGHT_FIXTURE\"",
+      "    if [ \"${PREFLIGHT_MODE_DRIFT:-false}\" = 'true' ]; then",
+      '      command chmod 0644 "$TEXT_AI_PREFLIGHT_FILE"',
+      '    fi',
+      '    return 0',
+      '  fi',
+      "  if [ \"${1:-}\" = 'scripts/text-ai-preview-control.mjs' ] && [ \"${2:-}\" = 'configure' ]; then",
+      "    command printf '%s\\n' 'CONFIGURE_WRITE' >&2",
+      '    return 0',
+      '  fi',
+      '  command node "$@"',
+      '}',
+      'deploy_worker_disabled() {',
+      "  command printf '%s\\n' 'WORKER_WRITE' >&2",
+      '}',
+      'deploy_pages_preview() {',
+      "  command printf '%s\\n' 'PAGES_WRITE' >&2",
+      '}',
+      'trap cleanup_preview_temp_files EXIT',
+      '',
+    ].join('\n'),
+  );
+
+  const scenarios = [
+    {
+      fixture: '{"command":"preflight","status":"ready","workerTextEnabled":false}\n',
+      modeDrift: false,
+      succeeds: true,
+    },
+    {
+      fixture: '{"command":"preflight","status":"ready","workerTextEnabled":true}\n',
+      modeDrift: false,
+      succeeds: false,
+    },
+    {
+      fixture: '{"command":"preflight","status":"ready"}\n',
+      modeDrift: false,
+      succeeds: false,
+    },
+    {
+      fixture: '{"command":"preflight","status":"ready","workerTextEnabled":false,"extra":false}\n',
+      modeDrift: false,
+      succeeds: false,
+    },
+    {
+      fixture: '{"command":"preflight","status":"ready","workerTextEnabled":false}\n',
+      modeDrift: true,
+      succeeds: false,
+    },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    const prefix = `/private/tmp/text-ai-disabled-preflight-${process.pid}-${index}`;
+    const result = spawnSync('bash', ['-s'], {
+      input: stubbedDispatch,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        TEXT_AI_OPERATION: 'deploy-disabled',
+        TEXT_AI_TARGET: 'user-1',
+        TEXT_AI_CONFIRMATION: '',
+        TEXT_AI_SECRET_FILE: `${prefix}-secret.json`,
+        TEXT_AI_PREFLIGHT_FILE: `${prefix}-preflight.json`,
+        TEXT_AI_USER_1_STATUS_FILE: `${prefix}-user-1.json`,
+        TEXT_AI_USER_2_STATUS_FILE: `${prefix}-user-2.json`,
+        PREFLIGHT_FIXTURE: scenario.fixture,
+        PREFLIGHT_MODE_DRIFT: scenario.modeDrift ? 'true' : 'false',
+      },
+    });
+    assert.equal(result.status, scenario.succeeds ? 0 : 1);
+    const writes = ['CONFIGURE_WRITE', 'WORKER_WRITE', 'PAGES_WRITE']
+      .filter((marker) => result.stderr.includes(marker));
+    assert.deepEqual(writes, scenario.succeeds
+      ? ['CONFIGURE_WRITE', 'WORKER_WRITE', 'PAGES_WRITE']
+      : []);
+  }
+});
+
 test('requires every first-account precondition before any configuration or enable write', () => {
   const branch = [
     'enable-admin-preview)',
     '              if [ "$TEXT_AI_TARGET" != \'user-1\' ] || [ "$TEXT_AI_CONFIRMATION" != \'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT\' ]; then',
     '                exit 1',
     '              fi',
+    '              write_worker_secret_file',
     '              capture_status_pair',
     '              assert_enable_admin_preconditions',
     '              node scripts/text-ai-preview-control.mjs configure > /dev/null',
@@ -330,9 +446,96 @@ test('requires every first-account precondition before any configuration or enab
   }
   expectPolicyFailure(replaceOnce(
     source,
-    '              capture_status_pair\n              assert_enable_admin_preconditions\n              node scripts/text-ai-preview-control.mjs configure > /dev/null\n',
-    '              node scripts/text-ai-preview-control.mjs configure > /dev/null\n              capture_status_pair\n              assert_enable_admin_preconditions\n',
+    '              write_worker_secret_file\n              capture_status_pair\n              assert_enable_admin_preconditions\n              node scripts/text-ai-preview-control.mjs configure > /dev/null\n',
+    '              capture_status_pair\n              assert_enable_admin_preconditions\n              node scripts/text-ai-preview-control.mjs configure > /dev/null\n              write_worker_secret_file\n',
   ));
+});
+
+test('validates canonical Worker secrets before the first enable write', () => {
+  const orderedBranch = [
+    '              write_worker_secret_file',
+    '              capture_status_pair',
+    '              assert_enable_admin_preconditions',
+    '              node scripts/text-ai-preview-control.mjs configure > /dev/null',
+    '              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1 > /dev/null',
+    '              node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1 > /dev/null',
+    '              deploy_worker_enabled',
+  ].join('\n');
+  assert.ok(source.includes(orderedBranch));
+  assert.ok(source.includes('arkKey.trim() !== arkKey'));
+  assert.equal((source.match(/\/\\p\{Cc\}\/u/gu) ?? []).length, 2);
+  assert.ok(source.includes("const decodedAesKey = Buffer.from(aesKey, 'base64');"));
+  assert.ok(source.includes('decodedAesKey.length !== 32'));
+  assert.ok(source.includes("decodedAesKey.toString('base64') !== aesKey"));
+
+  for (const [before, after] of [
+    ['arkKey.trim() !== arkKey', 'arkKey.trim() === arkKey'],
+    ['decodedAesKey.length !== 32', 'decodedAesKey.length !== 16'],
+    ["decodedAesKey.toString('base64') !== aesKey", 'false'],
+    [
+      '              write_worker_secret_file\n              capture_status_pair\n',
+      '              capture_status_pair\n              write_worker_secret_file\n',
+    ],
+  ]) {
+    expectPolicyFailure(replaceOnce(source, before, after));
+  }
+
+  const stubbedDispatch = replaceOnce(
+    dispatchScript,
+    'trap cleanup_preview_temp_files EXIT\n',
+    [
+      'run_full_preflight() { :; }',
+      'assert_enable_admin_preconditions() { :; }',
+      'node() {',
+      "  if [ \"${1:-}\" = 'scripts/text-ai-preview-control.mjs' ]; then",
+      "    command printf '%s\\n' 'REMOTE_WRITE' >&2",
+      "    if [ \"${2:-}\" = 'invoke-admin' ] && [ \"${3:-}\" = '--operation=status' ]; then",
+      "      command printf '%s\\n' '{}'",
+      '    fi',
+      '    return 0',
+      '  fi',
+      '  command node "$@"',
+      '}',
+      'deploy_worker_enabled() {',
+      "  command printf '%s\\n' 'WORKER_WRITE' >&2",
+      '}',
+      'trap cleanup_preview_temp_files EXIT',
+      '',
+    ].join('\n'),
+  );
+  const validAes = Buffer.alloc(32, 0x5a).toString('base64');
+  const cases = [
+    { ark: 'ark-preview-key', aes: validAes, succeeds: true },
+    { ark: ' ark-preview-key ', aes: validAes, succeeds: false },
+    { ark: 'ark-preview-key\n', aes: validAes, succeeds: false },
+    { ark: 'ark\u0085preview-key', aes: validAes, succeeds: false },
+    { ark: 'ark-preview-key', aes: Buffer.alloc(31, 0x5a).toString('base64'), succeeds: false },
+    { ark: 'ark-preview-key', aes: validAes.slice(0, -1), succeeds: false },
+    { ark: 'ark-preview-key', aes: `${validAes}\n`, succeeds: false },
+    { ark: 'ark-preview-key', aes: `${validAes.slice(0, 20)}\u0085${validAes.slice(20)}`, succeeds: false },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    const prefix = `/private/tmp/text-ai-worker-secret-${process.pid}-${index}`;
+    const result = spawnSync('bash', ['-s'], {
+      input: stubbedDispatch,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        TEXT_AI_OPERATION: 'enable-admin-preview',
+        TEXT_AI_TARGET: 'user-1',
+        TEXT_AI_CONFIRMATION: 'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT',
+        TEXT_AI_SECRET_FILE: `${prefix}-secret.json`,
+        TEXT_AI_PREFLIGHT_FILE: `${prefix}-preflight.json`,
+        TEXT_AI_USER_1_STATUS_FILE: `${prefix}-user-1.json`,
+        TEXT_AI_USER_2_STATUS_FILE: `${prefix}-user-2.json`,
+        ARK_API_KEY: entry.ark,
+        PHOTO_AI_CACHE_AES_KEY: entry.aes,
+      },
+    });
+    assert.equal(result.status, entry.succeeds ? 0 : 1);
+    assert.equal(result.stderr.includes('REMOTE_WRITE'), entry.succeeds);
+    assert.equal(result.stderr.includes('WORKER_WRITE'), entry.succeeds);
+  }
 });
 
 test('requires the exact second-account preconditions and performs only its fixed account enable', () => {
@@ -671,8 +874,8 @@ test('rejects artifact exfiltration, eval and direct workflow-input interpolatio
 test('writes only the two Worker runtime secrets through Node stdin into a 0600 temp file', () => {
   expectPolicyFailure(replaceOnce(
     source,
-    "const secretNames = Object.freeze(['ARK_API_KEY', 'PHOTO_AI_CACHE_AES_KEY']);",
-    "const secretNames = Object.freeze(['ARK_API_KEY', 'PHOTO_AI_CACHE_AES_KEY', 'PHOTO_AI_ACCOUNT_HMAC_KEY']);",
+    '            PHOTO_AI_CACHE_AES_KEY: aesKey,\n',
+    '            PHOTO_AI_CACHE_AES_KEY: aesKey,\n            PHOTO_AI_ACCOUNT_HMAC_KEY: arkKey,\n',
   ));
   expectPolicyFailure(replaceOnce(source, 'mode: 0o600', 'mode: 0o644'));
   expectPolicyFailure(replaceOnce(source, "flag: 'wx'", "flag: 'w'"));
@@ -692,4 +895,95 @@ test('pins every control-plane operation to literal operation and target argumen
   ));
   expectPolicyFailure(replaceOnce(source, '            status)\n', '            arbitrary-operation)\n'));
   expectPolicyFailure(replaceOnce(source, '            preflight)\n', '            unknown)\n'));
+});
+
+test('runbook binds the unique job and dispatch step and drains every older active run', () => {
+  assert.ok(runbookSource.includes(
+    '--json event,headBranch,headSha,status,conclusion,workflowName,jobs',
+  ));
+  for (const required of [
+    'and (.jobs | type == "array" and length == 1)',
+    'and .jobs[0].name == "text-ai-preview"',
+    'and .jobs[0].conclusion == "success"',
+    'and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation")] | length == 1)',
+    'and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation" and .conclusion == "success")] | length == 1)',
+    'assert_no_stale_text_preview_runs() (',
+    'for status in queued in_progress waiting pending; do',
+    'assert_no_stale_text_preview_runs',
+  ]) {
+    assert.ok(runbookSource.includes(required), `missing runbook gate: ${required}`);
+  }
+  assert.ok(runbookSource.includes('旧审批必须全部拒绝或取消'));
+  assert.ok(runbookSource.includes('pending deployment'));
+  assert.ok(runbookSource.includes('main 漂移时必须拒绝并取消，禁止批准'));
+});
+
+test('operations documentation fixes configuration, disabled preflight, and secret-name boundaries', () => {
+  for (const required of [
+    '`CLOUDFLARE_ACCOUNT_ID` 必须是 32 位小写十六进制',
+    '`TEXT_AI_CF_ACCESS_CLIENT_ID` 必须全小写并以 `.access` 结尾',
+    '`PHOTO_AI_ACCOUNT_HMAC_KEY` 至少 32 个字符且不得包含任何空白',
+    '`TEXT_AI_USER_1_EMAIL` 与 `TEXT_AI_USER_2_EMAIL` 必须是已规范化的小写邮箱且互不相同',
+    '`TEXT_AI_ADMIN_EMAIL` 必须精确等于 `TEXT_AI_USER_1_EMAIL`',
+    '`TEXT_AI_TEAM_DOMAIN` 只能填写小写 team slug',
+    '`ARK_API_KEY` 长度为 1–4096',
+    '`PHOTO_AI_CACHE_AES_KEY` 必须是 canonical Base64',
+    '必须在任何远端写入前先本地验证',
+    '首次 `preflight` 只有 `workerTextEnabled=false` 才可继续',
+    '`deploy-disabled` 在任何 Cloudflare 写入前再次从本次 `0600` preflight 文件证明 `workerTextEnabled=false`',
+    'Worker secret 名称只能在可信 Cloudflare Dashboard UI 中核对',
+    '`preflight` 不能证明 Worker secret 名称集合',
+    '标准流程完全禁止 `delete-account`',
+    '同一 `requestId` 的一次自动 in-flight 轮询不算第二次供应商调用',
+  ]) {
+    assert.ok(
+      runbookSource.includes(required) || checklistSource.includes(required),
+      `missing operations boundary: ${required}`,
+    );
+  }
+});
+
+test('release plan delegates every dispatch to the exact runbook ritual without latest-run races', () => {
+  const taskEleven = releasePlanSource.slice(
+    releasePlanSource.indexOf('### Task 11:'),
+    releasePlanSource.indexOf('### Task 12:'),
+  );
+  assert.equal(
+    releasePlanSource.includes(
+      'gh run list --workflow text-ai-preview.yml --event workflow_dispatch --limit 1',
+    ),
+    false,
+  );
+  assert.ok(taskEleven.includes(
+    "gh secret list -R nuts-and-bytes/tiezheng --env text-ai-preview --json name --jq '.[].name'",
+  ));
+  assert.equal(taskEleven.includes('gh secret list --env text-ai-preview'), false);
+  const secretInputStep = taskEleven.slice(
+    taskEleven.indexOf('**Step 1: 要求用户在 GitHub UI 输入 secret**'),
+    taskEleven.indexOf('**Step 2: 检查 secret 名称而非值**'),
+  );
+  for (const secretName of [
+    'CLOUDFLARE_API_TOKEN',
+    'ARK_API_KEY',
+    'PHOTO_AI_CACHE_AES_KEY',
+    'PHOTO_AI_ACCOUNT_HMAC_KEY',
+    'TEXT_AI_USER_1_EMAIL',
+    'TEXT_AI_USER_2_EMAIL',
+    'TEXT_AI_ADMIN_EMAIL',
+    'TEXT_AI_CF_ACCESS_CLIENT_ID',
+    'TEXT_AI_CF_ACCESS_CLIENT_SECRET',
+  ]) {
+    assert.ok(secretInputStep.includes(`\`${secretName}\``));
+  }
+  for (const operation of [
+    'preflight user-1',
+    'deploy-disabled user-1',
+    'enable-admin-preview user-1',
+    'enable-second-account user-2',
+  ]) {
+    assert.ok(releasePlanSource.includes(`run_text_preview_operation ${operation}`));
+  }
+  assert.ok(releasePlanSource.includes('固定仓库、批准 SHA、精确 dispatch URL/run ID/watch/view'));
+  assert.ok(releasePlanSource.includes('pending deployment'));
+  assert.ok(releasePlanSource.includes('main 漂移时拒绝并取消，禁止批准'));
 });
