@@ -1,4 +1,4 @@
-export type TextPagesRoute = 'session' | 'estimate' | 'logout' | 'resume';
+export type TextPagesRoute = 'login' | 'session' | 'estimate' | 'logout';
 
 export interface TextPagesRequestConfig {
   origin: string;
@@ -19,9 +19,11 @@ export class TextPagesRequestError extends Error {
 }
 
 const EXACT_HTTPS_ORIGIN = /^https:\/\/[a-z0-9.-]+$/;
+const LOGIN_PATH = '/api/nutrition/text/login';
 const SESSION_PATH = '/api/nutrition/text/session';
 const ESTIMATE_PATH = '/api/nutrition/text/estimate';
 const LOGOUT_PATH = '/api/nutrition/text/logout';
+const MAX_LOGIN_BYTES = 512;
 const MAX_ESTIMATE_BYTES = 8_192;
 const CANONICAL_POSITIVE_LENGTH = /^[1-9]\d*$/;
 
@@ -57,22 +59,13 @@ export function validateTextPagesRequest(
       url.username ||
       url.password ||
       url.port ||
-      url.hash
+      url.hash ||
+      hasQueryDelimiter(request.url)
     ) {
       throw new TextPagesRequestError();
     }
     requireExactRuntimeHostIfPresent(request, config);
     rejectAmbiguousBodyMetadata(request);
-
-    if (
-      request.method === 'GET' &&
-      url.pathname === SESSION_PATH &&
-      url.search === '?resume=1'
-    ) {
-      requireNoBody(request);
-      requireExactOriginIfPresent(request, config);
-      return { route: 'resume' };
-    }
 
     if (
       request.method === 'GET' &&
@@ -87,10 +80,18 @@ export function validateTextPagesRequest(
     requireSameOrigin(request, config);
     if (
       request.method === 'POST' &&
+      url.pathname === LOGIN_PATH &&
+      url.search === ''
+    ) {
+      requireJsonBody(request, MAX_LOGIN_BYTES);
+      return { route: 'login' };
+    }
+    if (
+      request.method === 'POST' &&
       url.pathname === ESTIMATE_PATH &&
       url.search === ''
     ) {
-      requireEstimateBody(request);
+      requireJsonBody(request, MAX_ESTIMATE_BYTES);
       return { route: 'estimate' };
     }
     if (
@@ -106,6 +107,13 @@ export function validateTextPagesRequest(
     if (error instanceof TextPagesRequestError) throw error;
     throw new TextPagesRequestError();
   }
+}
+
+function hasQueryDelimiter(rawUrl: string): boolean {
+  const queryIndex = rawUrl.indexOf('?');
+  if (queryIndex === -1) return false;
+  const fragmentIndex = rawUrl.indexOf('#');
+  return fragmentIndex === -1 || queryIndex < fragmentIndex;
 }
 
 function requireExactRuntimeHostIfPresent(
@@ -149,14 +157,6 @@ function requireSameOriginSession(
   }
 }
 
-function requireExactOriginIfPresent(
-  request: Request,
-  config: TextPagesRequestConfig,
-): void {
-  const origin = request.headers.get('origin');
-  if (origin !== null && origin !== config.origin) throw new TextPagesRequestError();
-}
-
 function requireNoBody(request: Request): void {
   if (request.body !== null || request.headers.has('content-type')) {
     throw new TextPagesRequestError();
@@ -165,7 +165,7 @@ function requireNoBody(request: Request): void {
   if (contentLength !== null && contentLength !== '0') throw new TextPagesRequestError();
 }
 
-function requireEstimateBody(request: Request): void {
+function requireJsonBody(request: Request, maximumBytes: number): void {
   if (request.body === null || request.headers.get('content-type') !== 'application/json') {
     throw new TextPagesRequestError();
   }
@@ -173,7 +173,7 @@ function requireEstimateBody(request: Request): void {
   if (contentLength === null) return;
   if (!CANONICAL_POSITIVE_LENGTH.test(contentLength)) throw new TextPagesRequestError();
   const length = Number(contentLength);
-  if (!Number.isSafeInteger(length) || length > MAX_ESTIMATE_BYTES) {
+  if (!Number.isSafeInteger(length) || length > maximumBytes) {
     throw new TextPagesRequestError();
   }
 }

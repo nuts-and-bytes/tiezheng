@@ -1,7 +1,9 @@
-import { createSign, generateKeyPairSync } from 'node:crypto';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+// @vitest-environment node
+
+import { describe, expect, test, vi } from 'vitest';
 
 import { onRequestPost as estimateRoute } from '../../functions/api/nutrition/text/estimate';
+import { onRequestPost as loginRoute } from '../../functions/api/nutrition/text/login';
 import { onRequestPost as logoutRoute } from '../../functions/api/nutrition/text/logout';
 import { onRequestGet as sessionRoute } from '../../functions/api/nutrition/text/session';
 import {
@@ -11,33 +13,42 @@ import {
   textAiSessionSuccessFixture,
 } from '../../src/test/textAiFixtures';
 import {
+  TEXT_SESSION_COOKIE,
+  authenticateTextAccessCode,
+  issueTextSession,
+  parseTextAuthConfig,
+} from './auth';
+import {
   authorizeTextAiPagesRequest,
   proxyTextAiRequest,
   textAiPagesFailure,
   textAiPagesJson,
-  textAiPagesResumeRedirect,
   type TextAiPagesEnv,
 } from './pagesProxy';
 
 const ORIGIN = 'https://app.example.test';
-const ISSUER = 'https://team-alpha.cloudflareaccess.com';
-const AUDIENCE = 'text-user-audience';
 const ACCOUNT_KEY = 'a'.repeat(64);
-const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-const jwk = publicKey.export({ format: 'jwk' });
-jwk.kid = 'text-pages-route-test-key';
+const USER_1_CODE = 'A'.repeat(32);
+const USER_2_CODE = 'B'.repeat(32);
 
 function env(fetcher?: Fetcher['fetch']): TextAiPagesEnv {
   return {
     PHOTO_AI_TEAM_DOMAIN: 'team-alpha',
-    PHOTO_AI_ACCOUNT_HMAC_KEY: '0123456789abcdef0123456789abcdef',
+    PHOTO_AI_ACCOUNT_HMAC_KEY: 'a'.repeat(32),
     PHOTO_AI_ALLOWED_ORIGINS: ORIGIN,
-    TEXT_AI_ACCESS_AUD: AUDIENCE,
+    TEXT_AI_ACCESS_AUD: 'legacy-user-audience',
     TEXT_AI_ALLOWED_EMAILS: 'alice@example.com,bob@example.com',
     TEXT_AI_ALLOWED_EMAIL_COUNT: '2',
-    TEXT_AI_ADMIN_ACCESS_AUD: 'text-admin-audience',
+    TEXT_AI_ADMIN_ACCESS_AUD: 'legacy-admin-audience',
     TEXT_AI_ADMIN_EMAIL: 'alice@example.com',
     TEXT_AI_ADMIN_SERVICE_CLIENT_ID: 'text-preview-admin.access',
+    TEXT_AI_ADMIN_SIGNING_KEY: 'BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ',
+    TEXT_AI_USER_1_ACCESS_CODE_PEPPER: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
+    TEXT_AI_USER_1_ACCESS_CODE_DIGEST: '36beb527ff694b5a0e5d86f3e2c987a2b44ba8c7153fd6fd04107a2260bec302',
+    TEXT_AI_USER_2_ACCESS_CODE_PEPPER: 'BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU',
+    TEXT_AI_USER_2_ACCESS_CODE_DIGEST: 'ab3efc3483e04a785d3bddc5d796c2508630e095bfad4de07f9fc345e5577dae',
+    TEXT_AI_SESSION_SIGNING_KEY: 'AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI',
+    TEXT_AI_RATE_LIMIT_HMAC_KEY: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM',
     PHOTO_AI_GATEWAY: fetcher === undefined ? undefined : { fetch: fetcher } as Fetcher,
   };
 }
@@ -64,46 +75,19 @@ function expectSecure(response: Response): void {
   expect(response.headers.get('access-control-allow-origin')).toBeNull();
 }
 
-function base64Url(value: Record<string, unknown>): string {
-  return base64UrlBytes(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-function base64UrlBytes(value: Uint8Array): string {
-  let binary = '';
-  for (const byte of value) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-}
-
-function token(email = 'alice@example.com'): string {
-  const now = Math.floor(Date.now() / 1_000);
-  const header = base64Url({ alg: 'RS256', kid: jwk.kid });
-  const payload = base64Url({
-    aud: AUDIENCE,
-    email,
-    exp: now + 300,
-    iat: now,
-    iss: ISSUER,
-    nbf: now - 1,
-    sub: 'text-user-123',
-  });
-  const input = `${header}.${payload}`;
-  const signer = createSign('RSA-SHA256');
-  signer.update(input);
-  return `${input}.${base64UrlBytes(signer.sign(privateKey))}`;
-}
-
-function installJwks(): ReturnType<typeof vi.fn<typeof fetch>> {
-  const authFetch = vi.fn<typeof fetch>(async () => json({ keys: [jwk] }));
-  vi.stubGlobal('fetch', authFetch);
-  return authFetch;
-}
-
-function sameOriginHeaders(accessToken = token()): HeadersInit {
+function sameOriginHeaders(cookie?: string): HeadersInit {
   return {
-    'cf-access-jwt-assertion': accessToken,
+    ...(cookie === undefined ? {} : { cookie }),
     origin: ORIGIN,
     'sec-fetch-site': 'same-origin',
   };
+}
+
+async function sessionCookie(code = USER_1_CODE, routeEnv = env()): Promise<string> {
+  const config = parseTextAuthConfig(routeEnv);
+  const identity = await authenticateTextAccessCode(code, config);
+  const token = await issueTextSession(identity, config);
+  return `${TEXT_SESSION_COOKIE}=${token}`;
 }
 
 function context(request: Request, routeEnv: TextAiPagesEnv): Parameters<typeof sessionRoute>[0] {
@@ -118,11 +102,6 @@ function context(request: Request, routeEnv: TextAiPagesEnv): Parameters<typeof 
     passThroughOnException: vi.fn(),
   } as unknown as Parameters<typeof sessionRoute>[0];
 }
-
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
 
 describe('text AI Pages response helpers', () => {
   test('adds the fixed security headers to success and failure JSON', async () => {
@@ -140,36 +119,27 @@ describe('text AI Pages response helpers', () => {
     expectSecure(failure);
   });
 
-  test('builds only the fixed same-origin text resume URL', () => {
-    const response = textAiPagesResumeRedirect(ORIGIN);
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe(`${ORIGIN}/health?textAi=resume`);
-    expectSecure(response);
-  });
 });
 
 describe('text AI Pages authorization', () => {
-  test('validates the closed route before attempting Access verification', async () => {
-    const authFetch = installJwks();
+  test('validates the closed route before attempting session verification', async () => {
     await expect(authorizeTextAiPagesRequest(
       new Request(`${ORIGIN}/api/nutrition/text/session`, {
         headers: {
-          'cf-access-jwt-assertion': token(),
           'sec-fetch-site': 'same-origin',
         },
       }),
       env(),
       ['estimate'],
     )).rejects.toThrow('Invalid Pages route');
-    expect(authFetch).not.toHaveBeenCalled();
   });
 
   test('returns only the HMAC account key, fixed origin and validated route', async () => {
-    installJwks();
+    const cookie = await sessionCookie();
     const authorized = await authorizeTextAiPagesRequest(
       new Request(`${ORIGIN}/api/nutrition/text/session`, {
         headers: {
-          'cf-access-jwt-assertion': token(),
+          cookie,
           'sec-fetch-site': 'same-origin',
         },
       }),
@@ -184,20 +154,20 @@ describe('text AI Pages authorization', () => {
     });
   });
 
-  test.each(['alice@example.com', 'bob@example.com'])(
-    'allows configured text user %s to reach the private binding',
-    async (email) => {
-      installJwks();
+  test.each([USER_1_CODE, USER_2_CODE])(
+    'allows one configured access-code account to reach the private binding',
+    async (code) => {
       const gatewayFetch = vi.fn(async () => json(textAiSessionSuccessFixture));
+      const routeEnv = env(gatewayFetch);
 
       const response = await sessionRoute(context(
         new Request(`${ORIGIN}/api/nutrition/text/session`, {
           headers: {
-            'cf-access-jwt-assertion': token(email),
+            cookie: await sessionCookie(code, routeEnv),
             'sec-fetch-site': 'same-origin',
           },
         }),
-        env(gatewayFetch),
+        routeEnv,
       ));
 
       expect(response.status).toBe(200);
@@ -205,14 +175,13 @@ describe('text AI Pages authorization', () => {
     },
   );
 
-  test('rejects a third email that remains valid only for the photo profile', async () => {
-    installJwks();
+  test('rejects a Cloudflare Access assertion when the session cookie is absent', async () => {
     const gatewayFetch = vi.fn();
 
     const response = await sessionRoute(context(
       new Request(`${ORIGIN}/api/nutrition/text/session`, {
         headers: {
-          'cf-access-jwt-assertion': token('carol@example.com'),
+          'cf-access-jwt-assertion': 'valid-only-for-the-removed-access-layer',
           'sec-fetch-site': 'same-origin',
         },
       }),
@@ -284,7 +253,7 @@ describe('text AI Pages service proxy', () => {
       headers: {
         authorization: 'private-authorization',
         cookie: 'private-cookie',
-        'cf-access-jwt-assertion': 'private-access-token',
+        'x-private-token': 'private-access-token',
         origin: ORIGIN,
         'sec-fetch-site': 'same-origin',
         'x-private-description': 'private meal',
@@ -304,7 +273,7 @@ describe('text AI Pages service proxy', () => {
       method: 'POST',
       headers: {
         authorization: 'private-authorization',
-        'cf-access-jwt-assertion': 'private-access-token',
+        'x-private-token': 'private-access-token',
         'content-length': '1',
         'content-type': 'application/json',
         cookie: 'private-cookie',
@@ -410,17 +379,18 @@ describe('text AI Pages service proxy', () => {
 });
 
 describe('text AI Pages Function routes', () => {
-  test('serves session and resume only from the session Function', async () => {
-    installJwks();
+  test('serves only the exact session route and rejects the removed resume query', async () => {
     const gatewayFetch = vi.fn(async () => json(textAiSessionSuccessFixture));
+    const routeEnv = env(gatewayFetch);
+    const cookie = await sessionCookie(USER_1_CODE, routeEnv);
     const sessionResponse = await sessionRoute(context(
       new Request(`${ORIGIN}/api/nutrition/text/session`, {
         headers: {
-          'cf-access-jwt-assertion': token(),
+          cookie,
           'sec-fetch-site': 'same-origin',
         },
       }),
-      env(gatewayFetch),
+      routeEnv,
     ));
     expect(sessionResponse.status).toBe(200);
     expect(await sessionResponse.json()).toEqual(textAiSessionSuccessFixture);
@@ -428,32 +398,68 @@ describe('text AI Pages Function routes', () => {
 
     const resumeResponse = await sessionRoute(context(
       new Request(`${ORIGIN}/api/nutrition/text/session?resume=1`, {
-        headers: { 'cf-access-jwt-assertion': token() },
+        headers: { cookie, 'sec-fetch-site': 'same-origin' },
       }),
-      env(gatewayFetch),
+      routeEnv,
     ));
-    expect(resumeResponse.status).toBe(302);
-    expect(resumeResponse.headers.get('location')).toBe(`${ORIGIN}/health?textAi=resume`);
+    expect(resumeResponse.status).toBe(401);
+    expect(await resumeResponse.json()).toEqual({
+      ok: false,
+      code: 'auth-required',
+      retryAt: null,
+      resetAt: null,
+    });
     expect(gatewayFetch).toHaveBeenCalledTimes(1);
     expectSecure(resumeResponse);
   });
 
+  test('exposes the access-code login Function and sets the session cookie only after clear', async () => {
+    const actions: string[] = [];
+    const gatewayFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const action = request.headers.get('x-tiezheng-auth-action');
+      if (action !== null) actions.push(action);
+      return action === 'clear'
+        ? new Response(null, { status: 204 })
+        : json({ kind: 'allowed' });
+    });
+    const response = await loginRoute(context(
+      new Request(`${ORIGIN}/api/nutrition/text/login`, {
+        method: 'POST',
+        headers: {
+          'cf-connecting-ip': '203.0.113.7',
+          'content-type': 'application/json',
+          origin: ORIGIN,
+          'sec-fetch-site': 'same-origin',
+        },
+        body: JSON.stringify({ accessCode: USER_1_CODE }),
+      }),
+      env(gatewayFetch),
+    ));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(response.headers.get('set-cookie')).toContain(`${TEXT_SESSION_COOKIE}=`);
+    expect(actions).toEqual(['consume', 'clear']);
+    expectSecure(response);
+  });
+
   test('serves only estimate and keeps a safe proxy failure distinct from auth failure', async () => {
-    installJwks();
     const gatewayFetch = vi.fn(async () => new Response('private downstream body', {
       status: 500,
       headers: { 'content-type': 'text/plain' },
     }));
+    const routeEnv = env(gatewayFetch);
     const response = await estimateRoute(context(
       new Request(`${ORIGIN}/api/nutrition/text/estimate`, {
         method: 'POST',
         headers: {
-          ...sameOriginHeaders(),
+          ...sameOriginHeaders(await sessionCookie(USER_1_CODE, routeEnv)),
           'content-type': 'application/json',
         },
         body: '{}',
       }),
-      env(gatewayFetch),
+      routeEnv,
     ));
     const serialized = await response.text();
 
@@ -466,22 +472,27 @@ describe('text AI Pages Function routes', () => {
     expect(response.headers.get('access-control-allow-origin')).toBeNull();
   });
 
-  test('serves only logout and never calls the gateway', async () => {
-    installJwks();
+  test.each([undefined, `${TEXT_SESSION_COOKIE}=corrupted`])(
+    'clears logout with a missing or invalid session and never calls the gateway',
+    async (cookie) => {
     const gatewayFetch = vi.fn();
     const response = await logoutRoute(context(
       new Request(`${ORIGIN}/api/nutrition/text/logout`, {
         method: 'POST',
-        headers: sameOriginHeaders(),
+        headers: sameOriginHeaders(cookie),
       }),
       env(gatewayFetch),
     ));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ logoutUrl: '/cdn-cgi/access/logout' });
+    expect(await response.json()).toEqual({ ok: true });
+    expect(response.headers.get('set-cookie')).toBe(
+      `${TEXT_SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict`,
+    );
     expect(gatewayFetch).not.toHaveBeenCalled();
     expectSecure(response);
-  });
+    },
+  );
 
   test.each([
     ['session missing JWT', sessionRoute, `${ORIGIN}/api/nutrition/text/session`, 'GET'],
@@ -501,8 +512,14 @@ describe('text AI Pages Function routes', () => {
       new Request(url, {
         method,
         headers: method === 'POST'
-          ? { ...sameOriginHeaders('private-invalid-jwt'), 'content-type': 'application/json' }
-          : { 'sec-fetch-site': 'same-origin' },
+          ? {
+            ...sameOriginHeaders(`${TEXT_SESSION_COOKIE}=private-invalid-jwt`),
+            'content-type': 'application/json',
+          }
+          : {
+            'cf-access-jwt-assertion': 'removed-access-token',
+            'sec-fetch-site': 'same-origin',
+          },
         body: method === 'POST' && url.endsWith('/estimate') ? '{}' : undefined,
       }),
       env(gatewayFetch),
@@ -516,7 +533,7 @@ describe('text AI Pages Function routes', () => {
       retryAt: null,
       resetAt: null,
     });
-    expect(serialized).not.toMatch(/private-invalid-jwt|private gateway detail/);
+    expect(serialized).not.toMatch(/private-invalid-jwt|removed-access-token|private gateway detail/);
     expect(gatewayFetch).not.toHaveBeenCalled();
     expectSecure(response);
   });

@@ -6,9 +6,6 @@ import {
   type TextAiSessionResponse,
 } from '../../src/lib/textAiContract';
 import {
-  verifyAccess,
-} from '../photo-ai/access';
-import {
   isIndeterminateServiceResponse,
   proxyBoundedJson,
   type JsonProxyDefinition,
@@ -19,12 +16,19 @@ import {
   type TextPagesRoute,
 } from './pagesRequest';
 import {
-  parseTextUserAccessConfig,
   type TextAccessEnv,
 } from './access';
+import {
+  parseTextAuthConfig,
+  verifyTextSession,
+  type TextAuthEnv,
+} from './auth';
 
-export interface TextAiPagesEnv extends TextAccessEnv {
+// TextAccessEnv remains temporarily while the legacy admin route is migrated in
+// Task 6. User-facing text AI routes use only TextAuthEnv from this task onward.
+export interface TextAiPagesEnv extends TextAuthEnv, TextAccessEnv {
   PHOTO_AI_ALLOWED_ORIGINS: string;
+  TEXT_AI_ADMIN_SIGNING_KEY: string;
   PHOTO_AI_GATEWAY?: Fetcher;
 }
 
@@ -73,27 +77,19 @@ export function textAiPagesFailure(
   return textAiPagesJson({ ok: false, code, retryAt: null, resetAt: null }, status);
 }
 
-export function textAiPagesResumeRedirect(origin: string): Response {
-  return new Response(null, {
-    status: 302,
-    headers: {
-      ...SECURITY_HEADERS,
-      location: `${origin}/health?textAi=resume`,
-    },
-  });
-}
-
 export async function authorizeTextAiPagesRequest(
   request: Request,
   env: TextAiPagesEnv,
-  allowedRoutes: readonly TextPagesRoute[],
+  allowedRoutes: readonly Exclude<TextPagesRoute, 'login'>[],
 ): Promise<AuthorizedTextAiPagesRequest> {
   const pagesConfig = parseTextPagesRequestConfig({
     PHOTO_AI_PAGES_ORIGIN: env.PHOTO_AI_ALLOWED_ORIGINS,
   });
   const { route } = validateTextPagesRequest(request, pagesConfig);
-  if (!allowedRoutes.includes(route)) throw new TypeError('Invalid Pages route');
-  const identity = await verifyAccess(request, parseTextUserAccessConfig(env));
+  if (route === 'login' || !allowedRoutes.some((candidate) => candidate === route)) {
+    throw new TypeError('Invalid Pages route');
+  }
+  const identity = await verifyTextSession(request, parseTextAuthConfig(env));
   return { accountKey: identity.accountKey, origin: pagesConfig.origin, route };
 }
 

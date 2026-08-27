@@ -8,6 +8,7 @@ import {
 
 const ORIGIN = 'https://app.example.test';
 const config = parseTextPagesRequestConfig({ PHOTO_AI_PAGES_ORIGIN: ORIGIN });
+const loginUrl = `${ORIGIN}/api/nutrition/text/login`;
 const sessionUrl = `${ORIGIN}/api/nutrition/text/session`;
 const estimateUrl = `${ORIGIN}/api/nutrition/text/estimate`;
 const logoutUrl = `${ORIGIN}/api/nutrition/text/logout`;
@@ -32,6 +33,15 @@ function syntheticRequest(
   body: ReadableStream<Uint8Array> | null = null,
 ): Request {
   return { url, method, headers: new Headers(headers), body } as Request;
+}
+
+function jsonBody(value = '{}'): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(value));
+      controller.close();
+    },
+  });
 }
 
 describe('parseTextPagesRequestConfig', () => {
@@ -116,13 +126,25 @@ describe('validateTextPagesRequest', () => {
     expect(validateTextPagesRequest(normalized, config)).toEqual({ route: 'session' });
   });
 
-  test('accepts only the unique resume query as the navigation exception', () => {
-    expect(validateTextPagesRequest(request(`${sessionUrl}?resume=1`, {
-      headers: { 'sec-fetch-site': 'cross-site' },
-    }), config)).toEqual({ route: 'resume' });
-    expect(validateTextPagesRequest(request(`${sessionUrl}?resume=1`), config)).toEqual({
-      route: 'resume',
+  test('accepts same-origin JSON login with or without a bounded Content-Length', () => {
+    const withoutLength = request(loginUrl, {
+      method: 'POST',
+      headers: sameOriginHeaders({ 'content-type': 'application/json' }),
+      body: '{}',
     });
+    expect(validateTextPagesRequest(withoutLength, config)).toEqual({ route: 'login' });
+
+    for (const contentLength of ['1', '512']) {
+      const bounded = request(loginUrl, {
+        method: 'POST',
+        headers: sameOriginHeaders({
+          'content-length': contentLength,
+          'content-type': 'application/json',
+        }),
+        body: '{}',
+      });
+      expect(validateTextPagesRequest(bounded, config)).toEqual({ route: 'login' });
+    }
   });
 
   test('accepts same-origin JSON estimates with or without Content-Length', () => {
@@ -166,6 +188,7 @@ describe('validateTextPagesRequest', () => {
     ['encoded path', `${ORIGIN}/api/nutrition/text/%73ession`],
     ['case drift', `${ORIGIN}/api/nutrition/text/Session`],
     ['fragment-normalized query', `${sessionUrl}?x=1`],
+    ['removed resume query', `${sessionUrl}?resume=1`],
   ])('rejects request URL drift: %s', (_case, url) => {
     expect(() => validateTextPagesRequest(syntheticRequest(
       url,
@@ -175,20 +198,23 @@ describe('validateTextPagesRequest', () => {
   });
 
   test.each([
-    `${sessionUrl}?resume=1&resume=1`,
-    `${sessionUrl}?resume=1&x=`,
-    `${sessionUrl}?x=1&resume=1`,
-    `${sessionUrl}?resume=%31`,
-    `${sessionUrl}?resume=01`,
-    `${sessionUrl}?resume=true`,
-    `${sessionUrl}?resume=1#private`,
-  ])('rejects ambiguous or drifting resume query: %s', (url) => {
-    expect(() => validateTextPagesRequest(syntheticRequest(url, 'GET'), config)).toThrow(
-      TextPagesRequestError,
-    );
-  });
+    [loginUrl, 'POST', sameOriginHeaders({ 'content-type': 'application/json' }), jsonBody()],
+    [sessionUrl, 'GET', { 'sec-fetch-site': 'same-origin' }, null],
+    [estimateUrl, 'POST', sameOriginHeaders({ 'content-type': 'application/json' }), jsonBody()],
+    [logoutUrl, 'POST', sameOriginHeaders(), null],
+  ] as const)(
+    'rejects even an empty query delimiter: %s',
+    (url, method, headers, body) => {
+      expect(() => validateTextPagesRequest(
+        syntheticRequest(`${url}?`, method, headers, body),
+        config,
+      )).toThrow(TextPagesRequestError);
+    },
+  );
 
   test.each([
+    ['login GET', loginUrl, 'GET'],
+    ['login PUT', loginUrl, 'PUT'],
     ['session POST', sessionUrl, 'POST'],
     ['estimate GET', estimateUrl, 'GET'],
     ['estimate PUT', estimateUrl, 'PUT'],
@@ -223,6 +249,19 @@ describe('validateTextPagesRequest', () => {
   });
 
   test.each([
+    ['missing site', { origin: ORIGIN }],
+    ['missing origin', { 'sec-fetch-site': 'same-origin' }],
+    ['wrong origin', { origin: 'https://evil.example.test', 'sec-fetch-site': 'same-origin' }],
+    ['cross-site', { origin: ORIGIN, 'sec-fetch-site': 'cross-site' }],
+  ])('rejects unsafe login fetch metadata: %s', (_case, headers) => {
+    expect(() => validateTextPagesRequest(request(loginUrl, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: '{}',
+    }), config)).toThrow(TextPagesRequestError);
+  });
+
+  test.each([
     ['missing site', {}],
     ['cross-site', { 'sec-fetch-site': 'cross-site' }],
     ['same-site', { 'sec-fetch-site': 'same-site' }],
@@ -231,12 +270,6 @@ describe('validateTextPagesRequest', () => {
     expect(() => validateTextPagesRequest(request(sessionUrl, { headers }), config)).toThrow(
       TextPagesRequestError,
     );
-  });
-
-  test('rejects a wrong Origin even on the resume navigation exception', () => {
-    expect(() => validateTextPagesRequest(request(`${sessionUrl}?resume=1`, {
-      headers: { origin: 'https://evil.example.test' },
-    }), config)).toThrow(TextPagesRequestError);
   });
 
   test.each([
@@ -251,6 +284,21 @@ describe('validateTextPagesRequest', () => {
     const headers = sameOriginHeaders();
     if (contentType !== null) headers.set('content-type', contentType);
     expect(() => validateTextPagesRequest(request(estimateUrl, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    }), config)).toThrow(TextPagesRequestError);
+  });
+
+  test.each([
+    null,
+    'Application/json',
+    'application/json; charset=utf-8',
+    'text/plain',
+  ])('rejects non-exact login Content-Type %#', (contentType) => {
+    const headers = sameOriginHeaders();
+    if (contentType !== null) headers.set('content-type', contentType);
+    expect(() => validateTextPagesRequest(request(loginUrl, {
       method: 'POST',
       headers,
       body: '{}',
@@ -278,8 +326,32 @@ describe('validateTextPagesRequest', () => {
     }), config)).toThrow(TextPagesRequestError);
   });
 
+  test.each(['0', '513', '0512', '+1', '1.0', '9007199254740993'])(
+    'rejects a non-canonical or oversized login Content-Length: %s',
+    (contentLength) => {
+      expect(() => validateTextPagesRequest(request(loginUrl, {
+        method: 'POST',
+        headers: sameOriginHeaders({
+          'content-length': contentLength,
+          'content-type': 'application/json',
+        }),
+        body: '{}',
+      }), config)).toThrow(TextPagesRequestError);
+    },
+  );
+
   test('rejects an estimate without a body even if headers claim bytes', () => {
     expect(() => validateTextPagesRequest(request(estimateUrl, {
+      method: 'POST',
+      headers: sameOriginHeaders({
+        'content-length': '1',
+        'content-type': 'application/json',
+      }),
+    }), config)).toThrow(TextPagesRequestError);
+  });
+
+  test('rejects a login without a body even if headers claim bytes', () => {
+    expect(() => validateTextPagesRequest(request(loginUrl, {
       method: 'POST',
       headers: sameOriginHeaders({
         'content-length': '1',
