@@ -44,6 +44,7 @@ export default defineConfig({
     globals: true,
     exclude: [
       ...configDefaults.exclude,
+      '**/.worktrees/**',
       'workers/**/*.worker.test.ts',
       'workers/photo-ai-gateway/src/textAdminHandler.test.ts',
       'edge/text-ai/admin.test.ts',
