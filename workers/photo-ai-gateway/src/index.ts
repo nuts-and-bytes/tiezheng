@@ -16,6 +16,10 @@ import {
   handleTextAdminRequest,
   isExactTextAdminRoute,
 } from './textAdminHandler';
+import {
+  handleTextAuthThrottleRequest,
+  isExactTextAuthThrottleRoute,
+} from './textAuthThrottleHandler';
 import type { PhotoAiSessionSuccess } from '../../../src/lib/photoAiContract';
 
 export { PhotoAiCoordinator };
@@ -73,6 +77,9 @@ async function handleSessionRequest(request: Request, env: GatewayEnv): Promise<
 export default {
   fetch(request: Request, env: GatewayEnv): Promise<Response> {
     const url = new URL(request.url);
+    if (isExactTextAuthThrottleRoute(request, url)) {
+      return handleTextAuthThrottleRequest(request, env);
+    }
     if (isExactTextAdminRoute(request, url)) {
       return handleTextAdminRequest(request, env);
     }

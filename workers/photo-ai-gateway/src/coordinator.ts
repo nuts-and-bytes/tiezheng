@@ -25,6 +25,19 @@ const GLOBAL_SCOPE = '$global';
 const MAX_DATE_MS = 8_640_000_000_000_000;
 const MAX_DERIVED_DATE_WINDOW_MS = 32 * 86_400_000 + 8 * 60 * 60_000;
 const TEXT_ADMIN_OPERATION_TTL_MS = 24 * 60 * 60_000;
+const TEXT_AUTH_WINDOW_MS = 600_000;
+const TEXT_AUTH_ACCOUNT_COOLDOWN_MS = 900_000;
+const TEXT_AUTH_ANONYMOUS_COOLDOWN_MS = 1_800_000;
+
+export interface TextAuthAttemptInput {
+  attemptKey: string;
+  anonymous: boolean;
+  now: number;
+}
+
+export type TextAuthAttemptResult =
+  | { kind: 'allowed' }
+  | { kind: 'blocked'; retryAfterMs: number };
 
 export interface TextAdminOperationInput {
   operationId: string;
@@ -132,6 +145,12 @@ interface TextAdminOperationRow {
   expires_at: number;
 }
 
+interface TextAuthAttemptRow {
+  window_started_at: number;
+  failures: number;
+  blocked_until: number;
+}
+
 interface IdempotencyRow {
   fingerprint: string;
   state: string;
@@ -180,6 +199,46 @@ function safeMicros(value: unknown): number {
 function accountKey(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) return invalid();
   return value;
+}
+
+function opaqueKey(value: unknown): string {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) return invalid();
+  return value;
+}
+
+function textAuthAttemptInput(value: unknown): TextAuthAttemptInput {
+  try {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return invalid();
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== 3
+      || !keys.every((key) => typeof key === 'string'
+        && ['anonymous', 'attemptKey', 'now'].includes(key))) return invalid();
+    const input = value as Record<string, unknown>;
+    const now = safeTimestamp(input.now);
+    if (Object.is(now, -0) || typeof input.anonymous !== 'boolean') return invalid();
+    return {
+      attemptKey: opaqueKey(input.attemptKey),
+      anonymous: input.anonymous,
+      now,
+    };
+  } catch {
+    return invalid();
+  }
+}
+
+function textAuthAttemptRow(value: TextAuthAttemptRow): TextAuthAttemptRow {
+  const windowStartedAt = safeTimestamp(value.window_started_at);
+  const blockedUntil = safeTimestamp(value.blocked_until);
+  if (!Number.isSafeInteger(value.failures)
+    || value.failures < 0
+    || value.failures > 5
+    || Object.is(windowStartedAt, -0)
+    || Object.is(blockedUntil, -0)) return invalid();
+  return {
+    window_started_at: windowStartedAt,
+    failures: value.failures,
+    blocked_until: blockedUntil,
+  };
 }
 
 function aiChannel(value: unknown): AiChannel {
@@ -397,6 +456,12 @@ export function ensureCoordinatorSchema(sql: SqlStorage): void {
     operation_id TEXT PRIMARY KEY,
     fingerprint TEXT NOT NULL,
     expires_at INTEGER NOT NULL
+  )`);
+  schemaExec(sql, `CREATE TABLE IF NOT EXISTS text_auth_attempts (
+    attempt_key TEXT PRIMARY KEY,
+    window_started_at INTEGER NOT NULL,
+    failures INTEGER NOT NULL,
+    blocked_until INTEGER NOT NULL
   )`);
   schemaExec(sql, `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -1105,6 +1170,63 @@ export class PhotoAiCoordinator extends DurableObject<GatewayEnv> {
         expiresAt,
       );
       return { kind: 'applied', status: this.textStatusSnapshot(value.accountKey, value.now) };
+    });
+  }
+
+  async consumeTextAuthAttempt(input: TextAuthAttemptInput): Promise<TextAuthAttemptResult> {
+    const value = textAuthAttemptInput(input);
+    const maxFailures = value.anonymous ? 3 : 5;
+    const cooldownMs = value.anonymous
+      ? TEXT_AUTH_ANONYMOUS_COOLDOWN_MS
+      : TEXT_AUTH_ACCOUNT_COOLDOWN_MS;
+
+    return this.ctx.storage.transactionSync((): TextAuthAttemptResult => {
+      const stored = this.rows<TextAuthAttemptRow>(
+        `SELECT window_started_at, failures, blocked_until
+         FROM text_auth_attempts WHERE attempt_key = ?`,
+        value.attemptKey,
+      )[0];
+      const current = stored === undefined ? undefined : textAuthAttemptRow(stored);
+      if (current !== undefined && current.blocked_until > value.now) {
+        return {
+          kind: 'blocked',
+          retryAfterMs: current.blocked_until - value.now,
+        };
+      }
+
+      const expired = current === undefined
+        || value.now - current.window_started_at >= TEXT_AUTH_WINDOW_MS;
+      const failures = expired ? 0 : current.failures;
+      if (failures >= maxFailures) {
+        const blockedUntil = value.now + cooldownMs;
+        this.exec(
+          'UPDATE text_auth_attempts SET blocked_until = ? WHERE attempt_key = ?',
+          blockedUntil,
+          value.attemptKey,
+        );
+        return { kind: 'blocked', retryAfterMs: cooldownMs };
+      }
+
+      this.exec(
+        `INSERT INTO text_auth_attempts (
+           attempt_key, window_started_at, failures, blocked_until
+         ) VALUES (?, ?, ?, 0)
+         ON CONFLICT(attempt_key) DO UPDATE SET
+           window_started_at = excluded.window_started_at,
+           failures = excluded.failures,
+           blocked_until = 0`,
+        value.attemptKey,
+        expired ? value.now : current.window_started_at,
+        failures + 1,
+      );
+      return { kind: 'allowed' };
+    });
+  }
+
+  async clearTextAuthAttempts(attemptKeyValue: string): Promise<void> {
+    const normalized = opaqueKey(attemptKeyValue);
+    this.ctx.storage.transactionSync(() => {
+      this.exec('DELETE FROM text_auth_attempts WHERE attempt_key = ?', normalized);
     });
   }
 

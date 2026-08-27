@@ -431,6 +431,150 @@ describe('private gateway entrypoint', () => {
   });
 });
 
+describe('text access-code login throttle', () => {
+  test('creates the private attempt table idempotently with only the fixed columns', async () => {
+    const stub = coordinator();
+    await runInDurableObject(stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      state.storage.transactionSync(() => ensureCoordinatorSchema(sql));
+      state.storage.transactionSync(() => ensureCoordinatorSchema(sql));
+
+      expect(sql.exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'text_auth_attempts'",
+      ).toArray()).toEqual([{ name: 'text_auth_attempts' }]);
+      expect(sql.exec<{ name: string }>('PRAGMA table_info(text_auth_attempts)')
+        .toArray().map((column) => column.name)).toEqual([
+        'attempt_key',
+        'window_started_at',
+        'failures',
+        'blocked_until',
+      ]);
+    });
+  });
+
+  test('allows five failures, blocks the sixth for 15 minutes, and clears after success', async () => {
+    const stub = coordinator();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await expect(stub.consumeTextAuthAttempt({
+        attemptKey: ACCOUNT_A,
+        anonymous: false,
+        now: BASE_NOW + attempt,
+      })).resolves.toEqual({ kind: 'allowed' });
+    }
+    await expect(stub.consumeTextAuthAttempt({
+      attemptKey: ACCOUNT_A,
+      anonymous: false,
+      now: BASE_NOW + 5,
+    })).resolves.toEqual({ kind: 'blocked', retryAfterMs: 900_000 });
+    await expect(stub.consumeTextAuthAttempt({
+      attemptKey: ACCOUNT_A,
+      anonymous: false,
+      now: BASE_NOW + 6,
+    })).resolves.toEqual({ kind: 'blocked', retryAfterMs: 899_999 });
+
+    await stub.clearTextAuthAttempts(ACCOUNT_A);
+    await expect(stub.consumeTextAuthAttempt({
+      attemptKey: ACCOUNT_A,
+      anonymous: false,
+      now: BASE_NOW + 7,
+    })).resolves.toEqual({ kind: 'allowed' });
+  });
+
+  test('allows three anonymous failures and blocks the fourth for 30 minutes', async () => {
+    const stub = coordinator();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(stub.consumeTextAuthAttempt({
+        attemptKey: ACCOUNT_B,
+        anonymous: true,
+        now: BASE_NOW + attempt,
+      })).resolves.toEqual({ kind: 'allowed' });
+    }
+    await expect(stub.consumeTextAuthAttempt({
+      attemptKey: ACCOUNT_B,
+      anonymous: true,
+      now: BASE_NOW + 3,
+    })).resolves.toEqual({ kind: 'blocked', retryAfterMs: 1_800_000 });
+  });
+
+  test('serializes concurrent calls for one key while isolating another key', async () => {
+    const stub = coordinator();
+    const sameKey = await Promise.all(Array.from({ length: 6 }, () => (
+      stub.consumeTextAuthAttempt({
+        attemptKey: ACCOUNT_A,
+        anonymous: false,
+        now: BASE_NOW,
+      })
+    )));
+
+    expect(sameKey.filter((result) => result.kind === 'allowed')).toHaveLength(5);
+    expect(sameKey.filter((result) => result.kind === 'blocked')).toEqual([
+      { kind: 'blocked', retryAfterMs: 900_000 },
+    ]);
+    await expect(stub.consumeTextAuthAttempt({
+      attemptKey: ACCOUNT_B,
+      anonymous: false,
+      now: BASE_NOW,
+    })).resolves.toEqual({ kind: 'allowed' });
+  });
+
+  test('starts a fresh failure window after ten minutes', async () => {
+    const stub = coordinator();
+    await stub.consumeTextAuthAttempt({
+      attemptKey: ACCOUNT_C,
+      anonymous: false,
+      now: BASE_NOW,
+    });
+    await expect(stub.consumeTextAuthAttempt({
+      attemptKey: ACCOUNT_C,
+      anonymous: false,
+      now: BASE_NOW + 600_000,
+    })).resolves.toEqual({ kind: 'allowed' });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(state.storage.sql.exec<{
+        window_started_at: number;
+        failures: number;
+        blocked_until: number;
+      }>(
+        'SELECT window_started_at, failures, blocked_until FROM text_auth_attempts WHERE attempt_key = ?',
+        ACCOUNT_C,
+      ).toArray()).toEqual([{
+        window_started_at: BASE_NOW + 600_000,
+        failures: 1,
+        blocked_until: 0,
+      }]);
+    });
+  });
+
+  test.each([
+    { attemptKey: 'A'.repeat(64), anonymous: false, now: BASE_NOW },
+    { attemptKey: ACCOUNT_A, anonymous: 'false', now: BASE_NOW },
+    { attemptKey: ACCOUNT_A, anonymous: false, now: Number.NaN },
+    { attemptKey: ACCOUNT_A, anonymous: false, now: 1.5 },
+    { attemptKey: ACCOUNT_A, anonymous: false, now: -0 },
+    { attemptKey: ACCOUNT_A, anonymous: false, now: BASE_NOW, extra: true },
+  ])('rejects malformed attempt input %#', async (input) => {
+    const stub = coordinator();
+    await runInDurableObject(stub, async (instance) => {
+      await expect(instance.consumeTextAuthAttempt(input as never))
+        .rejects.toThrow('Invalid coordinator input');
+    });
+  });
+
+  test('rejects a malformed clear key without changing the live row', async () => {
+    const stub = coordinator();
+    await stub.consumeTextAuthAttempt({ attemptKey: ACCOUNT_A, anonymous: false, now: BASE_NOW });
+    await runInDurableObject(stub, async (instance, state) => {
+      await expect(instance.clearTextAuthAttempts('A'.repeat(64)))
+        .rejects.toThrow('Invalid coordinator input');
+      expect(state.storage.sql.exec<{ count: number }>(
+        'SELECT COUNT(*) AS count FROM text_auth_attempts WHERE attempt_key = ?',
+        ACCOUNT_A,
+      ).toArray()).toEqual([{ count: 1 }]);
+    });
+  });
+});
+
 describe('PhotoAiCoordinator', () => {
   test('adds the private text admin replay table idempotently with only approved columns', async () => {
     const stub = coordinator();

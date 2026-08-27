@@ -17,6 +17,7 @@ export default defineWorkersConfig({
       'workers/photo-ai-gateway/src/doubaoTextAdapter.test.ts',
       'workers/photo-ai-gateway/src/doubaoAdapter.test.ts',
       'workers/photo-ai-gateway/src/textAdminHandler.test.ts',
+      'workers/photo-ai-gateway/src/textAuthThrottleHandler.test.ts',
       'workers/photo-ai-gateway/src/textHandler.test.ts',
       'workers/photo-ai-gateway/src/handler.test.ts',
     ],
