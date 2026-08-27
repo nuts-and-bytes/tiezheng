@@ -421,6 +421,14 @@ test('semantic gate binds Reflect.apply to the unshadowed intrinsic', () => {
   ));
 });
 
+test('semantic gate binds the Promise constructor to the unshadowed intrinsic', () => {
+  expectSemanticPolicyFailure(insertAfter(
+    'scripts/text-ai-preview-setup-github.mjs',
+    "      env.GIT_TERMINAL_PROMPT = '0';\n",
+    '      const Promise = globalThis.Promise;\n',
+  ));
+});
+
 test('semantic gate rejects GitHub adapter parse diagnostics', () => {
   expectSemanticPolicyFailure(insertAfter(
     'scripts/text-ai-preview-setup-github.mjs',

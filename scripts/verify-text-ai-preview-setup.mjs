@@ -278,6 +278,36 @@ function verifyBoundedRunnerFunction(sourceFile, checker) {
   ) fail();
   verifySpawnOptions(spawnCall.arguments[2].elements[2]);
 
+  const promiseConstructions = collectAstNodes(commandRunner, (node) => (
+    ts.isNewExpression(node) && isIdentifier(node.expression, 'Promise')
+  ));
+  if (promiseConstructions.length !== 1) fail();
+  const promiseConstruction = promiseConstructions[0];
+  const promiseArguments = promiseConstruction.arguments;
+  if (
+    promiseConstruction.typeArguments !== undefined
+    || promiseArguments === undefined
+    || promiseArguments.length !== 1
+    || !ts.isArrowFunction(promiseArguments[0])
+    || checker.getSymbolAtLocation(promiseConstruction.expression) !== undefined
+    || !ts.isAwaitExpression(promiseConstruction.parent)
+    || promiseConstruction.parent.expression !== promiseConstruction
+    || !ts.isReturnStatement(promiseConstruction.parent.parent)
+    || promiseConstruction.parent.parent.expression !== promiseConstruction.parent
+    || promiseConstruction.parent.parent.parent !== tryStatement.tryBlock
+  ) fail();
+  const promiseExecutor = promiseArguments[0];
+  if (
+    !hasNoModifiers(promiseExecutor)
+    || promiseExecutor.typeParameters !== undefined
+    || promiseExecutor.type !== undefined
+    || promiseExecutor.parameters.length !== 2
+    || !ts.isBlock(promiseExecutor.body)
+    || !isWithin(spawnCall, promiseExecutor.body)
+  ) fail();
+  requireIdentifierParameter(promiseExecutor.parameters[0], 'resolve');
+  requireIdentifierParameter(promiseExecutor.parameters[1], 'reject');
+
   const childDeclaration = spawnCall.parent;
   if (
     !ts.isVariableDeclaration(childDeclaration)
@@ -286,6 +316,9 @@ function verifyBoundedRunnerFunction(sourceFile, checker) {
     || !ts.isVariableDeclarationList(childDeclaration.parent)
     || childDeclaration.parent.declarations.length !== 1
     || (childDeclaration.parent.flags & ts.NodeFlags.Const) === 0
+    || !ts.isVariableStatement(childDeclaration.parent.parent)
+    || childDeclaration.parent.parent.parent !== promiseExecutor.body
+    || promiseExecutor.body.statements[0] !== childDeclaration.parent.parent
   ) fail();
 
   const safeArgumentDeclarations = collectAstNodes(tryStatement.tryBlock, (node) => (
