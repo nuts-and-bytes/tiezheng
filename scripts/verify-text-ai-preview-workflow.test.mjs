@@ -935,7 +935,8 @@ test('operations documentation fixes configuration, disabled preflight, and secr
     '`PHOTO_AI_ACCOUNT_HMAC_KEY` 至少 32 个字符且不得包含任何空白',
     '`TEXT_AI_USER_1_EMAIL` 与 `TEXT_AI_USER_2_EMAIL` 必须是已规范化的小写邮箱且互不相同',
     '`TEXT_AI_ADMIN_EMAIL` 必须精确等于 `TEXT_AI_USER_1_EMAIL`',
-    '`TEXT_AI_TEAM_DOMAIN` 只能填写小写 team slug',
+    '`TEXT_AI_TEAM_DOMAIN` 只能由 Cloudflare organization `auth_domain` 派生为小写 team slug',
+    '不含协议、路径或 `.cloudflareaccess.com` 完整域名',
     '`ARK_API_KEY` 长度为 1–4096',
     '`PHOTO_AI_CACHE_AES_KEY` 必须是 canonical Base64',
     '必须在任何远端写入前先本地验证',
@@ -953,6 +954,7 @@ test('operations documentation fixes configuration, disabled preflight, and secr
       `missing operations boundary: ${required}`,
     );
   }
+  assert.equal(runbookSource.includes('`TEXT_AI_TEAM_DOMAIN` 只能填写'), false);
 });
 
 test('release plan delegates every dispatch to the exact runbook ritual without latest-run races', () => {
@@ -977,29 +979,57 @@ test('release plan delegates every dispatch to the exact runbook ritual without 
     ),
     false,
   );
-  assert.ok(taskEleven.includes(
+  const setupPreconditionsStart = taskEleven.indexOf(
+    '**Step 1: 先合并受保护向导并固定首次运行前提**',
+  );
+  const setupWizardStart = taskEleven.indexOf(
+    '**Step 2: 运行唯一首次配置向导**',
+  );
+  const secretNameCheckStart = taskEleven.indexOf(
+    '**Step 3: 检查 secret 名称而非值**',
+  );
+  const preflightReviewStart = taskEleven.indexOf(
+    '**Step 4: 复核向导的只读 preflight**',
+  );
+  for (const boundary of [
+    setupPreconditionsStart,
+    setupWizardStart,
+    secretNameCheckStart,
+    preflightReviewStart,
+  ]) {
+    assert.notEqual(boundary, -1);
+  }
+  const setupPreconditionsStep = taskEleven.slice(setupPreconditionsStart, setupWizardStart);
+  const setupWizardStep = taskEleven.slice(setupWizardStart, secretNameCheckStart);
+  const secretNameCheckStep = taskEleven.slice(secretNameCheckStart, preflightReviewStart);
+  assert.ok(setupPreconditionsStep.includes('`CLOUDFLARE_ACCOUNT_ID` 必须已存在'));
+  assert.ok(setupPreconditionsStep.includes('9 个目标 secret 与 `TEXT_AI_TEAM_DOMAIN` 必须全部不存在'));
+  for (const required of [
+    'npm run setup:text-preview',
+    '真实本地 TTY',
+    '`shell:false` 的单个 `gh` 子进程 stdin',
+    '固定 repo/environment',
+    '禁止聊天、argv、shell history、`--body`、env、文件、workflow input 或日志传值',
+    '并运行关闭态 preflight',
+  ]) {
+    assert.ok(setupWizardStep.includes(required), `missing setup-wizard boundary: ${required}`);
+  }
+  assert.ok(secretNameCheckStep.includes(
     "gh secret list -R nuts-and-bytes/tiezheng --env text-ai-preview --json name --jq '.[].name'",
   ));
+  assert.ok(secretNameCheckStep.includes('输出没有值'));
   assert.equal(taskEleven.includes('gh secret list --env text-ai-preview'), false);
-  const secretInputStep = taskEleven.slice(
-    taskEleven.indexOf('**Step 1: 要求用户在 GitHub UI 输入 secret**'),
-    taskEleven.indexOf('**Step 2: 检查 secret 名称而非值**'),
-  );
-  for (const secretName of [
-    'CLOUDFLARE_API_TOKEN',
-    'ARK_API_KEY',
-    'PHOTO_AI_CACHE_AES_KEY',
-    'PHOTO_AI_ACCOUNT_HMAC_KEY',
-    'TEXT_AI_USER_1_EMAIL',
-    'TEXT_AI_USER_2_EMAIL',
-    'TEXT_AI_ADMIN_EMAIL',
-    'TEXT_AI_CF_ACCESS_CLIENT_ID',
-    'TEXT_AI_CF_ACCESS_CLIENT_SECRET',
-  ]) {
-    assert.ok(secretInputStep.includes(`\`${secretName}\``));
-  }
+  assert.equal(taskEleven.includes('**Step 1: 要求用户在 GitHub UI 输入 secret**'), false);
+  assert.equal(taskEleven.includes('用户直接输入 9 个 Environment secrets'), false);
   for (const operation of [
     'preflight user-1',
+    'deploy-disabled user-1',
+    'enable-admin-preview user-1',
+    'enable-second-account user-2',
+  ]) {
+    assert.ok(runbookSource.includes(`run_text_preview_operation ${operation}`));
+  }
+  for (const operation of [
     'deploy-disabled user-1',
     'enable-admin-preview user-1',
     'enable-second-account user-2',
