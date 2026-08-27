@@ -437,8 +437,12 @@ test('semantic gate rejects GitHub adapter parse diagnostics', () => {
   ));
 });
 
-test('package scripts expose one safe setup entrypoint and include every setup test in control', async () => {
+test('package scripts isolate node-only setup suites from Vitest and keep them in setup control', async () => {
   const packageJson = JSON.parse(await readFile(resolve('package.json'), 'utf8'));
+  assert.equal(
+    packageJson.scripts.test,
+    'vitest run --exclude "scripts/text-ai-preview-setup*.test.mjs"',
+  );
   assert.equal(packageJson.scripts['setup:text-preview'], 'node scripts/text-ai-preview-setup.mjs');
   assert.equal(
     packageJson.scripts['test:text-preview-setup'],
