@@ -151,8 +151,9 @@ version + method + canonical path + timestamp + operationId + SHA-256(body)
 
 | 名称 | 用途 | 保存位置 |
 |---|---|---|
-| `TEXT_AI_ACCESS_CODE_PEPPER` | 计算访问码摘要 | GitHub Environment secret、Pages secret |
+| `TEXT_AI_USER_1_ACCESS_CODE_PEPPER` | 计算 `user-1` 访问码摘要 | GitHub Environment secret、Pages secret |
 | `TEXT_AI_USER_1_ACCESS_CODE_DIGEST` | `user-1` 当前访问码摘要 | GitHub Environment secret、Pages secret |
+| `TEXT_AI_USER_2_ACCESS_CODE_PEPPER` | 计算 `user-2` 访问码摘要 | GitHub Environment secret、Pages secret |
 | `TEXT_AI_USER_2_ACCESS_CODE_DIGEST` | `user-2` 当前访问码摘要 | GitHub Environment secret、Pages secret |
 | `TEXT_AI_SESSION_SIGNING_KEY` | 签发和验证用户 JWT | GitHub Environment secret、Pages secret |
 | `TEXT_AI_RATE_LIMIT_HMAC_KEY` | 将原始 IP 盲化为限流键 | GitHub Environment secret、Pages secret |
@@ -160,7 +161,7 @@ version + method + canonical path + timestamp + operationId + SHA-256(body)
 | `PHOTO_AI_ACCOUNT_HMAC_KEY` | 从逻辑槽位派生账号键 | 沿用既有名称；缺失时由向导生成并写入受保护 secret |
 | `ARK_API_KEY` | 方舟模型调用 | 沿用 Worker secret |
 
-访问码由系统密码学随机源分别生成至少 192 bit 熵并编码为 URL-safe 字符串。明文只在真实本地 TTY 中显示一次；不得写入文件、shell history、argv、环境变量、聊天、GitHub、Cloudflare Dashboard 可读变量或日志，向导也不得主动写入系统剪贴板。向导只把摘要写入远端。
+访问码由系统密码学随机源分别生成至少 192 bit 熵并编码为 URL-safe 字符串。每个账号使用独立 pepper，使单账号轮换可以同时替换该账号的 code、pepper 和 digest，而不需要读取或改变另一个账号的材料。明文只在真实本地 TTY 中显示一次；不得写入文件、shell history、argv、环境变量、聊天、GitHub、Cloudflare Dashboard 可读变量或日志，向导也不得主动写入系统剪贴板。向导只把 pepper 和摘要写入远端。
 
 现有带 Access 权限的设置 token 在新方案验证前不用于部署。迁移时创建或改用只包含 Pages、Workers、Durable Object 及必要账号读取能力的窄权限 token；新 token 验证成功后撤销旧 token。不得为了绕过付款页面扩大 token 权限。
 
@@ -180,7 +181,7 @@ version + method + canonical path + timestamp + operationId + SHA-256(body)
 - 错误访问码：统一 `401 auth-required`，不签发 Cookie。
 - 登录尝试过多：返回 `429 rate-limited`，不执行访问码比较或模型调用。
 - 账号已停用：认证可以保持有效，但 session/estimate 继续按现有账号开关返回关闭状态；这样管理员可在不轮换访问码的情况下紧急停用。
-- 访问码疑似泄露：轮换该槽位的访问码摘要，旧访问码和旧 JWT 同时失效。
+- 访问码疑似泄露：原子轮换该槽位的访问码、pepper 和摘要，旧访问码和旧 JWT 同时失效，另一账号不受影响。
 - 会话签名密钥疑似泄露：轮换签名密钥，两个账号全部 JWT 失效。
 - 管理签名密钥疑似泄露：先关闭文字 AI 全局开关，再轮换管理密钥并重新完成关闭态 preflight。
 - 认证配置缺失、重复、格式错误或绑定异常：失败关闭，返回固定服务错误，不回退为匿名账号。
@@ -192,10 +193,11 @@ version + method + canonical path + timestamp + operationId + SHA-256(body)
 1. 验证固定仓库、Environment、分支策略、GitHub 登录和 Cloudflare account scope；
 2. 验证目标认证 secret 名称不存在，拒绝覆盖；
 3. 在真实 TTY 接收 `ARK_API_KEY`；
-4. 生成两个访问码和相互独立的随机密钥，包括缺失的账号 HMAC 与候选缓存 AES 密钥；
-5. 只显示一次两个明文访问码；
-6. 写入固定名称的 GitHub Environment secrets；
-7. 运行关闭态 preflight，不部署、不启用、不调用模型。
+4. 生成两个访问码和相互独立的随机密钥，包括两个独立 pepper、缺失的账号 HMAC 与候选缓存 AES 密钥；
+5. 写入固定名称的 GitHub Environment secrets 并核对名称集合；
+6. 只显示一次两个明文访问码并立即擦除本地 buffer；
+7. 显示失败时补偿删除本次 secrets，避免留下用户无法恢复的凭据；
+8. 运行关闭态 preflight，不部署、不启用、不调用模型。
 
 迁移后的 workflow 必须移除：
 
@@ -207,6 +209,8 @@ version + method + canonical path + timestamp + operationId + SHA-256(body)
 - Access service-token 创建、调用、补偿与轮换逻辑。
 
 workflow 继续保留固定 operation 枚举、`main` 与 SHA 绑定、Environment gate、关闭态部署、单账号启停、全局关闭、状态检查和删除账号运行状态。
+
+单账号访问码轮换由独立本地 TTY 命令生成该槽位的新 code、pepper 和 digest，先让用户保存新 code，再通过 GitHub secret stdin 更新该槽位的两个 secret，最后精确派发固定的 Pages Preview 配置更新与部署操作。GitHub secret 更新后但部署前失败时，旧部署和旧访问码继续有效，运维者可使用已保存的新 code 重试部署；部署成功后旧 code 与旧 JWT 同时失效。轮换命令不得读取或改写另一账号的 secret。
 
 ## 10. 测试策略
 
@@ -244,7 +248,7 @@ workflow 继续保留固定 operation 枚举、`main` 与 SHA 绑定、Environme
 1. 关闭 Worker 文字 AI 总开关；
 2. 关闭两个账号；
 3. 轮换会话签名密钥使全部 JWT 失效；
-4. 轮换或删除访问码摘要；
+4. 轮换或删除对应账号的访问码 pepper 与摘要；
 5. 必要时回滚 Preview deployment。
 
 回滚不删除本地饮食或训练数据，也不启用 Cloudflare Access 作为隐式后备路径。
@@ -252,7 +256,7 @@ workflow 继续保留固定 operation 枚举、`main` 与 SHA 绑定、Environme
 ## 12. 完成标准
 
 - 文字 AI 用户和管理路径不再依赖任何 Cloudflare Access 资源或 header。
-- 两个独立访问码可以分别建立 30 天安全会话。
+- 两个独立访问码可以分别建立 30 天安全会话，并可单独轮换而不影响另一账号。
 - 错误码、跨站请求、伪造 JWT、过期 JWT、旧凭据版本和重放管理请求全部失败关闭。
 - 两账号额度、启停、删除和账号键严格隔离。
 - 设置向导可在不进入 Zero Trust onboarding 的情况下完成关闭态配置。
