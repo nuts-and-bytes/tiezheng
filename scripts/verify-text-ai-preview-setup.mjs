@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 const FAILURE_MESSAGE = 'Setup policy failed';
 const MAX_SOURCE_BYTES = 1_048_576;
-const SETUP_SOURCE_NAME = /^text-ai-preview-setup.*\.mjs$/u;
+const SETUP_SOURCE_PREFIX = 'text-ai-preview-setup';
 
 export const EXPECTED_FILES = Object.freeze([
   'scripts/text-ai-preview-setup-values.mjs',
@@ -14,6 +14,9 @@ export const EXPECTED_FILES = Object.freeze([
   'scripts/text-ai-preview-setup-github.mjs',
   'scripts/text-ai-preview-setup.mjs',
 ]);
+const EXPECTED_TEST_NAMES = Object.freeze(EXPECTED_FILES.map((file) => (
+  `${basename(file, '.mjs')}.test.mjs`
+)));
 
 const EXPECTED_DIGESTS = Object.freeze({
   'scripts/text-ai-preview-setup-values.mjs': '5ac51ec36f81ccc1efd680bf9332dbdc44d5bc8804d47dd68a5b272fd25d50a3',
@@ -195,6 +198,18 @@ function verifyCloudflareContract(sources) {
 function verifyGitHubContract(sources) {
   const github = sources.get('scripts/text-ai-preview-setup-github.mjs');
   requireCount(github, "import { spawn } from 'node:child_process';");
+  requireCount(github, 'node:child_process');
+  requireCount(github, 'child_process');
+  if (
+    (github.match(/\bspawn\b/gu) ?? []).length !== 2
+    || (github.match(/\bspawnCommand\b/gu) ?? []).length !== 5
+    || (github.match(/\bcreateBoundedCommandRunner\b/gu) ?? []).length !== 3
+  ) fail();
+  requireCount(
+    github,
+    'const child = Reflect.apply(spawnCommand, undefined, [command, safeArguments, {',
+  );
+  requireCount(github, 'const BOUNDED_COMMAND_RUNNER = createBoundedCommandRunner(spawn);');
   requireCount(github, "      if (command !== 'git' && command !== 'gh') fail();");
   requireCount(github, '          shell: false,');
   requireCount(github, "          stdio: ['pipe', 'pipe', 'pipe'],");
@@ -231,15 +246,29 @@ function verifyOrchestrationContract(sources) {
   requireCount(setup, '    phase = \'complete\';');
 }
 
+function verifySemantics(value) {
+  const sources = snapshotSources(value);
+  verifyNoForbiddenCapabilities(sources);
+  verifyPromptContract(sources);
+  verifyValueContract(sources);
+  verifyCloudflareContract(sources);
+  verifyGitHubContract(sources);
+  verifyOrchestrationContract(sources);
+  return sources;
+}
+
+export function verifyTextPreviewSetupSemanticsForTest(value) {
+  try {
+    verifySemantics(value);
+    return Object.freeze({ ...FIXED_REPORT });
+  } catch {
+    fail();
+  }
+}
+
 export function verifyTextPreviewSetup(value) {
   try {
-    const sources = snapshotSources(value);
-    verifyNoForbiddenCapabilities(sources);
-    verifyPromptContract(sources);
-    verifyValueContract(sources);
-    verifyCloudflareContract(sources);
-    verifyGitHubContract(sources);
-    verifyOrchestrationContract(sources);
+    const sources = verifySemantics(value);
     verifyDigests(sources);
     return Object.freeze({ ...FIXED_REPORT });
   } catch {
@@ -265,7 +294,9 @@ async function runCli(argv) {
     const names = await readdir(resolve('scripts'), { encoding: 'utf8' });
     if (!Array.isArray(names) || names.some((name) => typeof name !== 'string')) fail();
     const discovered = names
-      .filter((name) => SETUP_SOURCE_NAME.test(name) && !name.endsWith('.test.mjs'))
+      .filter((name) => (
+        name.startsWith(SETUP_SOURCE_PREFIX) && !EXPECTED_TEST_NAMES.includes(name)
+      ))
       .map((name) => `scripts/${name}`)
       .sort();
     sameStrings(discovered, [...EXPECTED_FILES].sort());

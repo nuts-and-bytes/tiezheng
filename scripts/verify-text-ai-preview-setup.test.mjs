@@ -12,10 +12,9 @@ try {
 }
 const { test } = testModule;
 
-import {
-  EXPECTED_FILES,
-  verifyTextPreviewSetup,
-} from './verify-text-ai-preview-setup.mjs';
+import * as setupVerifier from './verify-text-ai-preview-setup.mjs';
+
+const { EXPECTED_FILES, verifyTextPreviewSetup } = setupVerifier;
 
 const FAILURE_MESSAGE = 'Setup policy failed';
 const FIXED_FILES = Object.freeze([
@@ -322,6 +321,28 @@ test('rejects additional executable families outside the fixed git and gh runner
   }
 });
 
+test('semantic gate independently rejects extra spawn calls, aliases, and child process families', () => {
+  assert.equal(typeof setupVerifier.verifyTextPreviewSetupSemanticsForTest, 'function');
+  assert.deepEqual(
+    setupVerifier.verifyTextPreviewSetupSemanticsForTest(sourceRecord()),
+    FIXED_REPORT,
+  );
+  const file = 'scripts/text-ai-preview-setup-github.mjs';
+  const marker = "import { spawn } from 'node:child_process';\n";
+  for (const insertion of [
+    "spawn('sh', ['-c', 'true']);\n",
+    "const launch = spawn;\nlaunch('sh', ['-c', 'true']);\n",
+    "import { execFile as launch } from 'node:child_process';\n",
+  ]) {
+    assert.throws(
+      () => setupVerifier.verifyTextPreviewSetupSemanticsForTest(
+        insertAfter(file, marker, insertion),
+      ),
+      (error) => error?.constructor === Error && error.message === FAILURE_MESSAGE,
+    );
+  }
+});
+
 test('package scripts expose one safe setup entrypoint and include every setup test in control', async () => {
   const packageJson = JSON.parse(await readFile(resolve('package.json'), 'utf8'));
   assert.equal(packageJson.scripts['setup:text-preview'], 'node scripts/text-ai-preview-setup.mjs');
@@ -381,6 +402,25 @@ test('CLI treats every non-test text-ai-preview-setup wildcard match as producti
   }
 });
 
+test('CLI rejects unknown setup-prefixed sources across extensions and unknown test names', async () => {
+  for (const extra of [
+    'text-ai-preview-setup-extra.js',
+    'text-ai-preview-setup-extra.cjs',
+    'text-ai-preview-setup-extra.test.mjs',
+  ]) {
+    const root = await mkdtemp(join(tmpdir(), 'tiezheng-setup-verifier-extension-'));
+    try {
+      await writeCliFixture(root, { extra });
+      const result = runVerifier(root);
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, '');
+      assert.equal(result.stderr, `${FAILURE_MESSAGE}\n`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test('CLI rejects a missing fixed source but ignores test-only setup filenames', async () => {
   const missingRoot = await mkdtemp(join(tmpdir(), 'tiezheng-setup-verifier-missing-'));
   const passingRoot = await mkdtemp(join(tmpdir(), 'tiezheng-setup-verifier-test-file-'));
@@ -391,7 +431,7 @@ test('CLI rejects a missing fixed source but ignores test-only setup filenames',
     assert.equal(missingResult.stdout, '');
     assert.equal(missingResult.stderr, `${FAILURE_MESSAGE}\n`);
 
-    await writeCliFixture(passingRoot, { extra: 'text-ai-preview-setup-future.test.mjs' });
+    await writeCliFixture(passingRoot, { extra: 'text-ai-preview-setup-values.test.mjs' });
     const passingResult = runVerifier(passingRoot);
     assert.equal(passingResult.status, 0, passingResult.stderr);
     assert.equal(passingResult.stderr, '');
