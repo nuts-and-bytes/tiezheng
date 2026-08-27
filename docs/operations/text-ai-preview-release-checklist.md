@@ -11,6 +11,8 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 
 不得在备注中写入邮箱、account ID、派生 account key、Access audience、JWT、OTP、secret、URL token、IP、Cookie、餐食正文、模型候选或供应商原文。精确 run 的安全记录只允许 run ID、commit SHA 和固定成功结论；其他项只允许记录资源/开关布尔判断或差值 `PASS/FAIL`。
 
+首次配置向导的 evidence 更窄：只记 commit SHA、固定资源名称或名称集合结论、布尔结果和固定 `SETUP` 状态；不记录输入值、account ID、team domain、service-token ID、workflow URL、远端响应或自由文本错误。
+
 ## A. 代码与本地门禁
 
 | 检查项 | 状态 | 脱敏记录 |
@@ -49,12 +51,18 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 | 不依赖 Environment reviewer 或 Prevent self-review；不存在 pending approval 放行步骤 | NOT_RUN | 仅记录 PASS/FAIL |
 | 管理员绕过开关不作为放行依据；workflow 自身硬门禁 protected `main` 与批准 SHA | NOT_RUN | 仅记录 PASS/FAIL |
 | 当前套餐支持 Environment secrets 与精确 deployment branch rule | NOT_RUN | 不支持时 BLOCKED |
+| 首次运行前 9 个目标 secret 与 `TEXT_AI_TEAM_DOMAIN` 均不存在，`CLOUDFLARE_ACCOUNT_ID` 已存在 | NOT_RUN | 只记录名称集合结论；任一已有目标值即 BLOCKED |
+| 唯一首次配置入口是 `npm run setup:text-preview`；两个 secret 经本地 TTY 隐藏输入，自动值在进程内生成 | NOT_RUN | 只记固定状态，不记输入 |
+| 每个值只经 `shell:false` 的单个 `gh` 子进程 stdin 写入固定 repo/environment | NOT_RUN | 禁止 `--body`、argv、shell history、env、文件、workflow input、聊天与日志 |
+| 向导只创建固定名称、固定一年（`8760h`）service token，写 9+1 并运行关闭态 preflight | NOT_RUN | 仅记名称/布尔/固定状态；不运行 deploy/enable/model call |
+| partial-write 失败只逆序补偿本次尝试的 variable/secrets，最后删除本次 service token | NOT_RUN | 不触碰 account ID、旧 service token、Access、Pages/Worker 或开关 |
+| 9+2 完整后 preflight 失败保留凭据并输出 `SETUP BLOCKED preflight` | NOT_RUN | 不补偿、不部署、不启用；只记固定状态 |
 | 9 个 Environment secret 名称集合精确为 `CLOUDFLARE_API_TOKEN`、`ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY`、`PHOTO_AI_ACCOUNT_HMAC_KEY`、`TEXT_AI_USER_1_EMAIL`、`TEXT_AI_USER_2_EMAIL`、`TEXT_AI_ADMIN_EMAIL`、`TEXT_AI_CF_ACCESS_CLIENT_ID`、`TEXT_AI_CF_ACCESS_CLIENT_SECRET` | NOT_RUN | 只检查名称，不读取值 |
 | 2 个 Environment variable 名称集合精确为 `CLOUDFLARE_ACCOUNT_ID`、`TEXT_AI_TEAM_DOMAIN` | NOT_RUN | 不记录值 |
 | allowed email count 由 workflow 精确锁定为 2 | NOT_RUN | 不创建同名 Environment variable |
-| account ID 为 32 位小写 hex；team domain 是小写 slug，不含协议或完整 Access 域名 | NOT_RUN | 只在可信 GitHub UI 核对，不记录值 |
-| user-1/user-2 为规范小写且不同，admin 精确等于 user-1 | NOT_RUN | 只在可信 GitHub UI 核对，不记录邮箱 |
-| Access client ID 全小写并以 `.access` 结尾；HMAC 至少 32 字符且无空白 | NOT_RUN | 只在可信 GitHub UI 核对，不记录值 |
+| account ID 为 32 位小写 hex；team domain 是小写 slug，不含协议或完整 Access 域名 | NOT_RUN | 向导只在内存校验，不记录值 |
+| user-1/user-2 为规范小写且不同，admin 精确等于 user-1 | NOT_RUN | 向导在写入前校验，不记录邮箱 |
+| Access client ID 全小写并以 `.access` 结尾；HMAC 至少 32 字符且无空白 | NOT_RUN | 向导在进程内校验/生成，不记录值 |
 | Ark key 为 1–4096、无首尾空白/Unicode 控制字符；AES 为 canonical Base64 且解码恰好 32 字节 | NOT_RUN | 只读 preflight 可先执行；workflow 在任何远端写入前验证，特别早于 status POST；不记录值 |
 
 ## C. Cloudflare 只读 preflight
@@ -67,8 +75,9 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 | `Workers Scripts Edit` 或 `Workers Scripts Write` 已验证 | NOT_RUN | 内部以 detail/catalog ID 关联；仅记录 PASS/FAIL，不记录 ID/API 响应 |
 | `Cloudflare Pages Edit` 或 `Pages Write` 已验证 | NOT_RUN | 内部以 detail/catalog ID 关联；仅记录 PASS/FAIL，不记录 ID/API 响应 |
 | `Access: Apps and Policies Edit` 或 `Write` 已验证 | NOT_RUN | 内部以 detail/catalog ID 关联；仅记录 PASS/FAIL，不记录 ID/API 响应 |
-| Identity Providers Read 或 combined Organizations 权限已验证 | NOT_RUN | 内部以 detail/catalog ID 关联；仅记录 PASS/FAIL，不记录 ID/API 响应 |
+| `Access: Organizations, Identity Providers, and Groups Read` 已验证 | NOT_RUN | 向导用于读取 organization 与 OTP provider；仅记录 PASS/FAIL，不记录 ID/API 响应 |
 | `Access: Service Tokens Read` 已验证 | NOT_RUN | 内部以 detail/catalog ID 关联；仅记录 PASS/FAIL，不记录 ID/API 响应 |
+| `Access: Service Tokens Write` 已验证 | NOT_RUN | 只用于首次向导创建固定 service token 与本次失败补偿；仅记 PASS/FAIL |
 | token active、detail 与 permission catalog ID 关联通过 | NOT_RUN | 仅记录 PASS/FAIL，不记录 ID/API 响应 |
 | Pages `production_branch` 精确为 `main` | NOT_RUN | 仅记录 PASS/FAIL |
 | 首次 preflight 的 Worker 照片开关与文字开关都精确为 false | NOT_RUN | 只读 run 即使成功但文字为 true 仍 BLOCKED |

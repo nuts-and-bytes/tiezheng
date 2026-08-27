@@ -1192,15 +1192,20 @@ git commit -m "ci: add protected text AI preview workflow"
 
 runbook 必须给出固定信息：
 
-- GitHub Environment 名、九个人工 secret、account ID 与 team domain 两个 variables；allowed email count 由 workflow 固定为 2，不是 Environment variable；
-- Cloudflare token 所需权限：Workers Scripts Edit、Pages Edit、Access Apps and Policies Write、Access Identity Providers Read、Access Service Tokens Read；
+- GitHub Environment 名、9 个 secret 名称、account ID 与 team domain 两个 variables；allowed email count 由 workflow 固定为 2，不是 Environment variable；
+- 首次配置唯一入口为 `npm run setup:text-preview`：真实本地 TTY 隐藏输入/进程内生成 → `shell:false` 的单个 `gh` 子进程 stdin → 固定 repo/environment；
+- 聊天、argv、shell history、`--body`、环境变量、文件、workflow input 和日志均禁止承载值；
+- 首次运行前 9 个 secret 与 `TEXT_AI_TEAM_DOMAIN` 必须不存在，`CLOUDFLARE_ACCOUNT_ID` 必须已存在；首次运行不覆盖任何已有 secret 或 variable；
+- 向导只创建固定一年 service token、写入 9+1 并运行关闭态 preflight；不会部署、不会启用、不会调用模型；
+- partial-write 只补偿本次新建资源；9+2 完整后 preflight 失败保留控制凭据并输出 `SETUP BLOCKED preflight`；
+- Cloudflare token 所需权限：Account API Tokens Read、Workers Scripts Edit、Cloudflare Pages Edit、Access Apps and Policies Edit、Access Organizations/Identity Providers/Groups Read、Access Service Tokens Read 和 Write；
 - 先 `preflight`、再 `deploy-disabled`、再 `enable-admin-preview`；
 - user-1 管理员单次真实请求、user-2 OTP；
 - status/disable-account；标准流程完全禁止 delete-account，破坏性跨通道删除只保留另行批准的附录边界；
 - 回滚顺序和每一步预期状态；
 - 禁止复制 audience、邮箱、JWT、OTP、密钥和餐食正文到 evidence。
 
-其中 API Key 的设置只写 GitHub UI 路径，不出现命令行值或示例密钥。
+其中 Cloudflare token 只在 Cloudflare Dashboard 准备，其值与 API Key 只经上述向导的本地 TTY 隐藏输入；不出现命令行值或示例密钥。首次配置 evidence 只记 commit、固定名称或名称集合结论、布尔结果和固定状态。
 
 - [ ] **Step 2: 写 release checklist**
 
@@ -1250,11 +1255,27 @@ git commit -m "docs: add text AI preview operations runbook"
 - Remote: Cloudflare Access, Pages Preview, Worker
 - Update: `docs/operations/text-ai-preview-release-checklist.md`（只写脱敏状态）
 
-- [ ] **Step 1: 要求用户在 GitHub UI 输入 secret**
+- [ ] **Step 1: 先合并受保护向导并固定首次运行前提**
 
-在固定仓库 Settings → Environments → `text-ai-preview` 中启用单人受保护模式：只允许受保护的 `main` 部署，不配置 required reviewer，也不依赖 Environment reviewer 或 Prevent self-review。由用户直接输入 9 个 Environment secrets：`CLOUDFLARE_API_TOKEN`、`ARK_API_KEY`、`PHOTO_AI_CACHE_AES_KEY`、`PHOTO_AI_ACCOUNT_HMAC_KEY`、`TEXT_AI_USER_1_EMAIL`、`TEXT_AI_USER_2_EMAIL`、`TEXT_AI_ADMIN_EMAIL`、`TEXT_AI_CF_ACCESS_CLIENT_ID`、`TEXT_AI_CF_ACCESS_CLIENT_SECRET`。不得通过聊天、shell history 或 workflow input 传值。
+先运行 Task 10 全量验证和独立 code review；只有 review 无阻塞项且用户授权合并时，才把实现合并到受保护 `main`。向导运行时本地干净 `main`、`HEAD`、远端 `main` 和已批准 40 位 SHA 必须精确一致；向导不会自动 merge、pull、commit 或 push。
 
-- [ ] **Step 2: 检查 secret 名称而非值**
+在固定仓库 Settings → Environments → `text-ai-preview` 中启用单人受保护模式：只允许受保护的 `main` 部署，不配置 required reviewer，也不依赖 Environment reviewer 或 Prevent self-review。首次运行前，`CLOUDFLARE_ACCOUNT_ID` 必须已存在，9 个目标 secret 与 `TEXT_AI_TEAM_DOMAIN` 必须全部不存在。
+
+- [ ] **Step 2: 运行唯一首次配置向导**
+
+用户本人在真实本地 TTY 运行：
+
+先在 Cloudflare Dashboard 准备只限精确 account 的 token，权限精确为 `Account API Tokens Read`、`Workers Scripts Edit`、`Cloudflare Pages Edit`、`Access: Apps and Policies Edit`、`Access: Organizations, Identity Providers, and Groups Read`、`Access: Service Tokens Read` 和 `Access: Service Tokens Write`；禁止 all accounts、zone、user、R2 或其他资源 scope。
+
+```bash
+npm run setup:text-preview
+```
+
+只输入 Cloudflare token、ARK key、user-1 邮箱和 user-2 邮箱，查看无值预览后输入小写 `y`。Cloudflare token 与 ARK key 是本地 TTY 隐藏输入；自动值只在进程内生成。唯一获准的 CLI secret 路径是真实 TTY/进程内生成 → `shell:false` 的单个 `gh` 子进程 stdin → 固定 repo/environment。禁止聊天、argv、shell history、`--body`、env、文件、workflow input 或日志传值。
+
+向导只创建固定名称的一年 service token，写入 9+1，只读核对 9+2 名称，并运行关闭态 preflight；它不运行 `deploy-disabled`、enable 或模型调用。任何 `SETUP FAILED` 或 `SETUP BLOCKED` 都立即停止。partial-write 按 runbook 只补偿本次新建资源；9+2 完整后若 preflight 失败，保留凭据以便诊断并输出 `SETUP BLOCKED preflight`。
+
+- [ ] **Step 3: 检查 secret 名称而非值**
 
 Run:
 
@@ -1262,21 +1283,13 @@ Run:
 gh secret list -R nuts-and-bytes/tiezheng --env text-ai-preview --json name --jq '.[].name'
 ```
 
-Expected: 名称集合与 runbook 完全一致；输出没有值。
+Expected: 名称集合与 runbook 完全一致；输出没有值。首次配置 evidence 只记 commit、固定名称/名称集合结论、布尔结果和固定状态。
 
-- [ ] **Step 3: 推送实现分支并合并 workflow 所需提交**
+- [ ] **Step 4: 复核向导的只读 preflight**
 
-先运行 Task 10 全量验证和独立 code review；只有 review 无阻塞项且用户授权合并时，才把实现合并到 `main`。workflow 必须存在于默认分支后才能稳定手动触发。
+向导后续的所有 Task 11/12 手工 dispatch 都先加载 runbook 第 6 节的固定函数与变量，使用固定仓库、批准 SHA、精确 dispatch URL/run ID/watch/view 仪式；不得复制旧版“最近一次 run”查询。每次 dispatch 前必须证明旧 `queued`/`in_progress`/`waiting`/`pending` run 为 0，旧活动 run 必须全部取消或等待结束。单人受保护模式下，操作者必须在 dispatch 前再次核对远端 `main` 精确等于批准 SHA，并把同一 SHA 作为必填 `expected_sha` workflow input；workflow 在 job 启动前要求 `github.sha == inputs.expected_sha`，漂移时直接跳过且不得执行 dispatcher。
 
-- [ ] **Step 4: 运行只读 preflight**
-
-所有 Task 11/12 dispatch 都先加载 runbook 第 6 节的固定函数与变量，使用固定仓库、批准 SHA、精确 dispatch URL/run ID/watch/view 仪式；不得复制旧版“最近一次 run”查询。每次 dispatch 前必须证明旧 `queued`/`in_progress`/`waiting`/`pending` run 为 0，旧活动 run 必须全部取消或等待结束。单人受保护模式下，操作者必须在 dispatch 前再次核对远端 `main` 精确等于批准 SHA，并把同一 SHA 作为必填 `expected_sha` workflow input；workflow 在 job 启动前要求 `github.sha == inputs.expected_sha`，漂移时直接跳过且不得执行 dispatcher。
-
-```bash
-run_text_preview_operation preflight user-1 ''
-```
-
-Expected: 只读 PASS 且 `workerTextEnabled=false`；若 Cloudflare token 权限不足、远端照片开关为 true 或 Worker 文字开关不是 false，停止并列出安全的缺失权限名/开关布尔状态，不做远端写入。
+复核向导绑定的 exact preflight run/SHA/job/step 均成功，且 `workerTextEnabled=false`、`photoEnabled=false`。向导已自动运行这一次 preflight；不为了“再确认”自动重试。若 Cloudflare token 权限不足、远端照片开关为 true 或 Worker 文字开关不是 false，状态为 `SETUP BLOCKED preflight`，保留完整凭据供诊断，不做部署或启用。
 
 - [ ] **Step 5: 部署 disabled Worker 和 Pages Preview**
 

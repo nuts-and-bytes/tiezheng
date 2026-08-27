@@ -36,9 +36,21 @@
 - [Deployment protection、reviewer、分支规则与 Environment secrets](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
 - [Branch protection rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
 
-## 3. Environment secrets 与 variables
+## 3. 首次配置向导、Environment secrets 与 variables
 
-所有值只能由授权人员在 **Settings → Environments → text-ai-preview → Environment secrets / Environment variables** 的 GitHub UI 中输入。不得经聊天、命令行参数、shell history、workflow input、提交文件或 evidence 传递值；本文不提供示例值。
+首次配置的唯一入口是在本地干净、已批准且与远端受保护 `main` 精确一致的 checkout 中运行：
+
+```bash
+npm run setup:text-preview
+```
+
+这是唯一获准的 CLI secret 路径：Cloudflare API token 与 `ARK_API_KEY` 只经真实本地 TTY 隐藏输入，两个邮箱在同一真实 TTY 中可见输入，AES/HMAC 与 Access service-token credential 只在进程内生成或接收。每个值只能通过 `shell:false` 的单个 `gh` 子进程 stdin 写入固定仓库 `nuts-and-bytes/tiezheng` 和固定 Environment `text-ai-preview`；每次只写一个固定名称。聊天、argv、shell history、`--body`、环境变量、文件、workflow input 和日志仍禁止承载任何值；也禁止 shell 拼接、管道或将子进程 stdout/stderr 原样转发。
+
+向导运行前必须证明：
+
+- GitHub Environment `text-ai-preview` 已存在，reviewer 数为 0，唯一 deployment branch policy 为 `main`；
+- `CLOUDFLARE_ACCOUNT_ID` 已存在且格式正确，向导只读取并在内存中验证，不重写、不输出；
+- 下列 9 个 secret 和 `TEXT_AI_TEAM_DOMAIN` 首次运行前全部不存在。任一已存在就失败关闭；首次运行不覆盖任何已有 secret 或 variable，也不提供 `--force`。
 
 Environment secrets 名称必须恰好包含以下 9 个：
 
@@ -52,17 +64,17 @@ Environment secrets 名称必须恰好包含以下 9 个：
 8. `TEXT_AI_CF_ACCESS_CLIENT_ID`
 9. `TEXT_AI_CF_ACCESS_CLIENT_SECRET`
 
-Environment variables 名称必须恰好包含以下 2 个：
+Environment variables 完成后必须恰好包含以下 2 个：
 
 1. `CLOUDFLARE_ACCOUNT_ID`
 2. `TEXT_AI_TEAM_DOMAIN`
 
 不要创建 `TEXT_AI_ALLOWED_EMAIL_COUNT` Environment variable；workflow 固定注入精确值 `2`。
 
-值格式也属于发布门禁，GitHub UI 保存前必须逐项核对：
+向导在任何写入前校验用户输入，并在进程内生成随机值；值格式也属于发布门禁：
 
 - `CLOUDFLARE_ACCOUNT_ID` 必须是 32 位小写十六进制。
-- `TEXT_AI_TEAM_DOMAIN` 只能填写小写 team slug，不含协议、路径或 `.cloudflareaccess.com` 完整域名。
+- `TEXT_AI_TEAM_DOMAIN` 只能由 Cloudflare organization `auth_domain` 派生为小写 team slug，不含协议、路径或 `.cloudflareaccess.com` 完整域名。
 - `TEXT_AI_USER_1_EMAIL` 与 `TEXT_AI_USER_2_EMAIL` 必须是已规范化的小写邮箱且互不相同；workflow 不会替操作者做大小写或空白修正。
 - `TEXT_AI_ADMIN_EMAIL` 必须精确等于 `TEXT_AI_USER_1_EMAIL`。
 - `TEXT_AI_CF_ACCESS_CLIENT_ID` 必须全小写并以 `.access` 结尾。
@@ -70,9 +82,18 @@ Environment variables 名称必须恰好包含以下 2 个：
 - `ARK_API_KEY` 长度为 1–4096，首尾不得有空白，也不得含 CR、LF 或其他控制字符。
 - `PHOTO_AI_CACHE_AES_KEY` 必须是 canonical Base64，解码后恰好 32 字节；首尾不得有空白，也不得含 CR、LF 或其他控制字符。
 
-Worker secret 名称只有 `ARK_API_KEY` 与 `PHOTO_AI_CACHE_AES_KEY`。`PHOTO_AI_ACCOUNT_HMAC_KEY` 由受保护控制面写入 Pages Preview 的 secret binding，不属于 Worker secret 文件。Worker secret 名称只能在可信 Cloudflare Dashboard UI 中核对，只看名称，不读取、复制或显示值；`preflight` 不能证明 Worker secret 名称集合，它只检查 Worker 的文字/照片 plain-text 开关。GitHub Environment 的 9 个 secret 名称也只在可信 GitHub Settings UI 核对，不读取值。
+Worker secret 名称只有 `ARK_API_KEY` 与 `PHOTO_AI_CACHE_AES_KEY`。`PHOTO_AI_ACCOUNT_HMAC_KEY` 由受保护控制面写入 Pages Preview 的 secret binding，不属于 Worker secret 文件。Worker secret 名称只能在可信 Cloudflare Dashboard UI 中核对，只看名称，不读取、复制或显示值；`preflight` 不能证明 Worker secret 名称集合，它只检查 Worker 的文字/照片 plain-text 开关。GitHub Environment 的 9 个 secret 只通过向导或可信 GitHub Settings UI 核对名称，不读取值。
 
-只允许检查 secret 名称集合，不允许读取或输出值。API key 的设置路径仅为上述 GitHub UI；禁止使用带值的 CLI 命令或示例密钥。
+确认后，向导只创建固定名称 `tiezheng-text-ai-preview-github-actions` 的固定一年（`8760h`）Cloudflare Access service token，逐项写入 9 个 secret 和新增的 `TEXT_AI_TEAM_DOMAIN` 1 个 variable（即 9+1），只读核对完成后的 9+2 名称集合，然后运行绑定已批准 SHA 的关闭态 `preflight`。它不会部署、不会启用、不会调用模型；绝不运行 `deploy-disabled`、任何 enable operation 或真实餐食估算。
+
+失败边界固定如下：
+
+- 创建 service token 之前失败：零远端写入。
+- 创建 service token 后、但 GitHub 未完整写入时失败：partial-write 补偿会逆序尝试删除本次每个已尝试写入的 variable、再逆序删除本次每个已尝试写入的 secret，最后删除本次创建的精确 service token ID。名称在执行 set 前就记录，因为子进程失败时远端结果可能不明；这些名称已在运行前证明不存在，所以不会删除旧值。补偿不触碰已有 `CLOUDFLARE_ACCOUNT_ID`、其他 service token、Access app、Pages/Worker、生产或账号开关。
+- 任一补偿失败：继续尝试其他补偿，最后只输出 `SETUP BLOCKED cleanup=<固定资源名称>`，不自动重试写入、不运行 preflight、不继续启用。
+- 9+2 名称已完整写入并核对，但关闭态 preflight 失败：保留本次完整凭据和 service token 用于安全诊断，不做删除补偿，只输出 `SETUP BLOCKED preflight`，不部署、不启用。删除这些控制凭据不能恢复 Cloudflare 原运行态，反而会破坏安全关闭所需的控制路径。
+
+成功时只输出固定状态 `SETUP COMPLETE` 与名称数量/开关布尔结果。首次配置 evidence 只记 commit SHA、固定资源名称或名称集合结论、布尔结果和固定状态；不记录值、远端响应、workflow URL 或自由文本错误。只允许检查 secret/variable 名称集合，不允许读取或输出值。
 
 ## 4. Cloudflare token 与只读 preflight
 
@@ -86,8 +107,8 @@ Worker secret 名称只有 `ARK_API_KEY` 与 `PHOTO_AI_CACHE_AES_KEY`。`PHOTO_A
 | Worker 读取与部署 | `Workers Scripts Edit` 或 `Workers Scripts Write` |
 | Pages 读取与更新 | `Cloudflare Pages Edit` 或 `Pages Write` |
 | Access 应用与策略 | `Access: Apps and Policies Edit` 或 `Access: Apps and Policies Write` |
-| OTP identity provider | `Access: Identity Providers Read` 或 `Access: Organizations, Identity Providers, and Groups Read` |
-| Access service token | `Access: Service Tokens Read` |
+| Zero Trust organization 与 OTP identity provider | `Access: Organizations, Identity Providers, and Groups Read` |
+| Access service token 库存与首次创建/补偿 | `Access: Service Tokens Read` 与 `Access: Service Tokens Write` |
 
 `preflight` 先验证 token 为 active，再读取 token detail 与 permission-group catalog；它通过 permission group ID 关联官方名称与 scope，并要求资源键只指向精确 account。之后只读检查：
 
@@ -126,7 +147,9 @@ git diff --check
 
 只接受全部退出码为 0。`deploy:photo-worker` 必须带 `--dry-run`；本步骤不登录 Cloudflare、不触发 workflow、不调用模型。
 
-## 6. 首次配置与启用顺序
+## 6. 向导后续的部署与启用顺序
+
+第 3 节的向导只完成首次凭据配置和关闭态 preflight。出现任何 `SETUP FAILED` 或 `SETUP BLOCKED` 都立即停止；`SETUP COMPLETE` 也不授权部署或启用。后续仍必须取得独立远端授权，再按本节的手工 dispatch 顺序执行；不得因为向导成功而跳过 SHA、旧 run、精确 run ID 或关闭态门禁。
 
 以下命令只是受保护操作的调用格式。只有 Task 11/12 获得单独远程授权、workflow 已在受保护 `main` 且本次单人操作获得用户明确批准后才能运行。不得依赖当前目录、默认仓库或“最近一次 run”。由当前操作者把本次允许部署的 40 位 commit SHA 写入当前 shell；它不是 secret，但必须与远端 `main` 完全一致：
 

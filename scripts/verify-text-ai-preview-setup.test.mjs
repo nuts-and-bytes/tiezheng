@@ -454,6 +454,31 @@ test('package scripts expose one safe setup entrypoint and include every setup t
   );
 });
 
+test('operations docs expose the bounded first-run setup contract', async () => {
+  const [runbook, checklist, plan] = await Promise.all([
+    readFile(resolve('docs/operations/text-ai-preview-runbook.md'), 'utf8'),
+    readFile(resolve('docs/operations/text-ai-preview-release-checklist.md'), 'utf8'),
+    readFile(resolve('docs/superpowers/plans/2026-08-24-tiezheng-text-ai-preview-release.md'), 'utf8'),
+  ]);
+
+  for (const required of [
+    'npm run setup:text-preview',
+    '本地 TTY 隐藏输入',
+    '单个 `gh` 子进程 stdin',
+    '禁止 `--body`',
+    '首次运行不覆盖任何已有 secret 或 variable',
+    '不会部署、不会启用、不会调用模型',
+    'SETUP BLOCKED preflight',
+  ]) {
+    assert.ok(
+      runbook.includes(required) || checklist.includes(required) || plan.includes(required),
+      `operations docs are missing: ${required}`,
+    );
+  }
+
+  assert.equal(plan.includes('用户直接输入 9 个 Environment secrets'), false);
+});
+
 test('CLI accepts no arguments and prints only the fixed one-line JSON report', () => {
   const result = runVerifier();
   assert.equal(result.status, 0, result.stderr);
