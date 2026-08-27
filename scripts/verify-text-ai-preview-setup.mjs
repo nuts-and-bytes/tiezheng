@@ -144,6 +144,23 @@ function requireIdentifierParameter(parameter, name, initializerName = null) {
   return parameter.name;
 }
 
+function requireSoleConstDeclaration(statement, name) {
+  if (
+    !ts.isVariableStatement(statement)
+    || !hasNoModifiers(statement)
+    || statement.declarationList.declarations.length !== 1
+    || (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+  ) fail();
+  const declaration = statement.declarationList.declarations[0];
+  if (
+    !isIdentifier(declaration.name, name)
+    || declaration.type !== undefined
+    || declaration.exclamationToken !== undefined
+    || declaration.initializer === undefined
+  ) fail();
+  return declaration;
+}
+
 function findOnlyTopLevelFunction(sourceFile, name) {
   const matches = sourceFile.statements.filter((statement) => (
     ts.isFunctionDeclaration(statement) && isIdentifier(statement.name, name)
@@ -179,12 +196,6 @@ function findOnlyTopLevelConst(sourceFile, name) {
     || declaration.initializer === undefined
   ) fail();
   return declaration;
-}
-
-function unwrapParentheses(node) {
-  let value = node;
-  while (ts.isParenthesizedExpression(value)) value = value.expression;
-  return value;
 }
 
 function compactNodeText(node, sourceFile) {
@@ -726,38 +737,80 @@ function verifyCloudflareResponseAst(source) {
 
   const responseValidator = findOnlyTopLevelFunction(sourceFile, 'responseIsValid');
   if (
-    responseValidator.parameters.length !== 1
+    !hasNoModifiers(responseValidator)
+    || responseValidator.asteriskToken !== undefined
+    || responseValidator.typeParameters !== undefined
+    || responseValidator.type !== undefined
+    || responseValidator.parameters.length !== 1
     || responseValidator.body === undefined
     || responseValidator.body.statements.length !== 2
   ) fail();
   const parsedParameter = requireIdentifierParameter(responseValidator.parameters[0], 'parsed');
-  const dataDeclarations = collectAstNodes(responseValidator, (node) => (
-    ts.isBindingElement(node) && isIdentifier(node.name, 'data')
-  ));
-  const returnStatements = responseValidator.body.statements.filter(ts.isReturnStatement);
-  if (dataDeclarations.length !== 1 || returnStatements.length !== 1) fail();
-  const dataDeclaration = dataDeclarations[0];
+  const [dataStatement, returnStatement] = responseValidator.body.statements;
+  if (
+    !ts.isVariableStatement(dataStatement)
+    || !hasNoModifiers(dataStatement)
+    || dataStatement.declarationList.declarations.length !== 1
+    || (dataStatement.declarationList.flags & ts.NodeFlags.Const) === 0
+  ) fail();
+  const dataVariable = dataStatement.declarationList.declarations[0];
+  if (
+    dataVariable.type !== undefined
+    || dataVariable.exclamationToken !== undefined
+    || !ts.isObjectBindingPattern(dataVariable.name)
+    || dataVariable.name.elements.length !== 1
+    || !isIdentifier(dataVariable.initializer, 'parsed')
+    || !ts.isReturnStatement(returnStatement)
+  ) fail();
+  const dataDeclaration = dataVariable.name.elements[0];
   if (
     dataDeclaration.dotDotDotToken !== undefined
     || dataDeclaration.propertyName !== undefined
     || dataDeclaration.initializer !== undefined
-    || !ts.isObjectBindingPattern(dataDeclaration.parent)
-    || dataDeclaration.parent.elements.length !== 1
-    || !ts.isVariableDeclaration(dataDeclaration.parent.parent)
-    || !isIdentifier(dataDeclaration.parent.parent.initializer, 'parsed')
+    || !isIdentifier(dataDeclaration.name, 'data')
   ) fail();
-  requireSameIdentifierBinding(checker, parsedParameter, [dataDeclaration.parent.parent.initializer]);
+  requireSameIdentifierBinding(checker, parsedParameter, [dataVariable.initializer]);
 
-  const returnExpression = returnStatements[0].expression;
-  if (returnExpression === undefined) fail();
-  const enabledPredicates = collectAstNodes(returnExpression, (node) => (
-    ts.isBinaryExpression(node)
-    && node.operatorToken.kind === ts.SyntaxKind.BarBarToken
-  ));
-  if (enabledPredicates.length !== 1) fail();
-  const enabledPredicate = enabledPredicates[0];
-  const missingEnabled = unwrapParentheses(enabledPredicate.left);
-  const strictTrue = unwrapParentheses(enabledPredicate.right);
+  const returnExpression = returnStatement.expression;
+  if (
+    returnExpression === undefined
+    || !ts.isBinaryExpression(returnExpression)
+    || returnExpression.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken
+  ) fail();
+  const conjuncts = [];
+  const collectConjuncts = (node) => {
+    if (
+      ts.isBinaryExpression(node)
+      && node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+    ) {
+      collectConjuncts(node.left);
+      collectConjuncts(node.right);
+      return;
+    }
+    conjuncts.push(node);
+  };
+  collectConjuncts(returnExpression);
+  const expectedConjuncts = [
+    '!parsed.malformed',
+    "validId(mapGet(data, 'id'))",
+    "mapGet(data, 'name') === SETUP_POLICY.serviceTokenName",
+    "mapGet(data, 'duration') === SETUP_POLICY.serviceTokenDuration",
+    "(!mapHas(data, 'enabled') || mapGet(data, 'enabled') === true)",
+    "validClientId(mapGet(data, 'client_id'))",
+    "validSecret(mapGet(data, 'client_secret'))",
+  ];
+  if (conjuncts.length !== expectedConjuncts.length) fail();
+  for (let index = 0; index < expectedConjuncts.length; index += 1) {
+    if (compactNodeText(conjuncts[index], sourceFile) !== expectedConjuncts[index]) fail();
+  }
+  if (!ts.isParenthesizedExpression(conjuncts[4])) fail();
+  const enabledPredicate = conjuncts[4].expression;
+  if (
+    !ts.isBinaryExpression(enabledPredicate)
+    || enabledPredicate.operatorToken.kind !== ts.SyntaxKind.BarBarToken
+  ) fail();
+  const missingEnabled = enabledPredicate.left;
+  const strictTrue = enabledPredicate.right;
   if (
     !ts.isPrefixUnaryExpression(missingEnabled)
     || missingEnabled.operator !== ts.SyntaxKind.ExclamationToken
@@ -779,12 +832,60 @@ function verifyCloudflareResponseAst(source) {
   ) fail();
   const mapHas = findOnlyTopLevelFunction(sourceFile, 'mapHas');
   const mapGet = findOnlyTopLevelFunction(sourceFile, 'mapGet');
-  requireSameIdentifierBinding(checker, mapHas.name, [missingEnabled.operand.expression]);
-  requireSameIdentifierBinding(checker, mapGet.name, [strictTrue.left.expression]);
-  requireSameIdentifierBinding(checker, dataDeclaration.name, [
-    missingEnabled.operand.arguments[0],
-    strictTrue.left.arguments[0],
-  ]);
+  const mapSet = findOnlyTopLevelFunction(sourceFile, 'mapSet');
+  const validId = findOnlyTopLevelFunction(sourceFile, 'validId');
+  const validClientId = findOnlyTopLevelFunction(sourceFile, 'validClientId');
+  const validSecret = findOnlyTopLevelFunction(sourceFile, 'validSecret');
+  const policyImports = collectAstNodes(sourceFile, (node) => (
+    ts.isImportSpecifier(node) && isIdentifier(node.name, 'SETUP_POLICY')
+  ));
+  if (
+    policyImports.length !== 1
+    || policyImports[0].propertyName !== undefined
+    || policyImports[0].isTypeOnly
+  ) fail();
+  const referencesNamed = (name) => collectAstNodes(returnExpression, (node) => (
+    isIdentifier(node, name)
+  ));
+  const parsedReferences = referencesNamed('parsed');
+  const dataReferences = referencesNamed('data');
+  const mapHasReferences = referencesNamed('mapHas');
+  const mapGetReferences = referencesNamed('mapGet');
+  const validIdReferences = referencesNamed('validId');
+  const validClientIdReferences = referencesNamed('validClientId');
+  const validSecretReferences = referencesNamed('validSecret');
+  const setupPolicyReferences = referencesNamed('SETUP_POLICY');
+  const validatorParsedIdentifiers = collectAstNodes(responseValidator, (node) => (
+    isIdentifier(node, 'parsed')
+  ));
+  const validatorDataIdentifiers = collectAstNodes(responseValidator, (node) => (
+    isIdentifier(node, 'data')
+  ));
+  if (
+    parsedReferences.length !== 1
+    || dataReferences.length !== 7
+    || mapHasReferences.length !== 1
+    || mapGetReferences.length !== 6
+    || validIdReferences.length !== 1
+    || validClientIdReferences.length !== 1
+    || validSecretReferences.length !== 1
+    || setupPolicyReferences.length !== 2
+    || validatorParsedIdentifiers.length !== 3
+    || validatorParsedIdentifiers[0] !== parsedParameter
+    || validatorParsedIdentifiers[1] !== dataVariable.initializer
+    || validatorParsedIdentifiers[2] !== parsedReferences[0]
+    || validatorDataIdentifiers.length !== 8
+    || validatorDataIdentifiers[0] !== dataDeclaration.name
+    || validatorDataIdentifiers.slice(1).some((node, index) => node !== dataReferences[index])
+  ) fail();
+  requireSameIdentifierBinding(checker, parsedParameter, parsedReferences);
+  requireSameIdentifierBinding(checker, dataDeclaration.name, dataReferences);
+  requireSameIdentifierBinding(checker, mapHas.name, mapHasReferences);
+  requireSameIdentifierBinding(checker, mapGet.name, mapGetReferences);
+  requireSameIdentifierBinding(checker, validId.name, validIdReferences);
+  requireSameIdentifierBinding(checker, validClientId.name, validClientIdReferences);
+  requireSameIdentifierBinding(checker, validSecret.name, validSecretReferences);
+  requireSameIdentifierBinding(checker, policyImports[0].name, setupPolicyReferences);
 
   const creator = findOnlyTopLevelFunction(sourceFile, 'createSetupServiceToken');
   if (creator.parameters.length !== 1 || creator.body === undefined) fail();
@@ -798,44 +899,19 @@ function verifyCloudflareResponseAst(source) {
   const validatorCalls = collectAstNodes(creator, (node) => (
     ts.isCallExpression(node) && isIdentifier(node.expression, 'responseIsValid')
   ));
+  const bodyDeclarations = collectAstNodes(creator, (node) => (
+    ts.isVariableDeclaration(node) && isIdentifier(node.name, 'body')
+  ));
   if (
     parsedDeclarations.length !== 1
     || responseDeclarations.length !== 1
     || validatorCalls.length !== 1
+    || bodyDeclarations.length !== 1
   ) fail();
   const parsedDeclaration = parsedDeclarations[0];
   const responseDeclaration = responseDeclarations[0];
   const validatorCall = validatorCalls[0];
-  if (
-    !ts.isCallExpression(parsedDeclaration.initializer)
-    || !isIdentifier(parsedDeclaration.initializer.expression, 'readResponseRecord')
-    || parsedDeclaration.initializer.arguments.length !== 1
-    || !isIdentifier(parsedDeclaration.initializer.arguments[0], 'response')
-    || validatorCall.arguments.length !== 1
-    || !isIdentifier(validatorCall.arguments[0], 'parsed')
-    || !ts.isIfStatement(validatorCall.parent)
-    || validatorCall.parent.expression !== validatorCall
-    || !ts.isVariableDeclarationList(parsedDeclaration.parent)
-    || !ts.isVariableStatement(parsedDeclaration.parent.parent)
-    || parsedDeclaration.parent.parent.parent !== creator.body
-    || validatorCall.parent.parent !== creator.body
-    || creator.body.statements.indexOf(parsedDeclaration.parent.parent)
-      >= creator.body.statements.indexOf(validatorCall.parent)
-  ) fail();
-  const responseReaderDeclaration = findOnlyTopLevelFunction(sourceFile, 'readResponseRecord');
-  requireExactIdentifierReferences(sourceFile, 'responseIsValid', [
-    responseValidator.name,
-    validatorCall.expression,
-  ]);
-  requireSameIdentifierBinding(checker, responseValidator.name, [validatorCall.expression]);
-  requireSameIdentifierBinding(checker, responseReaderDeclaration.name, [
-    parsedDeclaration.initializer.expression,
-  ]);
-  requireSameIdentifierBinding(checker, responseDeclaration.name, [
-    parsedDeclaration.initializer.arguments[0],
-  ]);
-  requireSameIdentifierBinding(checker, parsedDeclaration.name, [validatorCall.arguments[0]]);
-
+  const bodyDeclaration = bodyDeclarations[0];
   const creatorStatements = creator.body.statements;
   const responseStatement = responseDeclaration.parent.parent;
   const parsedStatement = parsedDeclaration.parent.parent;
@@ -845,15 +921,116 @@ function verifyCloudflareResponseAst(source) {
   const finalReturn = creatorStatements[6];
   if (
     creatorStatements.length !== 7
+    || creatorStatements[0] !== bodyDeclaration.parent.parent
     || creatorStatements[1] !== responseStatement
     || creatorStatements[3] !== parsedStatement
     || creatorStatements[4] !== successIf
+    || !ts.isVariableStatement(responseStatement)
+    || !hasNoModifiers(responseStatement)
+    || responseStatement.declarationList.declarations.length !== 1
+    || (responseStatement.declarationList.flags & ts.NodeFlags.Let) === 0
+    || responseDeclaration.type !== undefined
+    || responseDeclaration.exclamationToken !== undefined
+    || responseDeclaration.initializer !== undefined
+    || !ts.isVariableStatement(parsedStatement)
+    || !hasNoModifiers(parsedStatement)
+    || parsedStatement.declarationList.declarations.length !== 1
+    || parsedStatement.declarationList.declarations[0] !== parsedDeclaration
+    || (parsedStatement.declarationList.flags & ts.NodeFlags.Const) === 0
+    || parsedDeclaration.type !== undefined
+    || parsedDeclaration.exclamationToken !== undefined
+    || !ts.isCallExpression(parsedDeclaration.initializer)
+    || !isIdentifier(parsedDeclaration.initializer.expression, 'readResponseRecord')
+    || parsedDeclaration.initializer.questionDotToken !== undefined
+    || parsedDeclaration.initializer.typeArguments !== undefined
+    || parsedDeclaration.initializer.arguments.length !== 1
+    || !isIdentifier(parsedDeclaration.initializer.arguments[0], 'response')
+    || validatorCall.arguments.length !== 1
+    || !isIdentifier(validatorCall.arguments[0], 'parsed')
+    || !ts.isIfStatement(validatorCall.parent)
+    || validatorCall.parent.expression !== validatorCall
+    || validatorCall.parent.parent !== creator.body
     || !ts.isTryStatement(responseTry)
     || responseTry.finallyBlock !== undefined
     || responseTry.catchClause === undefined
     || responseTry.catchClause.variableDeclaration !== undefined
     || responseTry.catchClause.block.statements.length !== 1
-    || !ts.isBlock(successIf.thenStatement)
+    || responseTry.tryBlock.statements.length !== 2
+  ) fail();
+  const [postStatement, responseAssignmentStatement] = responseTry.tryBlock.statements;
+  if (
+    !ts.isVariableStatement(postStatement)
+    || !hasNoModifiers(postStatement)
+    || postStatement.declarationList.declarations.length !== 1
+    || (postStatement.declarationList.flags & ts.NodeFlags.Const) === 0
+  ) fail();
+  const postDeclaration = postStatement.declarationList.declarations[0];
+  if (
+    !isIdentifier(postDeclaration.name, 'post')
+    || postDeclaration.type !== undefined
+    || postDeclaration.exclamationToken !== undefined
+    || !ts.isCallExpression(postDeclaration.initializer)
+    || postDeclaration.initializer.questionDotToken !== undefined
+    || postDeclaration.initializer.typeArguments !== undefined
+    || !isIdentifier(postDeclaration.initializer.expression, 'ownMethod')
+    || postDeclaration.initializer.arguments.length !== 2
+    || !isIdentifier(postDeclaration.initializer.arguments[0], 'client')
+    || !ts.isStringLiteral(postDeclaration.initializer.arguments[1])
+    || postDeclaration.initializer.arguments[1].text !== 'post'
+    || !ts.isExpressionStatement(responseAssignmentStatement)
+    || !ts.isBinaryExpression(responseAssignmentStatement.expression)
+    || responseAssignmentStatement.expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+    || !isIdentifier(responseAssignmentStatement.expression.left, 'response')
+    || !ts.isAwaitExpression(responseAssignmentStatement.expression.right)
+  ) fail();
+  const responseAssignment = responseAssignmentStatement.expression;
+  const postCall = responseAssignment.right.expression;
+  if (
+    !ts.isCallExpression(postCall)
+    || postCall.questionDotToken !== undefined
+    || postCall.typeArguments !== undefined
+    || !isIdentifier(postCall.expression, 'call')
+    || postCall.arguments.length !== 4
+    || !isIdentifier(postCall.arguments[0], 'client')
+    || !isIdentifier(postCall.arguments[1], 'post')
+    || !ts.isStringLiteral(postCall.arguments[2])
+    || postCall.arguments[2].text !== '/access/service_tokens'
+    || !isIdentifier(postCall.arguments[3], 'body')
+  ) fail();
+  const responseReaderDeclaration = findOnlyTopLevelFunction(sourceFile, 'readResponseRecord');
+  const ownMethodDeclaration = findOnlyTopLevelFunction(sourceFile, 'ownMethod');
+  const callDeclaration = findOnlyTopLevelFunction(sourceFile, 'call');
+  requireExactIdentifierReferences(sourceFile, 'responseIsValid', [
+    responseValidator.name,
+    validatorCall.expression,
+  ]);
+  requireSameIdentifierBinding(checker, responseValidator.name, [validatorCall.expression]);
+  requireSameIdentifierBinding(checker, responseReaderDeclaration.name, [
+    parsedDeclaration.initializer.expression,
+  ]);
+  requireSameIdentifierBinding(checker, responseDeclaration.name, [
+    responseAssignment.left,
+    parsedDeclaration.initializer.arguments[0],
+  ]);
+  requireSameIdentifierBinding(checker, parsedDeclaration.name, [validatorCall.arguments[0]]);
+  requireSameIdentifierBinding(checker, ownMethodDeclaration.name, [
+    postDeclaration.initializer.expression,
+  ]);
+  requireSameIdentifierBinding(checker, callDeclaration.name, [postCall.expression]);
+  requireSameIdentifierBinding(checker, clientParameter, [
+    postDeclaration.initializer.arguments[0],
+    postCall.arguments[0],
+  ]);
+  requireSameIdentifierBinding(checker, postDeclaration.name, [postCall.arguments[1]]);
+  requireSameIdentifierBinding(checker, bodyDeclaration.name, [postCall.arguments[3]]);
+  requireExactIdentifierReferences(creator, 'response', [
+    responseDeclaration.name,
+    responseAssignment.left,
+    parsedDeclaration.initializer.arguments[0],
+  ]);
+
+  if (
+    !ts.isBlock(successIf.thenStatement)
     || successIf.thenStatement.statements.length !== 1
     || successIf.elseStatement !== undefined
     || !ts.isIfStatement(deleteIf)
@@ -922,6 +1099,7 @@ function verifyCloudflareResponseAst(source) {
   const catchInventoryCall = catchReturn.expression;
   const deleteCompensationCall = deleteReturn.expression;
   const finalInventoryCall = finalReturn.expression;
+  const deleteCondition = deleteIf.expression;
   if (
     !ts.isCallExpression(catchInventoryCall)
     || !isIdentifier(catchInventoryCall.expression, 'inventoryCompensation')
@@ -934,6 +1112,10 @@ function verifyCloudflareResponseAst(source) {
     || !ts.isPropertyAccessExpression(deleteCompensationCall.arguments[1])
     || !isIdentifier(deleteCompensationCall.arguments[1].expression, 'parsed')
     || !isIdentifier(deleteCompensationCall.arguments[1].name, 'id')
+    || !ts.isBinaryExpression(deleteCondition)
+    || !ts.isPropertyAccessExpression(deleteCondition.left)
+    || !isIdentifier(deleteCondition.left.expression, 'parsed')
+    || !isIdentifier(deleteCondition.left.name, 'id')
     || !ts.isCallExpression(finalInventoryCall)
     || !isIdentifier(finalInventoryCall.expression, 'inventoryCompensation')
     || finalInventoryCall.arguments.length !== 1
@@ -954,12 +1136,95 @@ function verifyCloudflareResponseAst(source) {
     finalInventoryCall.arguments[0],
   ]);
   requireSameIdentifierBinding(checker, parsedDeclaration.name, [
+    deleteCondition.left.expression,
+    deleteCompensationCall.arguments[1].expression,
+  ]);
+  requireExactIdentifierReferences(creator, 'parsed', [
+    parsedDeclaration.name,
+    validatorCall.arguments[0],
+    ...credentialParsedReferences,
+    deleteCondition.left.expression,
     deleteCompensationCall.arguments[1].expression,
   ]);
 
   const responseReader = responseReaderDeclaration;
-  if (responseReader.parameters.length !== 1 || responseReader.body === undefined) fail();
+  if (
+    !hasNoModifiers(responseReader)
+    || responseReader.asteriskToken !== undefined
+    || responseReader.typeParameters !== undefined
+    || responseReader.type !== undefined
+    || responseReader.parameters.length !== 1
+    || responseReader.body === undefined
+    || responseReader.body.statements.length !== 3
+  ) fail();
   const valueParameter = requireIdentifierParameter(responseReader.parameters[0], 'value');
+  const [stateStatement, readerTry, readerReturn] = responseReader.body.statements;
+  if (
+    compactNodeText(stateStatement, sourceFile)
+      !== 'const state = { malformed: false, id: undefined, data: new MAP_CONSTRUCTOR() };'
+    || !ts.isTryStatement(readerTry)
+    || readerTry.tryBlock.statements.length !== 14
+    || readerTry.finallyBlock !== undefined
+    || readerTry.catchClause === undefined
+    || readerTry.catchClause.variableDeclaration !== undefined
+    || readerTry.catchClause.block.statements.length !== 1
+    || compactNodeText(readerTry.catchClause.block.statements[0], sourceFile)
+      !== 'state.malformed = true;'
+    || !ts.isReturnStatement(readerReturn)
+    || !isIdentifier(readerReturn.expression, 'state')
+  ) fail();
+  const readerVariableDeclarations = collectAstNodes(responseReader, (node) => (
+    ts.isVariableDeclaration(node)
+  ));
+  const expectedReaderDeclarations = [
+    ['state', 'state = { malformed: false, id: undefined, data: new MAP_CONSTRUCTOR() }', ts.NodeFlags.Const],
+    ['idDescriptor', 'idDescriptor', ts.NodeFlags.Let],
+    ['enabledDescriptor', 'enabledDescriptor', ts.NodeFlags.Let],
+    ['prototype', 'prototype = Object.getPrototypeOf(value)', ts.NodeFlags.Const],
+    ['ownKeys', 'ownKeys = REFLECT_OWN_KEYS(value)', ts.NodeFlags.Const],
+    ['sawIdKey', 'sawIdKey = false', ts.NodeFlags.Let],
+    ['sawEnabledKey', 'sawEnabledKey = false', ts.NodeFlags.Let],
+    ['key', 'key', ts.NodeFlags.Const],
+    ['descriptor', 'descriptor', ts.NodeFlags.Let],
+  ];
+  if (readerVariableDeclarations.length !== expectedReaderDeclarations.length) fail();
+  for (let index = 0; index < expectedReaderDeclarations.length; index += 1) {
+    const declaration = readerVariableDeclarations[index];
+    const [name, text, flag] = expectedReaderDeclarations[index];
+    if (
+      !isIdentifier(declaration.name, name)
+      || declaration.type !== undefined
+      || declaration.exclamationToken !== undefined
+      || !ts.isVariableDeclarationList(declaration.parent)
+      || declaration.parent.declarations.length !== 1
+      || (declaration.parent.flags & flag) === 0
+      || compactNodeText(declaration, sourceFile) !== text
+    ) fail();
+  }
+  const malformedAssignments = collectAstNodes(responseReader, (node) => (
+    ts.isBinaryExpression(node)
+    && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    && ts.isPropertyAccessExpression(node.left)
+    && isIdentifier(node.left.expression, 'state')
+    && isIdentifier(node.left.name, 'malformed')
+  ));
+  if (
+    malformedAssignments.length !== 15
+    || malformedAssignments.some((assignment) => assignment.right.kind !== ts.SyntaxKind.TrueKeyword)
+  ) fail();
+  const readerMapSetCalls = collectAstNodes(responseReader, (node) => (
+    ts.isCallExpression(node) && isIdentifier(node.expression, 'mapSet')
+  ));
+  const expectedReaderMapSets = [
+    "mapSet(state.data, 'id', idDescriptor.value)",
+    "mapSet(state.data, 'enabled', enabledDescriptor.value)",
+    'mapSet(state.data, key, descriptor.value)',
+  ];
+  if (readerMapSetCalls.length !== expectedReaderMapSets.length) fail();
+  for (let index = 0; index < expectedReaderMapSets.length; index += 1) {
+    if (compactNodeText(readerMapSetCalls[index], sourceFile) !== expectedReaderMapSets[index]) fail();
+  }
+  requireSameIdentifierBinding(checker, mapSet.name, readerMapSetCalls.map((call) => call.expression));
   const proxyGuards = collectAstNodes(responseReader, (node) => (
     ts.isIfStatement(node)
     && ts.isCallExpression(node.expression)
@@ -970,10 +1235,8 @@ function verifyCloudflareResponseAst(source) {
   if (proxyGuards.length !== 1) fail();
   const proxyGuard = proxyGuards[0];
   const proxyCall = proxyGuard.expression;
-  const readerTry = responseReader.body.statements[1];
   if (
-    !ts.isTryStatement(readerTry)
-    || readerTry.tryBlock.statements[1] !== proxyGuard
+    readerTry.tryBlock.statements[1] !== proxyGuard
     || proxyGuard.elseStatement !== undefined
     || compactNodeText(proxyGuard.thenStatement, sourceFile) !== 'state.malformed = true;'
     || proxyCall.questionDotToken !== undefined
@@ -1037,7 +1300,10 @@ function verifyCloudflareResponseAst(source) {
     ts.isIfStatement(node)
     && compactNodeText(node, sourceFile) === 'if (!sawIdKey || sawEnabledKey !== (enabledDescriptor !== undefined)) state.malformed = true;'
   ));
-  if (presenceGuards.length !== 1) fail();
+  if (
+    presenceGuards.length !== 1
+    || readerTry.tryBlock.statements[13] !== presenceGuards[0]
+  ) fail();
   const sawEnabledDeclarations = collectAstNodes(responseReader, (node) => (
     ts.isVariableDeclaration(node) && isIdentifier(node.name, 'sawEnabledKey')
   ));
@@ -1071,15 +1337,30 @@ function verifyGitHubActiveStatusesAst(sourceFile, checker) {
 
   const validator = findOnlyTopLevelFunction(sourceFile, 'statusIsCompleted');
   if (
-    validator.parameters.length !== 1
+    !hasNoModifiers(validator)
+    || validator.asteriskToken !== undefined
+    || validator.typeParameters !== undefined
+    || validator.type !== undefined
+    || validator.parameters.length !== 1
     || validator.body === undefined
     || validator.body.statements.length !== 3
   ) fail();
   const valueParameter = requireIdentifierParameter(validator.parameters[0], 'value');
+  const typeGuard = validator.body.statements[0];
   const loop = validator.body.statements[1];
   const finalReturn = validator.body.statements[2];
   if (
-    !ts.isForOfStatement(loop)
+    !ts.isIfStatement(typeGuard)
+    || typeGuard.elseStatement !== undefined
+    || !ts.isBinaryExpression(typeGuard.expression)
+    || typeGuard.expression.operatorToken.kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken
+    || !ts.isTypeOfExpression(typeGuard.expression.left)
+    || !isIdentifier(typeGuard.expression.left.expression, 'value')
+    || !ts.isStringLiteral(typeGuard.expression.right)
+    || typeGuard.expression.right.text !== 'string'
+    || !ts.isReturnStatement(typeGuard.thenStatement)
+    || typeGuard.thenStatement.expression?.kind !== ts.SyntaxKind.FalseKeyword
+    || !ts.isForOfStatement(loop)
     || loop.awaitModifier !== undefined
     || loop.initializer.declarations.length !== 1
     || (loop.initializer.flags & ts.NodeFlags.Const) === 0
@@ -1091,6 +1372,7 @@ function verifyGitHubActiveStatusesAst(sourceFile, checker) {
     || compactNodeText(finalReturn.expression, sourceFile) !== "value === 'completed'"
   ) fail();
   const activeStatusDeclaration = loop.initializer.declarations[0];
+  const typeGuardValueReference = typeGuard.expression.left.expression;
   const loopIdentifiers = collectAstNodes(loop.statement, (node) => ts.isIdentifier(node));
   const valueReferences = loopIdentifiers.filter((node) => node.text === 'value');
   const activeStatusReferences = loopIdentifiers.filter((node) => node.text === 'activeStatus');
@@ -1105,14 +1387,28 @@ function verifyGitHubActiveStatusesAst(sourceFile, checker) {
     loop.expression,
   ]);
   requireSameIdentifierBinding(checker, activeStatuses.name, [loop.expression]);
-  requireSameIdentifierBinding(checker, valueParameter, [...valueReferences, ...finalValueReferences]);
+  requireExactIdentifierReferences(validator, 'value', [
+    valueParameter,
+    typeGuardValueReference,
+    ...valueReferences,
+    ...finalValueReferences,
+  ]);
+  requireSameIdentifierBinding(checker, valueParameter, [
+    typeGuardValueReference,
+    ...valueReferences,
+    ...finalValueReferences,
+  ]);
   requireSameIdentifierBinding(checker, activeStatusDeclaration.name, activeStatusReferences);
 }
 
 function verifyStableRunInventoryParserAst(sourceFile, checker) {
   const validator = findOnlyTopLevelFunction(sourceFile, 'validateStableRunInventory');
   if (
-    validator.parameters.length !== 1
+    !hasNoModifiers(validator)
+    || validator.asteriskToken !== undefined
+    || validator.typeParameters !== undefined
+    || validator.type !== undefined
+    || validator.parameters.length !== 1
     || validator.body === undefined
     || validator.body.statements.length !== 5
   ) fail();
@@ -1170,13 +1466,6 @@ function verifyStableRunInventoryParserAst(sourceFile, checker) {
   return validator;
 }
 
-function containingStatement(node) {
-  let current = node;
-  while (current.parent !== undefined && !ts.isBlock(current.parent)) current = current.parent;
-  if (current.parent === undefined || !ts.isBlock(current.parent)) fail();
-  return Object.freeze({ statement: current, block: current.parent });
-}
-
 function verifyGitHubStableSnapshotAst(sourceFile, checker) {
   const inventoryValidator = verifyStableRunInventoryParserAst(sourceFile, checker);
   const clientFactory = findOnlyTopLevelFunction(sourceFile, 'createGitHubSetupClient');
@@ -1194,7 +1483,33 @@ function verifyGitHubStableSnapshotAst(sourceFile, checker) {
     preflight.body === undefined
     || preflight.parent !== clientFactory.body
     || !hasOnlyModifier(preflight, ts.SyntaxKind.AsyncKeyword)
+    || preflight.asteriskToken !== undefined
+    || preflight.typeParameters !== undefined
+    || preflight.type !== undefined
+    || preflight.parameters.length !== 1
+    || preflight.body.statements.length !== 1
   ) fail();
+  const expectedShaParameter = requireIdentifierParameter(preflight.parameters[0], 'expectedSha');
+  const preflightTry = preflight.body.statements[0];
+  if (
+    !ts.isTryStatement(preflightTry)
+    || preflightTry.finallyBlock !== undefined
+    || preflightTry.catchClause === undefined
+    || preflightTry.catchClause.variableDeclaration !== undefined
+    || preflightTry.catchClause.block.statements.length !== 1
+    || !isFailStatement(preflightTry.catchClause.block.statements[0])
+    || preflightTry.tryBlock.statements.length !== 9
+    || compactNodeText(preflightTry.tryBlock.statements[0], sourceFile)
+      !== "if (typeof expectedSha !== 'string' || !SHA_PATTERN.test(expectedSha)) fail();"
+  ) fail();
+  const tryStatements = preflightTry.tryBlock.statements;
+  const requireArgumentArray = (node, length, literals) => {
+    if (!ts.isArrayLiteralExpression(node) || node.elements.length !== length) fail();
+    for (const [index, expected] of literals) {
+      if (!ts.isStringLiteral(node.elements[index]) || node.elements[index].text !== expected) fail();
+    }
+    return node.elements;
+  };
   const boundRunCalls = collectAstNodes(sourceFile, (node) => (
     ts.isCallExpression(node)
     && isIdentifier(node.expression, 'run')
@@ -1243,6 +1558,7 @@ function verifyGitHubStableSnapshotAst(sourceFile, checker) {
 
   const awaitedInventory = inventoryCall.parent;
   const parserCall = awaitedInventory.parent;
+  const parserStatement = parserCall.parent;
   if (
     !ts.isAwaitExpression(awaitedInventory)
     || awaitedInventory.expression !== inventoryCall
@@ -1250,7 +1566,9 @@ function verifyGitHubStableSnapshotAst(sourceFile, checker) {
     || !isIdentifier(parserCall.expression, 'validateStableRunInventory')
     || parserCall.arguments.length !== 1
     || parserCall.arguments[0] !== awaitedInventory
-    || !ts.isExpressionStatement(parserCall.parent)
+    || !ts.isExpressionStatement(parserStatement)
+    || parserStatement.parent !== preflightTry.tryBlock
+    || preflightTry.tryBlock.statements[1] !== parserStatement
   ) fail();
   requireExactIdentifierReferences(sourceFile, 'validateStableRunInventory', [
     inventoryValidator.name,
@@ -1270,16 +1588,249 @@ function verifyGitHubStableSnapshotAst(sourceFile, checker) {
     && call.arguments[1].elements[1].text === 'run'
   ));
   if (dispatchCalls.length !== 1 || !isWithin(dispatchCalls[0], preflight)) fail();
-  const inventoryLocation = containingStatement(parserCall);
-  const dispatchLocation = containingStatement(dispatchCalls[0]);
+  const dispatchCall = dispatchCalls[0];
+  const dispatchAwait = dispatchCall.parent;
+  const dispatchDeclaration = dispatchAwait.parent;
+  const dispatchDeclarationList = dispatchDeclaration.parent;
+  const dispatchStatement = dispatchDeclarationList.parent;
   if (
-    inventoryLocation.block !== dispatchLocation.block
-    || !isWithin(inventoryLocation.block, preflight)
-    || inventoryLocation.block.statements.indexOf(inventoryLocation.statement) === -1
-    || inventoryLocation.block.statements.indexOf(dispatchLocation.statement) === -1
-    || inventoryLocation.block.statements.indexOf(inventoryLocation.statement)
-      >= inventoryLocation.block.statements.indexOf(dispatchLocation.statement)
+    !ts.isAwaitExpression(dispatchAwait)
+    || dispatchAwait.expression !== dispatchCall
+    || !ts.isVariableDeclaration(dispatchDeclaration)
+    || dispatchDeclaration.initializer !== dispatchAwait
+    || !isIdentifier(dispatchDeclaration.name, 'dispatchOutput')
+    || !ts.isVariableDeclarationList(dispatchDeclarationList)
+    || dispatchDeclarationList.declarations.length !== 1
+    || (dispatchDeclarationList.flags & ts.NodeFlags.Const) === 0
+    || !ts.isVariableStatement(dispatchStatement)
+    || !hasNoModifiers(dispatchStatement)
+    || dispatchStatement.parent !== preflightTry.tryBlock
+    || tryStatements[2] !== dispatchStatement
+    || dispatchCall.arguments.length !== 2
   ) fail();
+  const dispatchArguments = requireArgumentArray(dispatchCall.arguments[1], 15, [
+    [0, 'workflow'],
+    [1, 'run'],
+    [3, '--ref'],
+    [4, 'main'],
+    [5, '--repo'],
+    [7, '-f'],
+    [8, 'operation=preflight'],
+    [9, '-f'],
+    [10, 'target=user-1'],
+    [11, '-f'],
+    [13, '-f'],
+    [14, 'confirmation='],
+  ]);
+  const expectedShaTemplate = dispatchArguments[12];
+  if (
+    !isIdentifier(dispatchArguments[2], 'WORKFLOW')
+    || !isIdentifier(dispatchArguments[6], 'REPO')
+    || !ts.isTemplateExpression(expectedShaTemplate)
+    || expectedShaTemplate.head.text !== 'expected_sha='
+    || expectedShaTemplate.templateSpans.length !== 1
+    || !isIdentifier(expectedShaTemplate.templateSpans[0].expression, 'expectedSha')
+    || expectedShaTemplate.templateSpans[0].literal.text !== ''
+  ) fail();
+
+  const runIdStatement = tryStatements[3];
+  const runIdDeclaration = requireSoleConstDeclaration(runIdStatement, 'runId');
+  const extractCall = runIdDeclaration.initializer;
+  if (
+    !ts.isCallExpression(extractCall)
+    || extractCall.questionDotToken !== undefined
+    || extractCall.typeArguments !== undefined
+    || !isIdentifier(extractCall.expression, 'extractRunId')
+    || extractCall.arguments.length !== 1
+    || !isIdentifier(extractCall.arguments[0], 'dispatchOutput')
+  ) fail();
+
+  const watchStatement = tryStatements[4];
+  if (
+    !ts.isExpressionStatement(watchStatement)
+    || !ts.isAwaitExpression(watchStatement.expression)
+    || !ts.isCallExpression(watchStatement.expression.expression)
+  ) fail();
+  const watchCall = watchStatement.expression.expression;
+  if (
+    watchCall.questionDotToken !== undefined
+    || watchCall.typeArguments !== undefined
+    || !isIdentifier(watchCall.expression, 'run')
+    || watchCall.arguments.length !== 3
+    || !ts.isStringLiteral(watchCall.arguments[0])
+    || watchCall.arguments[0].text !== 'gh'
+  ) fail();
+  const watchArguments = requireArgumentArray(watchCall.arguments[1], 6, [
+    [0, 'run'],
+    [1, 'watch'],
+    [3, '--exit-status'],
+    [4, '--repo'],
+  ]);
+  const watchOptions = watchCall.arguments[2];
+  if (
+    !isIdentifier(watchArguments[2], 'runId')
+    || !isIdentifier(watchArguments[5], 'REPO')
+    || !ts.isObjectLiteralExpression(watchOptions)
+    || watchOptions.properties.length !== 1
+    || !ts.isPropertyAssignment(watchOptions.properties[0])
+    || !isIdentifier(watchOptions.properties[0].name, 'timeoutMs')
+    || !isIdentifier(watchOptions.properties[0].initializer, 'WATCH_TIMEOUT')
+  ) fail();
+
+  const metadataStatement = tryStatements[5];
+  const metadataDeclaration = requireSoleConstDeclaration(metadataStatement, 'metadata');
+  if (
+    !ts.isAwaitExpression(metadataDeclaration.initializer)
+    || !ts.isCallExpression(metadataDeclaration.initializer.expression)
+  ) fail();
+  const metadataCall = metadataDeclaration.initializer.expression;
+  if (
+    metadataCall.questionDotToken !== undefined
+    || metadataCall.typeArguments !== undefined
+    || !isIdentifier(metadataCall.expression, 'run')
+    || metadataCall.arguments.length !== 2
+    || !ts.isStringLiteral(metadataCall.arguments[0])
+    || metadataCall.arguments[0].text !== 'gh'
+  ) fail();
+  const metadataArguments = requireArgumentArray(metadataCall.arguments[1], 7, [
+    [0, 'run'],
+    [1, 'view'],
+    [3, '--repo'],
+    [5, '--json'],
+    [6, 'event,headBranch,headSha,status,conclusion,workflowName,jobs'],
+  ]);
+  if (!isIdentifier(metadataArguments[2], 'runId') || !isIdentifier(metadataArguments[4], 'REPO')) fail();
+
+  const jobIdStatement = tryStatements[6];
+  const jobIdDeclaration = requireSoleConstDeclaration(jobIdStatement, 'jobId');
+  const parseJobCall = jobIdDeclaration.initializer;
+  if (
+    !ts.isCallExpression(parseJobCall)
+    || parseJobCall.questionDotToken !== undefined
+    || parseJobCall.typeArguments !== undefined
+    || !isIdentifier(parseJobCall.expression, 'parseJobId')
+    || parseJobCall.arguments.length !== 2
+    || !isIdentifier(parseJobCall.arguments[0], 'metadata')
+    || !isIdentifier(parseJobCall.arguments[1], 'expectedSha')
+  ) fail();
+
+  const logStatement = tryStatements[7];
+  const logDeclaration = requireSoleConstDeclaration(logStatement, 'log');
+  if (
+    !ts.isAwaitExpression(logDeclaration.initializer)
+    || !ts.isCallExpression(logDeclaration.initializer.expression)
+  ) fail();
+  const logCall = logDeclaration.initializer.expression;
+  if (
+    logCall.questionDotToken !== undefined
+    || logCall.typeArguments !== undefined
+    || !isIdentifier(logCall.expression, 'run')
+    || logCall.arguments.length !== 2
+    || !ts.isStringLiteral(logCall.arguments[0])
+    || logCall.arguments[0].text !== 'gh'
+  ) fail();
+  const logArguments = requireArgumentArray(logCall.arguments[1], 8, [
+    [0, 'run'],
+    [1, 'view'],
+    [3, '--repo'],
+    [5, '--job'],
+    [7, '--log'],
+  ]);
+  if (
+    !isIdentifier(logArguments[2], 'runId')
+    || !isIdentifier(logArguments[4], 'REPO')
+    || !isIdentifier(logArguments[6], 'jobId')
+  ) fail();
+
+  const logValidationStatement = tryStatements[8];
+  if (
+    !ts.isExpressionStatement(logValidationStatement)
+    || !ts.isCallExpression(logValidationStatement.expression)
+    || logValidationStatement.expression.questionDotToken !== undefined
+    || logValidationStatement.expression.typeArguments !== undefined
+    || !isIdentifier(logValidationStatement.expression.expression, 'validatePreflightLog')
+    || logValidationStatement.expression.arguments.length !== 1
+    || !isIdentifier(logValidationStatement.expression.arguments[0], 'log')
+  ) fail();
+  const logValidationCall = logValidationStatement.expression;
+
+  const extractRunId = findOnlyTopLevelFunction(sourceFile, 'extractRunId');
+  const parseJobId = findOnlyTopLevelFunction(sourceFile, 'parseJobId');
+  const validatePreflightLog = findOnlyTopLevelFunction(sourceFile, 'validatePreflightLog');
+  const watchTimeout = findOnlyTopLevelConst(sourceFile, 'WATCH_TIMEOUT');
+  const shaPattern = findOnlyTopLevelConst(sourceFile, 'SHA_PATTERN');
+  const guard = tryStatements[0];
+  const guardShaReferences = collectAstNodes(guard, (node) => isIdentifier(node, 'expectedSha'));
+  const guardPatternReferences = collectAstNodes(guard, (node) => isIdentifier(node, 'SHA_PATTERN'));
+  if (guardShaReferences.length !== 2 || guardPatternReferences.length !== 1) fail();
+  requireSameIdentifierBinding(checker, shaPattern.name, guardPatternReferences);
+  requireSameIdentifierBinding(checker, extractRunId.name, [extractCall.expression]);
+  requireSameIdentifierBinding(checker, parseJobId.name, [parseJobCall.expression]);
+  requireSameIdentifierBinding(checker, validatePreflightLog.name, [logValidationCall.expression]);
+  requireSameIdentifierBinding(checker, workflow.name, [dispatchArguments[2]]);
+  requireSameIdentifierBinding(checker, repo.name, [
+    dispatchArguments[6],
+    watchArguments[5],
+    metadataArguments[4],
+    logArguments[4],
+  ]);
+  requireSameIdentifierBinding(checker, watchTimeout.name, [watchOptions.properties[0].initializer]);
+  requireSameIdentifierBinding(checker, runDeclaration.name, [
+    inventoryCall.expression,
+    dispatchCall.expression,
+    watchCall.expression,
+    metadataCall.expression,
+    logCall.expression,
+  ]);
+  requireExactIdentifierReferences(preflight, 'run', [
+    inventoryCall.expression,
+    dispatchCall.expression,
+    watchCall.expression,
+    metadataCall.expression,
+    logCall.expression,
+  ]);
+  requireSameIdentifierBinding(checker, dispatchDeclaration.name, [extractCall.arguments[0]]);
+  requireSameIdentifierBinding(checker, runIdDeclaration.name, [
+    watchArguments[2],
+    metadataArguments[2],
+    logArguments[2],
+  ]);
+  requireSameIdentifierBinding(checker, metadataDeclaration.name, [parseJobCall.arguments[0]]);
+  requireSameIdentifierBinding(checker, jobIdDeclaration.name, [logArguments[6]]);
+  requireSameIdentifierBinding(checker, logDeclaration.name, [logValidationCall.arguments[0]]);
+  requireExactIdentifierReferences(preflight, 'dispatchOutput', [
+    dispatchDeclaration.name,
+    extractCall.arguments[0],
+  ]);
+  requireExactIdentifierReferences(preflight, 'runId', [
+    runIdDeclaration.name,
+    watchArguments[2],
+    metadataArguments[2],
+    logArguments[2],
+  ]);
+  requireExactIdentifierReferences(preflight, 'metadata', [
+    metadataDeclaration.name,
+    parseJobCall.arguments[0],
+  ]);
+  requireExactIdentifierReferences(preflight, 'jobId', [
+    jobIdDeclaration.name,
+    logArguments[6],
+  ]);
+  requireExactIdentifierReferences(preflight, 'log', [
+    logDeclaration.name,
+    logValidationCall.arguments[0],
+  ]);
+  requireExactIdentifierReferences(preflight, 'expectedSha', [
+    expectedShaParameter,
+    ...guardShaReferences,
+    expectedShaTemplate.templateSpans[0].expression,
+    parseJobCall.arguments[1],
+  ]);
+  requireSameIdentifierBinding(checker, expectedShaParameter, [
+    ...guardShaReferences,
+    expectedShaTemplate.templateSpans[0].expression,
+    parseJobCall.arguments[1],
+  ]);
 }
 
 function verifyGitHubProcessAst(source) {

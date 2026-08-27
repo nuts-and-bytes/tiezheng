@@ -446,6 +446,68 @@ test('semantic gate binds the executed Cloudflare enabled predicate, not a comme
   ));
 });
 
+test('semantic gate requires the Cloudflare validator return to be the direct conjunction chain', () => {
+  for (const replacement of [
+    '  return true ? true : !parsed.malformed\n',
+    '  return (true, !parsed.malformed)\n',
+    '  return (true ? true : !parsed.malformed)\n',
+    '  return true && !parsed.malformed\n',
+  ]) {
+    expectSemanticPolicyFailure(replaceOnce(
+      'scripts/text-ai-preview-setup-cloudflare.mjs',
+      '  return !parsed.malformed\n',
+      replacement,
+    ));
+  }
+});
+
+test('semantic gate requires the Cloudflare validator data snapshot to be the sole direct declaration', () => {
+  const declaration = '  const { data } = parsed;';
+  for (const replacement of [
+    '  const { data } = parsed, forced = (parsed.malformed = false);',
+    "  const { data } = parsed, forced = mapSet(data, 'enabled', true);",
+  ]) {
+    expectSemanticPolicyFailure(replaceOnce(
+      'scripts/text-ai-preview-setup-cloudflare.mjs',
+      declaration,
+      replacement,
+    ));
+  }
+  expectSemanticPolicyFailure(insertAfter(
+    'scripts/text-ai-preview-setup-cloudflare.mjs',
+    `${declaration}\n`,
+    "  mapSet(data, 'enabled', true);\n",
+  ));
+});
+
+test('semantic gate requires the Cloudflare creator response snapshot to be the sole direct declaration', () => {
+  const declaration = '  const parsed = readResponseRecord(response);';
+  for (const replacement of [
+    '  const parsed = readResponseRecord(response), forced = (parsed.malformed = false);',
+    "  const parsed = readResponseRecord(response), forced = mapSet(parsed.data, 'enabled', true);",
+  ]) {
+    expectSemanticPolicyFailure(replaceOnce(
+      'scripts/text-ai-preview-setup-cloudflare.mjs',
+      declaration,
+      replacement,
+    ));
+  }
+
+  const responseAssignment = "    response = await call(client, post, '/access/service_tokens', body);";
+  expectSemanticPolicyFailure(insertAfter(
+    'scripts/text-ai-preview-setup-cloudflare.mjs',
+    `${responseAssignment}\n`,
+    `    response = {
+      id: 'bypass-token',
+      name: SETUP_POLICY.serviceTokenName,
+      duration: SETUP_POLICY.serviceTokenDuration,
+      enabled: true,
+      client_id: 'bypass00.access',
+      client_secret: 'bypass-secret',
+    };\n`,
+  ));
+});
+
 test('semantic gate binds the Cloudflare response validator to the actual create success branch', () => {
   const original = '  if (responseIsValid(parsed)) {';
   expectSemanticPolicyFailure(replaceOnce(
@@ -472,6 +534,56 @@ test('semantic gate binds the Cloudflare proxy rejection guard to the response r
   ));
 });
 
+test('semantic gate prevents the Cloudflare response reader from washing its final snapshot', () => {
+  const presenceGuard = '    if (!sawIdKey || sawEnabledKey !== (enabledDescriptor !== undefined)) state.malformed = true;';
+  for (const injection of [
+    '    state.malformed = false;\n',
+    "    mapSet(state.data, 'enabled', true);\n",
+  ]) {
+    expectSemanticPolicyFailure(insertAfter(
+      'scripts/text-ai-preview-setup-cloudflare.mjs',
+      `${presenceGuard}\n`,
+      injection,
+    ));
+  }
+  for (const [declaration, replacement] of [
+    [
+      '    let idDescriptor;',
+      "    let idDescriptor, forced = Object.defineProperty(state, 'malformed', { value: false });",
+    ],
+    [
+      '    let enabledDescriptor;',
+      "    let enabledDescriptor = (Object.defineProperty(state, 'malformed', { value: false }), undefined);",
+    ],
+    [
+      '    const prototype = Object.getPrototypeOf(value);',
+      "    const prototype = Object.getPrototypeOf(value), forced = Object.defineProperty(state, 'malformed', { value: false });",
+    ],
+    [
+      '    const ownKeys = REFLECT_OWN_KEYS(value);',
+      "    const ownKeys = REFLECT_OWN_KEYS(value), forced = Object.defineProperty(state, 'malformed', { value: false });",
+    ],
+    [
+      '    let sawIdKey = false;',
+      "    let sawIdKey = false, forced = Object.defineProperty(state, 'malformed', { value: false });",
+    ],
+    [
+      '    let sawEnabledKey = false;',
+      "    let sawEnabledKey = Object.defineProperty(state, 'malformed', { value: false }) && false;",
+    ],
+    [
+      '      let descriptor;',
+      "      let descriptor, forced = Object.defineProperty(state, 'malformed', { value: false });",
+    ],
+  ]) {
+    expectSemanticPolicyFailure(replaceOnce(
+      'scripts/text-ai-preview-setup-cloudflare.mjs',
+      declaration,
+      replacement,
+    ));
+  }
+});
+
 test('semantic gate binds the executed GitHub active statuses, not a comment decoy', () => {
   const original = "const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'pending', 'requested']);";
   expectSemanticPolicyFailure(replaceOnce(
@@ -481,12 +593,115 @@ test('semantic gate binds the executed GitHub active statuses, not a comment dec
   ));
 });
 
+test('semantic gate locks the completed-status validator type guard fail closed', () => {
+  const original = "  if (typeof value !== 'string') return false;";
+  for (const replacement of [
+    '  return true;',
+    '  if (true) return true;',
+    "  if (typeof value !== 'string') return true;",
+  ]) {
+    expectSemanticPolicyFailure(replaceOnce(
+      'scripts/text-ai-preview-setup-github.mjs',
+      original,
+      replacement,
+    ));
+  }
+});
+
+test('semantic gate requires synchronous safety validators and a non-generator preflight', () => {
+  for (const [file, original, replacements] of [
+    [
+      'scripts/text-ai-preview-setup-cloudflare.mjs',
+      'function responseIsValid(parsed) {',
+      ['async function responseIsValid(parsed) {', 'function* responseIsValid(parsed) {'],
+    ],
+    [
+      'scripts/text-ai-preview-setup-github.mjs',
+      'function statusIsCompleted(value) {',
+      ['async function statusIsCompleted(value) {', 'function* statusIsCompleted(value) {'],
+    ],
+    [
+      'scripts/text-ai-preview-setup-github.mjs',
+      'function validateStableRunInventory(value) {',
+      ['async function validateStableRunInventory(value) {', 'function* validateStableRunInventory(value) {'],
+    ],
+    [
+      'scripts/text-ai-preview-setup-github.mjs',
+      '  async function runDisabledPreflight(expectedSha) {',
+      ['  async function* runDisabledPreflight(expectedSha) {'],
+    ],
+  ]) {
+    for (const replacement of replacements) {
+      expectSemanticPolicyFailure(replaceOnce(file, original, replacement));
+    }
+  }
+});
+
 test('semantic gate binds the executed stable inventory parser call, not a comment decoy', () => {
   const original = "      validateStableRunInventory(await run('gh', [";
   expectSemanticPolicyFailure(replaceOnce(
     'scripts/text-ai-preview-setup-github.mjs',
     original,
     `      parseJson(await run('gh', [\n      // ${original}`,
+  ));
+});
+
+test('semantic gate requires the stable inventory parser to execute directly before dispatch', () => {
+  const original = "      validateStableRunInventory(await run('gh', [";
+  for (const replacement of [
+    "      if (false) validateStableRunInventory(await run('gh', [",
+    "      while (false) validateStableRunInventory(await run('gh', [",
+    "      inventoryGate: validateStableRunInventory(await run('gh', [",
+    "      return;\n      validateStableRunInventory(await run('gh', [",
+  ]) {
+    expectSemanticPolicyFailure(replaceOnce(
+      'scripts/text-ai-preview-setup-github.mjs',
+      original,
+      replacement,
+    ));
+  }
+});
+
+test('semantic gate requires the complete GitHub post-dispatch proof as direct statements', () => {
+  const runIdStatement = '      const runId = extractRunId(dispatchOutput);';
+  expectSemanticPolicyFailure(replaceOnce(
+    'scripts/text-ai-preview-setup-github.mjs',
+    runIdStatement,
+    `      return;\n${runIdStatement}`,
+  ));
+
+  const proofBlock = `      const runId = extractRunId(dispatchOutput);
+      await run('gh', [
+        'run', 'watch', runId, '--exit-status', '--repo', REPO,
+      ], { timeoutMs: WATCH_TIMEOUT });
+      const metadata = await run('gh', [
+        'run', 'view', runId,
+        '--repo', REPO,
+        '--json', 'event,headBranch,headSha,status,conclusion,workflowName,jobs',
+      ]);
+      const jobId = parseJobId(metadata, expectedSha);
+      const log = await run('gh', [
+        'run', 'view', runId,
+        '--repo', REPO,
+        '--job', jobId,
+        '--log',
+      ]);
+      validatePreflightLog(log);`;
+  const nestedProof = `      if (false) {\n${proofBlock.replace(/^      /gmu, '        ')}\n      }`;
+  expectSemanticPolicyFailure(replaceOnce(
+    'scripts/text-ai-preview-setup-github.mjs',
+    proofBlock,
+    nestedProof,
+  ));
+});
+
+test('semantic gate locks the complete GitHub preflight dispatch arguments', () => {
+  const confirmation = "        '-f', 'confirmation=',";
+  expectSemanticPolicyFailure(insertAfter(
+    'scripts/text-ai-preview-setup-github.mjs',
+    `${confirmation}\n`,
+    `${String.raw`        '-f', 'operation=\u0065nable-admin-preview',
+        '-f', 'confirmation=ENABLE_ONE_TEXT_PREVIEW_ACCOUNT',`}\n`,
   ));
 });
 
@@ -549,6 +764,22 @@ test('operations docs expose the bounded first-run setup contract', async () => 
   assert.ok(setupPlan.includes('单次稳定 inventory 快照'));
   assert.ok(setupPlan.includes('长度达到 100'));
   assert.ok(setupPlan.includes('每条 status 精确为 `completed`'));
+  assert.ok(setupPlan.includes("const enabledPresent = value.has('enabled');"));
+  assert.ok(setupPlan.includes("const RESERVED_IDS = new Set(['.', '..', '__proto__', 'constructor', 'prototype']);"));
+  assert.ok(setupPlan.includes("return typeof value === 'string' && ID.test(value) && !RESERVED_IDS.has(value);"));
+  assert.ok(setupPlan.includes('if (validId(id)) observedId = id;'));
+  assert.ok(setupPlan.includes('if (observedId === undefined || !CLIENT_ID.test(clientId)'));
+  assert.ok(setupPlan.includes('if (observedId !== undefined) {'));
+  assert.ok(setupPlan.includes('if (!validId(id)) fail();'));
+  assert.ok(setupPlan.includes("|| (enabledPresent && value.get('enabled') !== true)) fail();"));
+  assert.ok(setupPlan.includes('`enabled` 缺省时接受；字段存在时只接受 primitive `true`'));
+  assert.ok(setupPlan.includes('`false`/`undefined`/`null`/其他类型都失败'));
+  assert.ok(setupPlan.includes('按已安全观测的 id 执行补偿删除'));
+  assert.ok(setupPlan.includes('`constructor`、`prototype` 也不是安全 id'));
+  assert.equal(setupPlan.includes('    observedId = id;\n'), false);
+  assert.equal(setupPlan.includes("if (typeof id === 'string' && ID.test(id)) observedId = id;"), false);
+  assert.equal(setupPlan.includes('if (ID.test(observedId))'), false);
+  assert.equal(setupPlan.includes("|| value.get('enabled') !== true) fail();"), false);
   for (const source of [runbook, checklist, plan, setupPlan]) {
     assert.equal(source.includes('`queued`/`in_progress`/`waiting`/`pending`/`requested`'), false);
   }

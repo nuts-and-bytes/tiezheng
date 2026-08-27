@@ -682,9 +682,13 @@ import { SETUP_POLICY, parseTeamDomain } from './text-ai-preview-setup-values.mj
 const FAILURE = 'Text preview setup failed';
 const BLOCKED = 'Text preview setup blocked: cloudflare.service-token';
 const ID = /^(?=.{1,255}$)[A-Za-z0-9._-]+$/;
+const RESERVED_IDS = new Set(['.', '..', '__proto__', 'constructor', 'prototype']);
 const CLIENT_ID = /^(?=.{8,255}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.access$/;
 function fail() { throw new Error(FAILURE); }
 function blocked() { throw new Error(BLOCKED); }
+function validId(value) {
+  return typeof value === 'string' && ID.test(value) && !RESERVED_IDS.has(value);
+}
 function validSecret(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 4096
     && value.trim() === value && !/[\u0000-\u001f\u007f]/u.test(value);
@@ -731,17 +735,18 @@ export async function createSetupServiceToken(client) {
       duration: SETUP_POLICY.serviceTokenDuration,
       enabled: true,
     }));
+    const enabledPresent = value.has('enabled');
     const id = value.get('id');
-    observedId = id;
+    if (validId(id)) observedId = id;
     const clientId = value.get('client_id');
     const clientSecret = value.get('client_secret');
-    if (!ID.test(id) || !CLIENT_ID.test(clientId) || !validSecret(clientSecret)
+    if (observedId === undefined || !CLIENT_ID.test(clientId) || !validSecret(clientSecret)
       || value.get('name') !== SETUP_POLICY.serviceTokenName
       || value.get('duration') !== SETUP_POLICY.serviceTokenDuration
-      || value.get('enabled') !== true) fail();
+      || (enabledPresent && value.get('enabled') !== true)) fail();
     return Object.freeze({ id, clientId, clientSecret });
   } catch {
-    if (ID.test(observedId)) {
+    if (observedId !== undefined) {
       try { await client.delete(`/access/service_tokens/${observedId}`); }
       catch { blocked(); }
       fail();
@@ -764,11 +769,13 @@ export async function createSetupServiceToken(client) {
 
 export async function deleteSetupServiceToken(client, id) {
   try {
-    if (!ID.test(id)) fail();
+    if (!validId(id)) fail();
     await client.delete(`/access/service_tokens/${id}`);
   } catch { fail(); }
 }
 ```
+
+Cloudflare create 响应中，`enabled` 缺省时接受；字段存在时只接受 primitive `true`。显式 `false`/`undefined`/`null`/其他类型都失败，并按已安全观测的 id 执行补偿删除；没有安全 id 时继续走固定名 inventory 的 fail-closed 补偿。`.`、`..`、`__proto__`、`constructor`、`prototype` 也不是安全 id，不得进入 DELETE 路径。POST 请求仍显式发送 `enabled: true`。
 
 - [ ] **Step 4: 跑 Cloudflare adapter 与通用 client 测试**
 
