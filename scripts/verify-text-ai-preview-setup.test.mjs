@@ -378,6 +378,57 @@ test('semantic gate independently rejects extra spawn calls, aliases, and child 
   }
 });
 
+test('semantic gate rejects indirect arguments calls and Unicode-escaped spawn identifiers', () => {
+  const file = 'scripts/text-ai-preview-setup-github.mjs';
+  const marker = "      if (command !== 'git' && command !== 'gh') fail();\n";
+  for (const insertion of [
+    "      arguments[0]('sh', ['-c', 'true']);\n",
+    String.raw`      sp\u0061wn('sh', ['-c', 'true']);
+`,
+  ]) {
+    expectSemanticPolicyFailure(insertAfter(file, marker, insertion));
+  }
+});
+
+test('semantic gate keeps the spawned command and arguments bound to the guarded snapshots', () => {
+  const file = 'scripts/text-ai-preview-setup-github.mjs';
+  expectSemanticPolicyFailure(insertAfter(
+    file,
+    "      if (command !== 'git' && command !== 'gh') fail();\n",
+    "      command = 'sh';\n",
+  ));
+  expectSemanticPolicyFailure(insertAfter(
+    file,
+    '      return await new Promise((resolve, reject) => {\n',
+    "        const command = 'sh';\n        const safeArguments = ['-c', 'true'];\n",
+  ));
+});
+
+test('semantic gate binds Reflect.apply to the unshadowed intrinsic', () => {
+  expectSemanticPolicyFailure(insertAfter(
+    'scripts/text-ai-preview-setup-github.mjs',
+    '      return await new Promise((resolve, reject) => {\n',
+    `        const Reflect = {
+          apply(target) {
+            return target('sh', ['-c', 'true'], {
+              shell: false,
+              stdio: ['pipe', 'pipe', 'pipe'],
+              env: {},
+            });
+          },
+        };
+`,
+  ));
+});
+
+test('semantic gate rejects GitHub adapter parse diagnostics', () => {
+  expectSemanticPolicyFailure(insertAfter(
+    'scripts/text-ai-preview-setup-github.mjs',
+    "import { spawn } from 'node:child_process';\n",
+    'function malformed( {\n',
+  ));
+});
+
 test('package scripts expose one safe setup entrypoint and include every setup test in control', async () => {
   const packageJson = JSON.parse(await readFile(resolve('package.json'), 'utf8'));
   assert.equal(packageJson.scripts['setup:text-preview'], 'node scripts/text-ai-preview-setup.mjs');
