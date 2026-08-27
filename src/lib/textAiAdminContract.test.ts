@@ -8,6 +8,7 @@ import {
   type TextAiAdminRequest,
   type TextAiAdminResponse,
   type TextAiAdminStatus,
+  type TextAiAdminTarget,
   type TextAiAdminWorkerRequest,
 } from './textAiAdminContract';
 
@@ -39,7 +40,7 @@ function adminRequest(
     schemaVersion: 1,
     operationId: OPERATION_ID,
     operation,
-    targetEmail: 'alice@example.com',
+    target: 'user-1',
   };
 }
 
@@ -117,8 +118,9 @@ describe('fixed text AI admin contract', () => {
       schemaVersion: 1;
       operationId: string;
       operation: TextAiAdminOperation;
-      targetEmail: string;
+      target: TextAiAdminTarget;
     }>();
+    expectTypeOf<TextAiAdminTarget>().toEqualTypeOf<'user-1' | 'user-2'>();
     expectTypeOf<TextAiAdminWorkerRequest>().toEqualTypeOf<{
       schemaVersion: 1;
       operationId: string;
@@ -156,13 +158,13 @@ describe('parseTextAiAdminRequest', () => {
     expect(parsed).toEqual(input);
     expect(parsed).not.toBe(input);
     expect(parsed.operation).toBe(operation);
-    expect(parsed.targetEmail).toBe('alice@example.com');
+    expect(parsed.target).toBe('user-1');
   });
 
-  test.each(OPERATIONS)('requires a target email for operation %s', (operation) => {
+  test.each(OPERATIONS)('requires a target slot for operation %s', (operation) => {
     expectInvalid(
       parseTextAiAdminRequest,
-      withoutKey(adminRequest(operation) as unknown as Record<string, unknown>, 'targetEmail'),
+      withoutKey(adminRequest(operation) as unknown as Record<string, unknown>, 'target'),
     );
   });
 
@@ -176,23 +178,19 @@ describe('parseTextAiAdminRequest', () => {
   });
 
   test.each([
-    'Alice@example.com',
-    ' alice@example.com',
-    'alice@example.com ',
-    'aliceexample.com',
-    'alice@localhost',
-    'alice..admin@example.com',
-    'alice@-example.com',
-    'alice@example-.com',
-  ])('rejects non-normalized or invalid target email %j', (targetEmail) => {
-    expectInvalid(parseTextAiAdminRequest, { ...adminRequest(), targetEmail });
+    'USER-1',
+    ' user-1',
+    'user-1 ',
+    'user-3',
+    'user-01',
+    'alice@example.com',
+    '',
+  ])('rejects non-canonical target slot %j', (target) => {
+    expectInvalid(parseTextAiAdminRequest, { ...adminRequest(), target });
   });
 
-  test('accepts a normalized lowercase tagged email', () => {
-    expect(parseTextAiAdminRequest({
-      ...adminRequest(),
-      targetEmail: 'alice+catalog@example.co.uk',
-    }).targetEmail).toBe('alice+catalog@example.co.uk');
+  test.each(['user-1', 'user-2'] as const)('accepts exact target slot %s', (target) => {
+    expect(parseTextAiAdminRequest({ ...adminRequest(), target }).target).toBe(target);
   });
 
   test.each([
@@ -215,7 +213,7 @@ describe('parseTextAiAdminWorkerRequest', () => {
     expect(parsed).not.toBe(input);
     expect(parsed.operation).toBe(operation);
     expect(parsed.accountKey).toBe(ACCOUNT_KEY);
-    expect(parsed).not.toHaveProperty('targetEmail');
+    expect(parsed).not.toHaveProperty('target');
   });
 
   test.each(OPERATIONS)('requires an account key for operation %s', (operation) => {
@@ -253,7 +251,7 @@ describe('parseTextAiAdminWorkerRequest', () => {
     { ...workerRequest(), schemaVersion: 2 },
     { ...workerRequest(), schemaVersion: '1' },
     { ...workerRequest(), operation: 'enable-photo-global' },
-    { ...workerRequest(), targetEmail: 'alice@example.com' },
+    { ...workerRequest(), target: 'user-1' },
     { ...workerRequest(), extra: true },
     withoutKey(workerRequest() as unknown as Record<string, unknown>, 'operation'),
   ])('rejects wrong version, operation, browser boundary, or key set %#', (value) => {
@@ -383,7 +381,7 @@ const PARSER_CASES: readonly ParserCase[] = [
     'browser request',
     parseTextAiAdminRequest,
     () => adminRequest() as unknown as Record<string, unknown>,
-    'targetEmail',
+    'target',
   ],
   [
     'worker request',

@@ -16,17 +16,12 @@ import {
   type TextPagesRoute,
 } from './pagesRequest';
 import {
-  type TextAccessEnv,
-} from './access';
-import {
   parseTextAuthConfig,
   verifyTextSession,
   type TextAuthEnv,
 } from './auth';
 
-// TextAccessEnv remains temporarily while the legacy admin route is migrated in
-// Task 6. User-facing text AI routes use only TextAuthEnv from this task onward.
-export interface TextAiPagesEnv extends TextAuthEnv, TextAccessEnv {
+export interface TextAiPagesEnv extends TextAuthEnv {
   PHOTO_AI_ALLOWED_ORIGINS: string;
   TEXT_AI_ADMIN_SIGNING_KEY: string;
   PHOTO_AI_GATEWAY?: Fetcher;

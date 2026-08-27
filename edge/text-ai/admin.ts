@@ -2,18 +2,12 @@ import {
   parseTextAiAdminRequest,
   parseTextAiAdminResponse,
   parseTextAiAdminWorkerRequest,
+  type TextAiAdminRequest,
   type TextAiAdminResponse,
   type TextAiAdminWorkerRequest,
 } from '../../src/lib/textAiAdminContract';
-import {
-  AccessDeniedError,
-  deriveAccountKey,
-} from '../photo-ai/access';
-import {
-  parseTextAdminAccessConfig,
-  parseTextUserAccessConfig,
-  verifyTextAdminAccess,
-} from './access';
+import { deriveOpaqueKey } from '../identity/opaqueKey';
+import { verifyTextAdminSignature } from './adminSignature';
 import { parseTextPagesRequestConfig } from './pagesRequest';
 import type { TextAiPagesEnv } from './pagesProxy';
 
@@ -202,10 +196,26 @@ async function readBoundedBytes(
   }
 }
 
-async function readRequestJson(request: Request, signal: AbortSignal): Promise<unknown> {
+async function readRequestBody(
+  request: Request,
+  signal: AbortSignal,
+): Promise<{ bytes: Uint8Array; parsed: TextAiAdminRequest }> {
   const bytes = await readBoundedBytes(request.body, MAX_REQUEST_BYTES, signal);
+  const contentLength = request.headers.get('content-length');
+  if (contentLength !== null && contentLength !== String(bytes.byteLength)) {
+    throw new TypeError('Invalid text admin body');
+  }
   const serialized = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  return JSON.parse(serialized) as unknown;
+  const parsed = parseTextAiAdminRequest(JSON.parse(serialized) as unknown);
+  return { bytes, parsed };
+}
+
+function signedRequestSnapshot(request: Request, body: Uint8Array): Request {
+  return new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: new Uint8Array(body),
+  });
 }
 
 function jsonResponse(body: TextAiAdminResponse, status: number): Response {
@@ -272,14 +282,14 @@ async function authorizeWithDeadline(
       PHOTO_AI_PAGES_ORIGIN: env.PHOTO_AI_ALLOWED_ORIGINS,
     });
     validateAdminRequest(request, pagesConfig.origin);
-    const parsed = parseTextAiAdminRequest(await readRequestJson(request, signal));
-    const adminConfig = parseTextAdminAccessConfig(env);
-    await verifyTextAdminAccess(request, adminConfig);
-    const userConfig = parseTextUserAccessConfig(env);
-    if (!userConfig.allowedEmails.has(parsed.targetEmail)) throw new AccessDeniedError();
-    const accountKey = await deriveAccountKey(
-      parsed.targetEmail,
-      userConfig.accountHmacSecret,
+    const { bytes, parsed } = await readRequestBody(request, signal);
+    await verifyTextAdminSignature(
+      signedRequestSnapshot(request, bytes),
+      env.TEXT_AI_ADMIN_SIGNING_KEY,
+    );
+    const accountKey = await deriveOpaqueKey(
+      `text-ai:${parsed.target}`,
+      env.PHOTO_AI_ACCOUNT_HMAC_KEY,
     );
     const workerRequest = parseTextAiAdminWorkerRequest({
       schemaVersion: parsed.schemaVersion,

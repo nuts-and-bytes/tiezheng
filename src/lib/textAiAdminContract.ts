@@ -8,11 +8,13 @@ export type TextAiAdminOperation =
   | 'disable-account'
   | 'delete-account';
 
+export type TextAiAdminTarget = 'user-1' | 'user-2';
+
 export interface TextAiAdminRequest {
   schemaVersion: 1;
   operationId: string;
   operation: TextAiAdminOperation;
-  targetEmail: string;
+  target: TextAiAdminTarget;
 }
 
 export interface TextAiAdminWorkerRequest {
@@ -52,7 +54,6 @@ type TextAiAdminFailureCode = Extract<
 const INVALID_CONTRACT = 'Invalid text admin contract';
 const OPERATION_ID_PATTERN = /^[0-9a-f]{32}$/;
 const ACCOUNT_KEY_PATTERN = /^[0-9a-f]{64}$/;
-const EMAIL_PATTERN = /^(?=.{3,254}$)(?=.{1,64}@)[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
 function invalidContract(): never {
   throw new Error(INVALID_CONTRACT);
@@ -115,13 +116,8 @@ function isAccountKey(value: unknown): value is string {
   return typeof value === 'string' && ACCOUNT_KEY_PATTERN.test(value);
 }
 
-function isNormalizedEmail(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    value === value.trim() &&
-    value === value.toLowerCase() &&
-    EMAIL_PATTERN.test(value)
-  );
+function isTarget(value: unknown): value is TextAiAdminTarget {
+  return value === 'user-1' || value === 'user-2';
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -168,7 +164,7 @@ export function parseTextAiAdminRequest(
       'schemaVersion',
       'operationId',
       'operation',
-      'targetEmail',
+      'target',
     ])
   ) {
     return invalidContract();
@@ -177,12 +173,12 @@ export function parseTextAiAdminRequest(
   const schemaVersion = snapshot.get('schemaVersion');
   const operationId = snapshot.get('operationId');
   const operation = snapshot.get('operation');
-  const targetEmail = snapshot.get('targetEmail');
+  const target = snapshot.get('target');
   if (
     schemaVersion !== TEXT_AI_ADMIN_SCHEMA_VERSION ||
     !isOperationId(operationId) ||
     !isOperation(operation) ||
-    !isNormalizedEmail(targetEmail)
+    !isTarget(target)
   ) {
     return invalidContract();
   }
@@ -191,7 +187,7 @@ export function parseTextAiAdminRequest(
     schemaVersion: TEXT_AI_ADMIN_SCHEMA_VERSION,
     operationId,
     operation,
-    targetEmail,
+    target,
   };
 }
 

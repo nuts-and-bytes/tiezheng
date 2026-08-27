@@ -33,15 +33,8 @@ const USER_2_CODE = 'B'.repeat(32);
 
 function env(fetcher?: Fetcher['fetch']): TextAiPagesEnv {
   return {
-    PHOTO_AI_TEAM_DOMAIN: 'team-alpha',
     PHOTO_AI_ACCOUNT_HMAC_KEY: 'a'.repeat(32),
     PHOTO_AI_ALLOWED_ORIGINS: ORIGIN,
-    TEXT_AI_ACCESS_AUD: 'legacy-user-audience',
-    TEXT_AI_ALLOWED_EMAILS: 'alice@example.com,bob@example.com',
-    TEXT_AI_ALLOWED_EMAIL_COUNT: '2',
-    TEXT_AI_ADMIN_ACCESS_AUD: 'legacy-admin-audience',
-    TEXT_AI_ADMIN_EMAIL: 'alice@example.com',
-    TEXT_AI_ADMIN_SERVICE_CLIENT_ID: 'text-preview-admin.access',
     TEXT_AI_ADMIN_SIGNING_KEY: 'BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ',
     TEXT_AI_USER_1_ACCESS_CODE_PEPPER: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
     TEXT_AI_USER_1_ACCESS_CODE_DIGEST: '36beb527ff694b5a0e5d86f3e2c987a2b44ba8c7153fd6fd04107a2260bec302',

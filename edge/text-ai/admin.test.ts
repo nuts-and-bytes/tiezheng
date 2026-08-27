@@ -1,4 +1,4 @@
-import { createSign, generateKeyPairSync } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { afterEach, describe, expect, expectTypeOf, test, vi } from 'vitest';
 
 import { onRequestPost as textAdminAccountRoute } from '../../functions/api/nutrition/text-admin/account';
@@ -10,29 +10,26 @@ import {
   authorizeTextAdminPagesRequest,
   proxyTextAdminRequest,
 } from './admin';
+import { TEXT_ADMIN_SIGNATURE_HEADERS } from './adminSignature';
 import type { TextAiPagesEnv } from './pagesProxy';
 
 const ORIGIN = 'https://app.example.test';
-const ADMIN_URL = `${ORIGIN}/api/nutrition/text-admin/account`;
+const ADMIN_PATH = '/api/nutrition/text-admin/account';
+const ADMIN_URL = `${ORIGIN}${ADMIN_PATH}`;
 const INTERNAL_URL = 'https://photo-ai-gateway.internal/internal/text-admin';
-const ISSUER = 'https://team-alpha.cloudflareaccess.com';
-const USER_AUDIENCE = 'text-user-audience';
-const ADMIN_AUDIENCE = 'text-admin-audience';
-const SERVICE_CLIENT_ID = 'text-preview-admin.access';
 const HMAC_SECRET = '0123456789abcdef0123456789abcdef';
+const ADMIN_KEY = 'BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ';
+const OTHER_ADMIN_KEY = 'BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU';
 const OPERATION_ID = '1'.repeat(32);
-const ACCOUNT_KEY = 'a'.repeat(64);
-const BOB_ACCOUNT_KEY = '0f03a80a5bb45cb698165b3a48abad4fe7183d604b79e6bb198aa8b354f296e9';
+const USER_1_ACCOUNT_KEY = '61a577e73e6ec30fff580f73bec071870eff1db204a68e423781087ebdddad24';
+const USER_2_ACCOUNT_KEY = '6b73711dc5be1a149c072086367fac8a9547feea771d682ef6974853af44de3c';
 const ADMIN_DEADLINE_MS = 18_000;
-const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-const jwk = publicKey.export({ format: 'jwk' });
-jwk.kid = 'text-admin-pages-test-key';
 
 const adminBody = Object.freeze({
   schemaVersion: 1,
   operationId: OPERATION_ID,
   operation: 'status',
-  targetEmail: 'alice@example.com',
+  target: 'user-1',
 });
 
 const successBody: TextAiAdminResponse = Object.freeze({
@@ -51,16 +48,9 @@ const successBody: TextAiAdminResponse = Object.freeze({
 
 function env(gatewayFetch?: Fetcher['fetch']): TextAiPagesEnv {
   return {
-    PHOTO_AI_TEAM_DOMAIN: 'team-alpha',
     PHOTO_AI_ACCOUNT_HMAC_KEY: HMAC_SECRET,
     PHOTO_AI_ALLOWED_ORIGINS: ORIGIN,
-    TEXT_AI_ACCESS_AUD: USER_AUDIENCE,
-    TEXT_AI_ALLOWED_EMAILS: 'alice@example.com,bob@example.com',
-    TEXT_AI_ALLOWED_EMAIL_COUNT: '2',
-    TEXT_AI_ADMIN_ACCESS_AUD: ADMIN_AUDIENCE,
-    TEXT_AI_ADMIN_EMAIL: 'alice@example.com',
-    TEXT_AI_ADMIN_SERVICE_CLIENT_ID: SERVICE_CLIENT_ID,
-    TEXT_AI_ADMIN_SIGNING_KEY: 'BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ',
+    TEXT_AI_ADMIN_SIGNING_KEY: ADMIN_KEY,
     TEXT_AI_USER_1_ACCESS_CODE_PEPPER: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE',
     TEXT_AI_USER_1_ACCESS_CODE_DIGEST: '36beb527ff694b5a0e5d86f3e2c987a2b44ba8c7153fd6fd04107a2260bec302',
     TEXT_AI_USER_2_ACCESS_CODE_PEPPER: 'BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU',
@@ -73,51 +63,34 @@ function env(gatewayFetch?: Fetcher['fetch']): TextAiPagesEnv {
   };
 }
 
-function base64Url(value: Record<string, unknown>): string {
-  return base64UrlBytes(new TextEncoder().encode(JSON.stringify(value)));
+function bytes(value: string | Uint8Array): Uint8Array {
+  return typeof value === 'string' ? new TextEncoder().encode(value) : value;
 }
 
-function base64UrlBytes(value: Uint8Array): string {
-  let binary = '';
-  for (const byte of value) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-}
-
-function token(
-  claims: Record<string, unknown> = { sub: 'admin-subject', email: 'alice@example.com' },
-  audience = ADMIN_AUDIENCE,
-): string {
-  const now = Math.floor(Date.now() / 1_000);
-  const header = base64Url({ alg: 'RS256', kid: jwk.kid });
-  const payload = base64Url({
-    ...claims,
-    aud: audience,
-    exp: now + 300,
-    iat: now,
-    iss: ISSUER,
-    nbf: now - 1,
-  });
-  const input = `${header}.${payload}`;
-  const signer = createSign('RSA-SHA256');
-  signer.update(input);
-  return `${input}.${base64UrlBytes(signer.sign(privateKey))}`;
-}
-
-function serviceToken(clientId = SERVICE_CLIENT_ID): string {
-  return token({ sub: '', common_name: clientId });
-}
-
-function installJwks(): ReturnType<typeof vi.fn<typeof fetch>> {
-  const authFetch = vi.fn<typeof fetch>(async () => json({ keys: [jwk] }));
-  vi.stubGlobal('fetch', authFetch);
-  return authFetch;
-}
-
-function json(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
+function signatureHeaders(input: {
+  body: string | Uint8Array;
+  timestamp: string;
+  operationId?: string;
+  key?: string;
+}): Record<string, string> {
+  const bodyHash = createHash('sha256').update(bytes(input.body)).digest('hex');
+  const material = [
+    'v1',
+    'POST',
+    ADMIN_PATH,
+    input.timestamp,
+    input.operationId ?? OPERATION_ID,
+    bodyHash,
+  ].join('\n');
+  const signature = createHmac(
+    'sha256',
+    Buffer.from(input.key ?? ADMIN_KEY, 'base64url'),
+  ).update(material, 'utf8').digest('hex');
+  return {
+    [TEXT_ADMIN_SIGNATURE_HEADERS.version]: 'v1',
+    [TEXT_ADMIN_SIGNATURE_HEADERS.timestamp]: input.timestamp,
+    [TEXT_ADMIN_SIGNATURE_HEADERS.signature]: signature,
+  };
 }
 
 function request(options: {
@@ -126,23 +99,39 @@ function request(options: {
   origin?: string | null;
   site?: string | null;
   contentType?: string | null;
-  accessToken?: string | null;
   body?: BodyInit | null;
+  signatureBody?: string | Uint8Array;
+  timestamp?: string;
+  signingKey?: string;
+  signatureOperationId?: string;
+  signatureHeaders?: boolean;
   headers?: HeadersInit;
 } = {}): Request {
+  const serialized = JSON.stringify(adminBody);
+  const body = options.body === undefined ? serialized : options.body;
+  const signedBody = options.signatureBody
+    ?? (typeof body === 'string' || body instanceof Uint8Array ? body : serialized);
+  const timestamp = options.timestamp ?? String(Date.now());
   const headers = new Headers(options.headers);
   const origin = options.origin === undefined ? ORIGIN : options.origin;
   const site = options.site === undefined ? 'same-origin' : options.site;
   const contentType = options.contentType === undefined ? 'application/json' : options.contentType;
-  const accessToken = options.accessToken === undefined ? token() : options.accessToken;
   if (origin !== null) headers.set('origin', origin);
   if (site !== null) headers.set('sec-fetch-site', site);
   if (contentType !== null) headers.set('content-type', contentType);
-  if (accessToken !== null) headers.set('cf-access-jwt-assertion', accessToken);
+  if (options.signatureHeaders !== false) {
+    const signed = signatureHeaders({
+      body: signedBody,
+      timestamp,
+      operationId: options.signatureOperationId,
+      key: options.signingKey,
+    });
+    for (const [name, value] of Object.entries(signed)) headers.set(name, value);
+  }
   return new Request(options.url ?? ADMIN_URL, {
     method: options.method ?? 'POST',
     headers,
-    body: options.body === undefined ? JSON.stringify(adminBody) : options.body,
+    body,
   });
 }
 
@@ -160,6 +149,13 @@ function context(
     next: vi.fn(),
     passThroughOnException: vi.fn(),
   } as unknown as Parameters<typeof textAdminAccountRoute>[0];
+}
+
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 }
 
 function expectSecure(response: Response): void {
@@ -183,10 +179,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('text admin Pages authorization firewall', () => {
-  test('keeps the exported authorization result to an account key and strict Worker request', async () => {
-    installJwks();
-
+describe('text admin Pages HMAC authorization firewall', () => {
+  test('returns only the user-1 account key and strict Worker request', async () => {
     const authorized = await authorizeTextAdminPagesRequest(request(), env());
 
     expectTypeOf(authorized).toEqualTypeOf<{
@@ -194,38 +188,52 @@ describe('text admin Pages authorization firewall', () => {
       request: TextAiAdminWorkerRequest;
     }>();
     expect(authorized).toEqual({
-      accountKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+      accountKey: USER_1_ACCOUNT_KEY,
       request: {
         schemaVersion: 1,
         operationId: OPERATION_ID,
         operation: 'status',
-        accountKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+        accountKey: USER_1_ACCOUNT_KEY,
       },
     });
-    expect(authorized.request.accountKey).toBe(authorized.accountKey);
-    expect(JSON.stringify(authorized)).not.toContain('@');
+    expect(JSON.stringify(authorized)).not.toMatch(/user-[12]|@|signature/i);
   });
 
-  test('accepts the configured administrator and exact service principal but rejects the second user', async () => {
-    installJwks();
-    const administrator = await authorizeTextAdminPagesRequest(request(), env());
-    const service = await authorizeTextAdminPagesRequest(
-      request({ accessToken: serviceToken() }),
-      env(),
-    );
+  test('derives an independent account key for the exact user-2 slot', async () => {
+    const body = JSON.stringify({ ...adminBody, target: 'user-2' });
+    const authorized = await authorizeTextAdminPagesRequest(request({ body }), env());
 
-    expect(administrator.accountKey).toMatch(/^[a-f0-9]{64}$/);
-    expect(service.accountKey).toBe(administrator.accountKey);
-    await expect(authorizeTextAdminPagesRequest(
-      request({ accessToken: token({ sub: 'ordinary-subject', email: 'bob@example.com' }) }),
-      env(),
-    )).rejects.toThrow('Access denied');
+    expect(authorized.accountKey).toBe(USER_2_ACCOUNT_KEY);
+    expect(authorized.request.accountKey).toBe(USER_2_ACCOUNT_KEY);
+  });
+
+  test('does not read access-code digests, session key, rate-limit key, or Cookie', async () => {
+    const routeEnv = env();
+    for (const name of [
+      'TEXT_AI_USER_1_ACCESS_CODE_PEPPER',
+      'TEXT_AI_USER_1_ACCESS_CODE_DIGEST',
+      'TEXT_AI_USER_2_ACCESS_CODE_PEPPER',
+      'TEXT_AI_USER_2_ACCESS_CODE_DIGEST',
+      'TEXT_AI_SESSION_SIGNING_KEY',
+      'TEXT_AI_RATE_LIMIT_HMAC_KEY',
+    ] as const) {
+      Object.defineProperty(routeEnv, name, {
+        configurable: true,
+        get() {
+          throw new Error(`must not read ${name}`);
+        },
+      });
+    }
+
+    await expect(authorizeTextAdminPagesRequest(request({
+      headers: { cookie: '__Host-tiezheng-text-ai-session=private-jwt' },
+    }), routeEnv)).resolves.toMatchObject({ accountKey: USER_1_ACCOUNT_KEY });
   });
 
   test.each([
     ['wrong method', { method: 'PUT' }],
     ['wrong path', { url: `${ORIGIN}/api/nutrition/text-admin/other` }],
-    ['query', { url: `${ADMIN_URL}?target=alice` }],
+    ['query', { url: `${ADMIN_URL}?target=user-1` }],
     ['bare query delimiter', { url: `${ADMIN_URL}?` }],
     ['wrong content type', { contentType: 'application/json; charset=utf-8' }],
     ['missing content type', { contentType: null }],
@@ -233,78 +241,81 @@ describe('text admin Pages authorization firewall', () => {
     ['missing origin', { origin: null }],
     ['cross site', { site: 'cross-site' }],
     ['missing fetch site', { site: null }],
-  ] as const)('rejects %s before Access lookup or private binding', async (_case, options) => {
-    const authFetch = installJwks();
+  ] as const)('rejects %s before the private binding', async (_case, options) => {
     const gatewayFetch = vi.fn();
-
     const response = await textAdminAccountRoute(context(request(options), env(gatewayFetch)));
 
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ ok: false, code: 'auth-required' });
-    expect(authFetch).not.toHaveBeenCalled();
     expect(gatewayFetch).not.toHaveBeenCalled();
     expectSecure(response);
   });
 
-  test('ignores a lying Content-Length and rejects a streaming body larger than 2048 bytes', async () => {
-    const authFetch = installJwks();
+  test('ignores a lying Content-Length and rejects a streaming body over 2048 bytes', async () => {
     const gatewayFetch = vi.fn();
     const serialized = JSON.stringify(adminBody);
+    const oversized = `${serialized}${' '.repeat(2_049 - serialized.length)}`;
     const response = await textAdminAccountRoute(context(request({
-      body: `${serialized}${' '.repeat(2_049 - serialized.length)}`,
+      body: oversized,
       headers: { 'content-length': '1' },
     }), env(gatewayFetch)));
 
     expect(response.status).toBe(401);
-    expect(authFetch).not.toHaveBeenCalled();
     expect(gatewayFetch).not.toHaveBeenCalled();
     expectSecure(response);
   });
 
-  test('rejects fatal UTF-8, malformed JSON, extra fields, and ambiguous body encoding', async () => {
-    const authFetch = installJwks();
+  test('rejects a canonical but mismatched Content-Length before signature or binding', async () => {
+    const gatewayFetch = vi.fn();
+    const response = await textAdminAccountRoute(context(request({
+      headers: { 'content-length': '1' },
+    }), env(gatewayFetch)));
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ ok: false, code: 'auth-required' });
+    expect(gatewayFetch).not.toHaveBeenCalled();
+    expectSecure(response);
+  });
+
+  test('rejects fatal UTF-8, malformed JSON, extra fields, invalid slots, and encodings', async () => {
     const gatewayFetch = vi.fn();
     const invalidUtf8 = new Uint8Array([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d]);
-    const requests = [
-      request({ body: invalidUtf8 }),
-      request({ body: '{' }),
-      request({ body: JSON.stringify({ ...adminBody, email: 'private@example.com' }) }),
-      request({ headers: { 'content-encoding': 'gzip' } }),
-      request({ headers: { 'transfer-encoding': 'chunked' } }),
+    const invalidBodies = [
+      invalidUtf8,
+      '{',
+      JSON.stringify({ ...adminBody, private: 'secret' }),
+      JSON.stringify({ ...adminBody, target: 'user-3' }),
     ];
+    const sources = invalidBodies.map((body) => request({ body }));
+    sources.push(request({ headers: { 'content-encoding': 'gzip' } }));
+    sources.push(request({ headers: { 'transfer-encoding': 'chunked' } }));
 
-    for (const source of requests) {
+    for (const source of sources) {
       const response = await textAdminAccountRoute(context(source, env(gatewayFetch)));
       expect(response.status).toBe(401);
       expectSecure(response);
     }
-    expect(authFetch).not.toHaveBeenCalled();
     expect(gatewayFetch).not.toHaveBeenCalled();
   });
 
   test.each([
-    ['invalid JWT', 'private-invalid-jwt', 'alice@example.com'],
-    ['wrong audience', token(undefined, USER_AUDIENCE), 'alice@example.com'],
-    ['wrong service principal', serviceToken('other-client.access'), 'alice@example.com'],
-    ['target outside two-user list', token(), 'carol@example.com'],
-  ])('rejects %s without exposing identity or touching the gateway', async (
-    _case,
-    accessToken,
-    targetEmail,
-  ) => {
-    installJwks();
+    ['body byte', { body: JSON.stringify({ ...adminBody, target: 'user-2' }), signatureBody: JSON.stringify(adminBody) }],
+    ['operation id', { signatureOperationId: '2'.repeat(32) }],
+    ['clock future', { timestamp: String(Date.now() + 301_000) }],
+    ['clock past', { timestamp: String(Date.now() - 301_000) }],
+    ['wrong key', { signingKey: OTHER_ADMIN_KEY }],
+    ['missing headers', { signatureHeaders: false }],
+  ] as const)('maps invalid %s signatures to one non-leaking 401', async (_case, options) => {
     const gatewayFetch = vi.fn();
-    const source = request({
-      accessToken,
-      body: JSON.stringify({ ...adminBody, targetEmail }),
-    });
-
+    const source = request(options);
+    const signature = source.headers.get(TEXT_ADMIN_SIGNATURE_HEADERS.signature) ?? 'missing';
     const response = await textAdminAccountRoute(context(source, env(gatewayFetch)));
     const serialized = await response.text();
 
     expect(response.status).toBe(401);
     expect(JSON.parse(serialized)).toEqual({ ok: false, code: 'auth-required' });
-    expect(serialized).not.toMatch(/@|private-invalid-jwt|other-client|carol/);
+    expect(serialized).not.toMatch(/user-[12]|@|private|account/i);
+    expect(serialized).not.toContain(signature);
     expect(gatewayFetch).not.toHaveBeenCalled();
     expectSecure(response);
   });
@@ -315,7 +326,7 @@ describe('text admin Pages private proxy', () => {
     schemaVersion: 1,
     operationId: OPERATION_ID,
     operation: 'status',
-    accountKey: ACCOUNT_KEY,
+    accountKey: USER_1_ACCOUNT_KEY,
   };
 
   test.each([undefined, true, {}, { fetch: 'not-a-function' }])(
@@ -324,7 +335,7 @@ describe('text admin Pages private proxy', () => {
       const routeEnv = env();
       routeEnv.PHOTO_AI_GATEWAY = binding as Fetcher | undefined;
 
-      const response = await proxyTextAdminRequest(routeEnv, ACCOUNT_KEY, workerRequest);
+      const response = await proxyTextAdminRequest(routeEnv, USER_1_ACCOUNT_KEY, workerRequest);
 
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ ok: false, code: 'service-disabled' });
@@ -332,22 +343,26 @@ describe('text admin Pages private proxy', () => {
     },
   );
 
-  test('uses only the fixed internal URL, account header, and email-free Worker body', async () => {
+  test('uses the fixed internal URL, account header, and slot-free Worker body', async () => {
     const gatewayFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe(INTERNAL_URL);
       expect(init?.method).toBe('POST');
       expect(headerRecord(init?.headers)).toEqual({
         'content-length': String(JSON.stringify(workerRequest).length),
         'content-type': 'application/json',
-        'x-tiezheng-account-key': ACCOUNT_KEY,
+        'x-tiezheng-account-key': USER_1_ACCOUNT_KEY,
       });
       const serialized = await new Response(init?.body).text();
       expect(JSON.parse(serialized)).toEqual(workerRequest);
-      expect(serialized).not.toContain('@');
+      expect(serialized).not.toMatch(/user-[12]|@|signature/i);
       return json(successBody);
     });
 
-    const response = await proxyTextAdminRequest(env(gatewayFetch), ACCOUNT_KEY, workerRequest);
+    const response = await proxyTextAdminRequest(
+      env(gatewayFetch),
+      USER_1_ACCOUNT_KEY,
+      workerRequest,
+    );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(successBody);
@@ -357,8 +372,11 @@ describe('text admin Pages private proxy', () => {
 
   test('preserves only a strict operation conflict as 409', async () => {
     const gatewayFetch = vi.fn(async () => json({ ok: false, code: 'operation-conflict' }, 409));
-
-    const response = await proxyTextAdminRequest(env(gatewayFetch), ACCOUNT_KEY, workerRequest);
+    const response = await proxyTextAdminRequest(
+      env(gatewayFetch),
+      USER_1_ACCOUNT_KEY,
+      workerRequest,
+    );
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ ok: false, code: 'operation-conflict' });
@@ -367,30 +385,31 @@ describe('text admin Pages private proxy', () => {
 
   test.each([
     ['throw', () => Promise.reject(new Error('private stack'))],
-    ['HTML', () => Promise.resolve(new Response('<p>private email@example.com</p>', { status: 500 }))],
-    ['invalid schema', () => Promise.resolve(json({ ok: true, private: 'email@example.com' }))],
+    ['HTML', () => Promise.resolve(new Response('<p>private user-1</p>', { status: 500 }))],
+    ['invalid schema', () => Promise.resolve(json({ ok: true, private: 'user-1' }))],
     ['mismatched operation', () => Promise.resolve(json({ ...successBody, operationId: '2'.repeat(32) }))],
     ['status mismatch', () => Promise.resolve(json(successBody, 201))],
     ['invalid failure status', () => Promise.resolve(json({ ok: false, code: 'operation-conflict' }, 200))],
     ['oversized response', () => Promise.resolve(json({ private: 'x'.repeat(70_000) }))],
   ])('maps downstream %s to a fixed private 503 response', async (_case, implementation) => {
     const gatewayFetch = vi.fn(implementation);
-
-    const response = await proxyTextAdminRequest(env(gatewayFetch), ACCOUNT_KEY, workerRequest);
+    const response = await proxyTextAdminRequest(
+      env(gatewayFetch),
+      USER_1_ACCOUNT_KEY,
+      workerRequest,
+    );
     const serialized = await response.text();
 
     expect(response.status).toBe(503);
     expect(JSON.parse(serialized)).toEqual({ ok: false, code: 'service-disabled' });
-    expect(serialized).not.toMatch(/@|private stack/);
+    expect(serialized).not.toMatch(/user-[12]|private stack/);
     expectSecure(response);
   });
 });
 
 describe('text admin Pages Function route', () => {
-  test('maps a valid administrator request through the firewall', async () => {
-    installJwks();
+  test('maps a valid signed request through the firewall', async () => {
     const gatewayFetch = vi.fn(async () => json(successBody));
-
     const response = await textAdminAccountRoute(context(request(), env(gatewayFetch)));
 
     expect(response.status).toBe(200);
@@ -398,59 +417,49 @@ describe('text admin Pages Function route', () => {
     expectSecure(response);
   });
 
-  test('maps missing binding and invalid downstream to service-disabled without leaking input', async () => {
-    installJwks();
-    for (const routeEnv of [env(), env(async () => json({ private: 'email@example.com' }))]) {
+  test('maps missing binding and invalid downstream to fixed service-disabled', async () => {
+    for (const routeEnv of [env(), env(async () => json({ private: 'user-1' }))]) {
       const response = await textAdminAccountRoute(context(request(), routeEnv));
       const serialized = await response.text();
       expect(response.status).toBe(503);
       expect(JSON.parse(serialized)).toEqual({ ok: false, code: 'service-disabled' });
-      expect(serialized).not.toContain('@');
+      expect(serialized).not.toMatch(/user-[12]|signature/i);
       expectSecure(response);
     }
   });
 
-  test.each([
-    ['administrator', token()],
-    ['service principal', serviceToken()],
-  ])('derives Bob account key from the target for an authenticated %s', async (
-    _principal,
-    accessToken,
-  ) => {
-    installJwks();
+  test('derives user-2 account key without forwarding the slot or signature', async () => {
     const gatewayFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe(INTERNAL_URL);
       expect(headerRecord(init?.headers)).toEqual({
         'content-length': expect.any(String),
         'content-type': 'application/json',
-        'x-tiezheng-account-key': BOB_ACCOUNT_KEY,
+        'x-tiezheng-account-key': USER_2_ACCOUNT_KEY,
       });
       const serialized = await new Response(init?.body).text();
       expect(JSON.parse(serialized)).toEqual({
         schemaVersion: 1,
         operationId: OPERATION_ID,
         operation: 'status',
-        accountKey: BOB_ACCOUNT_KEY,
+        accountKey: USER_2_ACCOUNT_KEY,
       });
-      expect(serialized).not.toMatch(/@|alice|bob|cf-access/i);
-      expect(JSON.stringify(headerRecord(init?.headers))).not.toMatch(/@|alice|bob|cf-access/i);
+      expect(serialized).not.toMatch(/user-[12]|signature/i);
       return json(successBody);
     });
-    const source = request({
-      accessToken,
-      body: JSON.stringify({ ...adminBody, targetEmail: 'bob@example.com' }),
-    });
+    const body = JSON.stringify({ ...adminBody, target: 'user-2' });
 
-    const response = await textAdminAccountRoute(context(source, env(gatewayFetch)));
+    const response = await textAdminAccountRoute(context(
+      request({ body }),
+      env(gatewayFetch),
+    ));
 
     expect(response.status).toBe(200);
     expect(gatewayFetch).toHaveBeenCalledTimes(1);
     expectSecure(response);
   });
 
-  test('times out and cancels a stalled request body before Access or binding', async () => {
+  test('times out and cancels a stalled request body before signature or binding', async () => {
     vi.useFakeTimers();
-    const authFetch = installJwks();
     const gatewayFetch = vi.fn();
     const cancel = vi.fn();
     let close!: () => void;
@@ -473,7 +482,6 @@ describe('text admin Pages Function route', () => {
       expect(await response?.json()).toEqual({ ok: false, code: 'service-disabled' });
       expect(cancel).toHaveBeenCalledTimes(1);
       expect(stream.locked).toBe(false);
-      expect(authFetch).not.toHaveBeenCalled();
       expect(gatewayFetch).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -485,7 +493,6 @@ describe('text admin Pages Function route', () => {
 
   test('aborts and returns fixed 503 when the private binding never resolves', async () => {
     vi.useFakeTimers();
-    installJwks();
     let forwardedSignal: AbortSignal | undefined;
     let resolveBinding!: (response: Response) => void;
     const gatewayFetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -517,9 +524,8 @@ describe('text admin Pages Function route', () => {
     }
   });
 
-  test('cancels a stalled downstream response stream at the same fixed deadline', async () => {
+  test('cancels a stalled downstream response stream at the fixed deadline', async () => {
     vi.useFakeTimers();
-    installJwks();
     const cancel = vi.fn();
     let close!: () => void;
     const stream = new ReadableStream<Uint8Array>({
