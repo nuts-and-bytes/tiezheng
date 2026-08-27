@@ -101,11 +101,7 @@ function runMetadata(overrides = {}) {
 
 function preflightResponses(overrides = {}) {
   const values = [
-    result('[]'),
-    result('[]'),
-    result('[]'),
-    result('[]'),
-    result('[]'),
+    result('[{"databaseId":42,"status":"completed"}]'),
     result(`${RUN_URL}\n`),
     result(''),
     result(runMetadata()),
@@ -428,51 +424,108 @@ test('dispatches exact preflight SHA, binds canonical run/job/step/log, and neve
   const runner = fakeRunner(preflightResponses());
   const github = createGitHubSetupClient(runner);
   await github.runDisabledPreflight(SHA);
-  const statuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
-  for (let index = 0; index < statuses.length; index += 1) {
-    assert.deepEqual(runner.calls[index], {
-      command: 'gh',
-      args: ['run', 'list', '--workflow', WORKFLOW, '--event', 'workflow_dispatch', '--status', statuses[index], '--limit', '100', '--json', 'databaseId', '--repo', REPO],
-    });
-  }
-  assert.deepEqual(runner.calls[5], {
+  assert.deepEqual(runner.calls[0], {
+    command: 'gh',
+    args: ['run', 'list', '--workflow', WORKFLOW, '--event', 'workflow_dispatch', '--limit', '100', '--json', 'databaseId,status', '--repo', REPO],
+  });
+  assert.deepEqual(runner.calls[1], {
     command: 'gh',
     args: ['workflow', 'run', WORKFLOW, '--ref', 'main', '--repo', REPO,
       '-f', 'operation=preflight', '-f', 'target=user-1', '-f', `expected_sha=${SHA}`,
       '-f', 'confirmation='],
   });
-  assert.deepEqual(runner.calls[6], {
+  assert.deepEqual(runner.calls[2], {
     command: 'gh',
     args: ['run', 'watch', RUN_ID, '--exit-status', '--repo', REPO],
     timeoutMs: 300_000,
   });
-  assert.deepEqual(runner.calls[7], {
+  assert.deepEqual(runner.calls[3], {
     command: 'gh',
     args: ['run', 'view', RUN_ID, '--repo', REPO, '--json', 'event,headBranch,headSha,status,conclusion,workflowName,jobs'],
   });
-  assert.deepEqual(runner.calls[8], {
+  assert.deepEqual(runner.calls[4], {
     command: 'gh',
     args: ['run', 'view', RUN_ID, '--repo', REPO, '--job', '987654321', '--log'],
   });
+  assert.equal(runner.calls.filter(({ args }) => args[0] === 'run' && args[1] === 'list').length, 1);
   assert.equal(runner.calls.some(({ args }) => (
     args[0] === 'run' && args[1] === 'list' && args.includes('--limit') && args.includes('1')
   )), false);
 });
 
-test('each active-run status must be empty before dispatch', async (t) => {
-  const statuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested'];
-  for (let index = 0; index < statuses.length; index += 1) {
-    await t.test(statuses[index], async () => {
-      const runner = fakeRunner(preflightResponses({
-        [index]: result('[{"databaseId":42}]'),
-      }));
+test('one stable inventory blocks every active or unknown status before dispatch', async (t) => {
+  const statuses = ['queued', 'in_progress', 'waiting', 'pending', 'requested', 'unknown'];
+  for (const status of statuses) {
+    await t.test(status, async () => {
+      const runner = fakeRunner(preflightResponses({ 0: result(JSON.stringify([{
+        databaseId: 42,
+        status,
+      }])) }));
       await assertFailure(() => createGitHubSetupClient(runner).runDisabledPreflight(SHA));
       assert.equal(runner.calls.some(({ args }) => args[0] === 'workflow'), false);
-      assert.deepEqual(runner.calls[index], {
+      assert.deepEqual(runner.calls, [{
         command: 'gh',
-        args: ['run', 'list', '--workflow', WORKFLOW, '--event', 'workflow_dispatch', '--status', statuses[index], '--limit', '100', '--json', 'databaseId', '--repo', REPO],
-      });
+        args: ['run', 'list', '--workflow', WORKFLOW, '--event', 'workflow_dispatch', '--limit', '100', '--json', 'databaseId,status', '--repo', REPO],
+      }]);
     });
+  }
+});
+
+test('requested to queued migration cannot slip between status-filtered queries', async () => {
+  const calls = [];
+  const fallback = preflightResponses().slice(1);
+  let fallbackIndex = 0;
+  let oldRunStatus = 'requested';
+  const runner = async (command, args, options = {}) => {
+    const call = { command, args: [...args] };
+    if (Object.hasOwn(options, 'timeoutMs')) call.timeoutMs = options.timeoutMs;
+    calls.push(call);
+    if (args[0] === 'run' && args[1] === 'list') {
+      if (args.includes('--status')) {
+        const queriedStatus = args[args.indexOf('--status') + 1];
+        const rows = queriedStatus === oldRunStatus
+          ? [{ databaseId: 42, status: oldRunStatus }]
+          : [];
+        if (queriedStatus === 'queued' && oldRunStatus === 'requested') oldRunStatus = 'queued';
+        return result(JSON.stringify(rows));
+      }
+      return result(JSON.stringify([{ databaseId: 42, status: oldRunStatus }]));
+    }
+    const response = fallback[fallbackIndex];
+    fallbackIndex += 1;
+    if (response === undefined) throw new Error('unexpected fake command');
+    return response;
+  };
+  runner.calls = calls;
+
+  await assertFailure(() => createGitHubSetupClient(runner).runDisabledPreflight(SHA));
+
+  const inventoryCalls = calls.filter(({ args }) => args[0] === 'run' && args[1] === 'list');
+  assert.equal(inventoryCalls.length, 1);
+  assert.equal(inventoryCalls[0].args.includes('--status'), false);
+  assert.equal(oldRunStatus, 'requested');
+  assert.equal(calls.some(({ args }) => args[0] === 'workflow'), false);
+});
+
+test('stable run inventory rejects truncation and malformed exact records', async () => {
+  const malformedInventories = [
+    Array.from({ length: 100 }, (_, index) => ({ databaseId: index + 1, status: 'completed' })),
+    [{ databaseId: 0, status: 'completed' }],
+    [{ databaseId: -1, status: 'completed' }],
+    [{ databaseId: 1.5, status: 'completed' }],
+    [{ databaseId: Number.MAX_SAFE_INTEGER + 1, status: 'completed' }],
+    [{ databaseId: '1', status: 'completed' }],
+    [{ status: 'completed' }],
+    [{ databaseId: 1 }],
+    [{ databaseId: 1, status: null }],
+    [{ databaseId: 1, status: 'completed', extra: true }],
+  ];
+  for (const inventory of malformedInventories) {
+    const runner = fakeRunner(preflightResponses({
+      0: result(JSON.stringify(inventory)),
+    }));
+    await assertFailure(() => createGitHubSetupClient(runner).runDisabledPreflight(SHA));
+    assert.equal(runner.calls.some(({ args }) => args[0] === 'workflow'), false);
   }
 });
 
@@ -487,7 +540,7 @@ test('dispatch URL must contain exactly one canonical current-repository run URL
   ];
   for (const stdout of outputs) {
     await t.test(JSON.stringify(stdout), async () => {
-      const runner = fakeRunner(preflightResponses({ 5: result(stdout) }));
+      const runner = fakeRunner(preflightResponses({ 1: result(stdout) }));
       await assertFailure(() => createGitHubSetupClient(runner).runDisabledPreflight(SHA));
       assert.equal(runner.calls.some(({ args }) => args[0] === 'run' && args[1] === 'watch'), false);
     });
@@ -524,7 +577,7 @@ test('preflight metadata binds exact SHA, workflow, unique successful job, and u
   ];
   for (const mutation of mutations) {
     await t.test(JSON.stringify(mutation), async () => {
-      const runner = fakeRunner(preflightResponses({ 7: result(runMetadata(mutation)) }));
+      const runner = fakeRunner(preflightResponses({ 3: result(runMetadata(mutation)) }));
       await assertFailure(() => createGitHubSetupClient(runner).runDisabledPreflight(SHA));
       assert.equal(runner.calls.some(({ args }) => args.includes('--job')), false);
     });
@@ -541,7 +594,7 @@ test('preflight log requires one exact false report from the bound dispatch step
   ];
   for (const log of logs) {
     await t.test(JSON.stringify(log), async () => {
-      const runner = fakeRunner(preflightResponses({ 8: result(log) }));
+      const runner = fakeRunner(preflightResponses({ 4: result(log) }));
       await assertFailure(() => createGitHubSetupClient(runner).runDisabledPreflight(SHA));
     });
   }
@@ -553,7 +606,7 @@ test('invalid expected SHA and failed watch stop closed with fixed error', async
   assert.equal(invalid.calls.length, 0);
 
   const failedWatch = fakeRunner(preflightResponses({
-    6: result('', { code: 1, stderr: 'watch-private-sentinel' }),
+    2: result('', { code: 1, stderr: 'watch-private-sentinel' }),
   }));
   await assertFailure(
     () => createGitHubSetupClient(failedWatch).runDisabledPreflight(SHA),
@@ -578,6 +631,11 @@ test('source locks bounded subprocess, safe env, stdin-only writes, exact SHA, a
     "'workerTextEnabled'",
     "report.workerTextEnabled !== false",
     "const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'pending', 'requested'])",
+    "validateStableRunInventory(await run('gh', [",
+    "'--json', 'databaseId,status'",
+    'parsed.length >= 100',
+    'Number.isSafeInteger(databaseId)',
+    '!statusIsCompleted(status)',
   ]) assert.ok(source.includes(required), `missing source lock: ${required}`);
   for (const forbidden of [
     /shell\s*:\s*true/u,

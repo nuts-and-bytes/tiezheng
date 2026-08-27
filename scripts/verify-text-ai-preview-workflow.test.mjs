@@ -914,7 +914,13 @@ test('runbook binds the unique job and dispatch step and drains every older acti
     'and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation")] | length == 1)',
     'and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation" and .conclusion == "success")] | length == 1)',
     'assert_no_stale_text_preview_runs() (',
-    'for status in queued in_progress waiting pending requested; do',
+    '--event workflow_dispatch --limit 100',
+    '--json databaseId,status --repo "$repo"',
+    'and length < 100',
+    'and (keys | sort) == ["databaseId","status"]',
+    'and (.databaseId | type == "number")',
+    'and .status == "completed"',
+    '>/dev/null',
     'assert_no_stale_text_preview_runs',
     '-f expected_sha="$expected_sha"',
   ]) {
@@ -925,6 +931,8 @@ test('runbook binds the unique job and dispatch step and drains every older acti
   assert.ok(runbookSource.includes('不配置 required reviewer'));
   assert.ok(runbookSource.includes('不会出现 pending deployment 审批阶段'));
   assert.ok(runbookSource.includes('dispatch 前再次核对远端 `main`'));
+  assert.equal(runbookSource.includes('for status in queued'), false);
+  assert.equal(runbookSource.includes("printf '%s=%s"), false);
   assert.equal(runbookSource.includes('required reviewer 必须'), false);
 });
 

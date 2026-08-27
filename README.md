@@ -10,14 +10,15 @@
 
 ## 技术栈
 
-Vite 6 · React 19 · TypeScript (strict) · Tailwind CSS 4 · Zustand 5 · Dexie 4 (IndexedDB) · Chart.js 4 · vite-plugin-pwa · Vitest（112 项单测）
+Vite 6 · React 19 · TypeScript (strict) · Tailwind CSS 4 · Zustand 5 · Dexie 4 (IndexedDB) · Chart.js 4 · vite-plugin-pwa · Vitest · Node.js test runner
 
 ## 开发
 
 ```bash
 npm install
 npm run dev        # 开发服务器
-npm test           # 全量单测（Vitest）
+npm test           # 全量门禁（Vitest + 文字 AI Node 控制套件）
+npm run test:watch -- --run <test-file>  # 聚焦运行单个 Vitest 文件
 npm run typecheck  # TS 检查
 npm run build      # 类型检查 + 生产构建 → dist/
 npm run preview    # 本地预览生产构建（验 PWA）

@@ -279,6 +279,110 @@ test('create rejects explicit false enabled and compensates the observed token i
   ]);
 });
 
+test('create rejects a proxy that hides its real false enabled key and deletes the observed id once', async () => {
+  const target = validCreated({ enabled: false });
+  const response = new Proxy(target, {
+    ownKeys(value) {
+      return Reflect.ownKeys(value).filter((key) => key !== 'enabled');
+    },
+  });
+  const { client, calls } = fakeClient({
+    'POST /access/service_tokens': response,
+    'DELETE /access/service_tokens/service-token-1': {},
+  });
+
+  await assertFailure(() => createSetupServiceToken(client), FAILURE, ['secret-value']);
+  assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [
+    'POST /access/service_tokens',
+    'DELETE /access/service_tokens/service-token-1',
+  ]);
+  assert.equal(calls.filter(({ method }) => method === 'DELETE').length, 1);
+});
+
+test('create rejects a proxy that hides false enabled from both descriptor and key snapshots', async () => {
+  const target = validCreated({ enabled: false });
+  const response = new Proxy(target, {
+    getOwnPropertyDescriptor(value, key) {
+      if (key === 'enabled') return undefined;
+      return Reflect.getOwnPropertyDescriptor(value, key);
+    },
+    ownKeys(value) {
+      return Reflect.ownKeys(value).filter((key) => key !== 'enabled');
+    },
+  });
+  const { client, calls } = fakeClient({
+    'POST /access/service_tokens': response,
+    'DELETE /access/service_tokens/service-token-1': {},
+  });
+
+  await assertFailure(() => createSetupServiceToken(client), FAILURE, ['secret-value']);
+  assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [
+    'POST /access/service_tokens',
+    'DELETE /access/service_tokens/service-token-1',
+  ]);
+  assert.equal(calls.filter(({ method }) => method === 'DELETE').length, 1);
+});
+
+test('create uses captured Map intrinsics after a response trap pollutes Map.prototype', { concurrency: false }, async () => {
+  const originalDescriptors = Object.getOwnPropertyDescriptors(Map.prototype);
+  let polluted = false;
+  const originalGet = originalDescriptors.get.value;
+  const originalHas = originalDescriptors.has.value;
+  const originalSet = originalDescriptors.set.value;
+  const response = new Proxy(validCreated({ enabled: false }), {
+    ownKeys(value) {
+      polluted = true;
+      Object.defineProperties(Map.prototype, {
+        get: {
+          ...originalDescriptors.get,
+          value(key) {
+            return Reflect.apply(originalGet, this, [key]);
+          },
+        },
+        has: {
+          ...originalDescriptors.has,
+          value(key) {
+            return Reflect.apply(originalHas, this, [key]);
+          },
+        },
+        set: {
+          ...originalDescriptors.set,
+          value(key, valueToStore) {
+            return Reflect.apply(originalSet, this, [key, key === 'enabled' ? true : valueToStore]);
+          },
+        },
+      });
+      return Reflect.ownKeys(value);
+    },
+  });
+  const { client, calls } = fakeClient({
+    'POST /access/service_tokens': response,
+    'DELETE /access/service_tokens/service-token-1': {},
+  });
+
+  let error;
+  try {
+    await createSetupServiceToken(client);
+  } catch (caught) {
+    error = caught;
+  } finally {
+    Object.defineProperties(Map.prototype, {
+      get: originalDescriptors.get,
+      has: originalDescriptors.has,
+      set: originalDescriptors.set,
+    });
+  }
+
+  assert.equal(polluted, true);
+  assert.equal(error?.constructor, Error);
+  assert.equal(error.message, FAILURE);
+  assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [
+    'POST /access/service_tokens',
+    'DELETE /access/service_tokens/service-token-1',
+  ]);
+  assert.equal(calls.filter(({ method }) => method === 'DELETE').length, 1);
+});
+
 test('reserved ids are rejected without direct delete or malformed-response delete', async () => {
   const reserved = ['.', '..', '__proto__', 'constructor', 'prototype'];
   let directDeleteCalls = 0;
@@ -502,7 +606,7 @@ test('organization and inventory records over the own-key budget fail before des
   assert.equal(inspectInventory.calls.some(({ method }) => method !== 'GET'), false);
 });
 
-test('oversized create response with safe id deletes once, while accessor/no-id inventories without descriptor traversal', async () => {
+test('oversized create responses snapshot only id and enabled before enforcing the key budget', async () => {
   let safeIdDescriptorReads = 0;
   const oversizedWithId = new Proxy(withExtraFields(validCreated()), {
     getOwnPropertyDescriptor(target, key) {
@@ -516,7 +620,7 @@ test('oversized create response with safe id deletes once, while accessor/no-id 
   });
   await assertFailure(() => createSetupServiceToken(safeIdClient.client), FAILURE, ['secret-value']);
   assert.equal(safeIdClient.calls.filter(({ method }) => method === 'DELETE').length, 1);
-  assert.equal(safeIdDescriptorReads, 1);
+  assert.equal(safeIdDescriptorReads, 2);
 
   let accessorDescriptorReads = 0;
   const oversizedAccessorId = withExtraFields(validCreated());
@@ -536,7 +640,7 @@ test('oversized create response with safe id deletes once, while accessor/no-id 
   });
   await assertFailure(() => createSetupServiceToken(accessorClient.client), FAILURE, ['id getter sentinel']);
   assert.equal(accessorClient.calls.filter(({ method }) => method === 'DELETE').length, 0);
-  assert.equal(accessorDescriptorReads, 1);
+  assert.equal(accessorDescriptorReads, 2);
 });
 
 test('delete validates strict primitive id before calling client and hides failures', async () => {

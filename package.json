@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run --exclude \"scripts/text-ai-preview-setup*.test.mjs\"",
+    "test": "vitest run --exclude \"scripts/text-ai-preview-setup*.test.mjs\" && npm run test:text-preview-control",
     "test:watch": "vitest --exclude \"scripts/text-ai-preview-setup*.test.mjs\"",
     "typecheck": "tsc --noEmit",
     "patch:cloudflare-vitest": "node scripts/patch-cloudflare-vitest-unicode-path.mjs",

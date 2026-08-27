@@ -1,3 +1,5 @@
+import { types as NODE_UTIL_TYPES } from 'node:util';
+
 import { verifyTextPreviewSetupToken } from './text-ai-preview-control.mjs';
 import { SETUP_POLICY, parseTeamDomain } from './text-ai-preview-setup-values.mjs';
 
@@ -8,7 +10,42 @@ const MAX_RECORD_PROPERTIES = 64;
 const ID_PATTERN = /^(?=.{1,255}$)[A-Za-z0-9._-]+$/u;
 const CLIENT_ID_PATTERN = /^(?=.{8,255}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.access$/u;
 const SECRET_PATTERN = /[\u0000-\u001f\u007f]/u;
-const RESERVED_IDS = new Set(['.', '..', '__proto__', 'constructor', 'prototype']);
+const REFLECT_APPLY = Reflect.apply;
+const REFLECT_OWN_KEYS = Reflect.ownKeys;
+const IS_PROXY = NODE_UTIL_TYPES.isProxy;
+const MAP_CONSTRUCTOR = Map;
+const MAP_GET = Map.prototype.get;
+const MAP_HAS = Map.prototype.has;
+const MAP_SET = Map.prototype.set;
+const SET_CONSTRUCTOR = Set;
+const SET_ADD = Set.prototype.add;
+const SET_HAS = Set.prototype.has;
+const SET_SIZE_GET = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
+const RESERVED_IDS = new SET_CONSTRUCTOR(['.', '..', '__proto__', 'constructor', 'prototype']);
+
+function mapGet(value, key) {
+  return REFLECT_APPLY(MAP_GET, value, [key]);
+}
+
+function mapHas(value, key) {
+  return REFLECT_APPLY(MAP_HAS, value, [key]);
+}
+
+function mapSet(value, key, item) {
+  return REFLECT_APPLY(MAP_SET, value, [key, item]);
+}
+
+function setAdd(value, item) {
+  return REFLECT_APPLY(SET_ADD, value, [item]);
+}
+
+function setHas(value, item) {
+  return REFLECT_APPLY(SET_HAS, value, [item]);
+}
+
+function setSize(value) {
+  return REFLECT_APPLY(SET_SIZE_GET, value, []);
+}
 
 function fail() {
   throw new Error(FAILURE_MESSAGE);
@@ -31,21 +68,21 @@ function ownMethod(client, name) {
 }
 
 function call(client, method, ...args) {
-  return Reflect.apply(method, client, args);
+  return REFLECT_APPLY(method, client, args);
 }
 
 function snapshotRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) fail();
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) fail();
-  const ownKeys = Reflect.ownKeys(value);
+  const ownKeys = REFLECT_OWN_KEYS(value);
   if (ownKeys.length > MAX_RECORD_PROPERTIES) fail();
-  const result = new Map();
+  const result = new MAP_CONSTRUCTOR();
   for (const key of ownKeys) {
     if (typeof key !== 'string') fail();
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) fail();
-    result.set(key, descriptor.value);
+    mapSet(result, key, descriptor.value);
   }
   return result;
 }
@@ -58,9 +95,9 @@ function snapshotDenseArray(value) {
   if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')) fail();
   const length = lengthDescriptor.value;
   if (!Number.isSafeInteger(length) || length < 0 || length >= PAGE_SIZE) fail();
-  const ownKeys = Reflect.ownKeys(value);
+  const ownKeys = REFLECT_OWN_KEYS(value);
   if (ownKeys.length !== length + 1) fail();
-  const indexKeys = new Set();
+  const indexKeys = new SET_CONSTRUCTOR();
   let hasLength = false;
   for (const key of ownKeys) {
     if (typeof key !== 'string') fail();
@@ -70,9 +107,9 @@ function snapshotDenseArray(value) {
       continue;
     }
     if (!/^(0|[1-9]\d*)$/u.test(key) || Number(key) >= length) fail();
-    indexKeys.add(key);
+    setAdd(indexKeys, key);
   }
-  if (!hasLength || indexKeys.size !== length) fail();
+  if (!hasLength || setSize(indexKeys) !== length) fail();
   const items = [];
   for (let index = 0; index < length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
@@ -83,7 +120,7 @@ function snapshotDenseArray(value) {
 }
 
 function validId(value) {
-  return typeof value === 'string' && ID_PATTERN.test(value) && !RESERVED_IDS.has(value);
+  return typeof value === 'string' && ID_PATTERN.test(value) && !setHas(RESERVED_IDS, value);
 }
 
 function validClientId(value) {
@@ -107,14 +144,14 @@ function validInventoryName(value) {
 
 function parseInventory(value) {
   const items = snapshotDenseArray(value);
-  const seenIds = new Set();
+  const seenIds = new SET_CONSTRUCTOR();
   for (const item of items) {
     const record = snapshotRecord(item);
-    const id = record.get('id');
-    const name = record.get('name');
-    if (!record.has('id') || !validId(id) || seenIds.has(id)) fail();
-    seenIds.add(id);
-    if (!record.has('name') || !validInventoryName(name)) fail();
+    const id = mapGet(record, 'id');
+    const name = mapGet(record, 'name');
+    if (!mapHas(record, 'id') || !validId(id) || setHas(seenIds, id)) fail();
+    setAdd(seenIds, id);
+    if (!mapHas(record, 'name') || !validInventoryName(name)) fail();
     if (name === SETUP_POLICY.serviceTokenName) fail();
   }
   return items;
@@ -122,36 +159,51 @@ function parseInventory(value) {
 
 function parseOrganization(value) {
   const record = snapshotRecord(value);
-  return parseTeamDomain(record.get('auth_domain'));
+  return parseTeamDomain(mapGet(record, 'auth_domain'));
 }
 
 function readResponseRecord(value) {
-  const state = { malformed: false, id: undefined, data: new Map() };
+  const state = { malformed: false, id: undefined, data: new MAP_CONSTRUCTOR() };
   try {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
       state.malformed = true;
       return state;
     }
+    if (REFLECT_APPLY(IS_PROXY, undefined, [value])) state.malformed = true;
     let idDescriptor;
     try {
       idDescriptor = Object.getOwnPropertyDescriptor(value, 'id');
       if (idDescriptor === undefined || !Object.hasOwn(idDescriptor, 'value')) {
         state.malformed = true;
       } else {
-        state.data.set('id', idDescriptor.value);
+        mapSet(state.data, 'id', idDescriptor.value);
         if (validId(idDescriptor.value)) state.id = idDescriptor.value;
+      }
+    } catch {
+      state.malformed = true;
+    }
+    let enabledDescriptor;
+    try {
+      enabledDescriptor = Object.getOwnPropertyDescriptor(value, 'enabled');
+      if (enabledDescriptor !== undefined) {
+        if (!Object.hasOwn(enabledDescriptor, 'value')) {
+          state.malformed = true;
+        } else {
+          mapSet(state.data, 'enabled', enabledDescriptor.value);
+        }
       }
     } catch {
       state.malformed = true;
     }
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) state.malformed = true;
-    const ownKeys = Reflect.ownKeys(value);
+    const ownKeys = REFLECT_OWN_KEYS(value);
     if (ownKeys.length > MAX_RECORD_PROPERTIES) {
       state.malformed = true;
       return state;
     }
     let sawIdKey = false;
+    let sawEnabledKey = false;
     for (const key of ownKeys) {
       if (typeof key !== 'string') {
         state.malformed = true;
@@ -160,6 +212,13 @@ function readResponseRecord(value) {
       if (key === 'id') {
         sawIdKey = true;
         if (idDescriptor === undefined || !Object.hasOwn(idDescriptor, 'value')) {
+          state.malformed = true;
+        }
+        continue;
+      }
+      if (key === 'enabled') {
+        sawEnabledKey = true;
+        if (enabledDescriptor === undefined || !Object.hasOwn(enabledDescriptor, 'value')) {
           state.malformed = true;
         }
         continue;
@@ -175,9 +234,9 @@ function readResponseRecord(value) {
         state.malformed = true;
         continue;
       }
-      state.data.set(key, descriptor.value);
+      mapSet(state.data, key, descriptor.value);
     }
-    if (!sawIdKey) state.malformed = true;
+    if (!sawIdKey || sawEnabledKey !== (enabledDescriptor !== undefined)) state.malformed = true;
   } catch {
     state.malformed = true;
   }
@@ -187,12 +246,12 @@ function readResponseRecord(value) {
 function responseIsValid(parsed) {
   const { data } = parsed;
   return !parsed.malformed
-    && validId(data.get('id'))
-    && data.get('name') === SETUP_POLICY.serviceTokenName
-    && data.get('duration') === SETUP_POLICY.serviceTokenDuration
-    && (!data.has('enabled') || data.get('enabled') === true)
-    && validClientId(data.get('client_id'))
-    && validSecret(data.get('client_secret'));
+    && validId(mapGet(data, 'id'))
+    && mapGet(data, 'name') === SETUP_POLICY.serviceTokenName
+    && mapGet(data, 'duration') === SETUP_POLICY.serviceTokenDuration
+    && (!mapHas(data, 'enabled') || mapGet(data, 'enabled') === true)
+    && validClientId(mapGet(data, 'client_id'))
+    && validSecret(mapGet(data, 'client_secret'));
 }
 
 async function inventoryCompensation(client) {
@@ -219,7 +278,7 @@ export async function inspectCloudflareSetup(accountId, client) {
   try {
     const token = await verifyTextPreviewSetupToken(accountId, client);
     const tokenRecord = snapshotRecord(token);
-    const missingPermissions = tokenRecord.get('missingPermissions');
+    const missingPermissions = mapGet(tokenRecord, 'missingPermissions');
     const missing = snapshotDenseArray(missingPermissions);
     for (const permission of missing) {
       if (typeof permission !== 'string') fail();
@@ -253,9 +312,9 @@ export async function createSetupServiceToken(client) {
   const parsed = readResponseRecord(response);
   if (responseIsValid(parsed)) {
     return Object.freeze({
-      id: parsed.data.get('id'),
-      clientId: parsed.data.get('client_id'),
-      clientSecret: parsed.data.get('client_secret'),
+      id: mapGet(parsed.data, 'id'),
+      clientId: mapGet(parsed.data, 'client_id'),
+      clientSecret: mapGet(parsed.data, 'client_secret'),
     });
   }
   if (parsed.id !== undefined) return deleteCompensation(client, parsed.id);

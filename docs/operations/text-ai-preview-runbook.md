@@ -158,23 +158,34 @@ export TEXT_AI_REPO='nuts-and-bytes/tiezheng'
 export TEXT_AI_EXPECTED_SHA='<批准的40位SHA>'
 ```
 
-开始任何 dispatch 前，必须证明该 workflow 的旧 `queued`、`in_progress`、`waiting`、`pending`、`requested` run 数量分别为 0。若任一项非零，旧活动 run 必须全部取消或等待结束，再重新从零开始核对；绝不能让旧的 enable 在新回滚之后继续执行。下面的 inventory 只用于排除旧活动 run，绝不用于给新 dispatch 绑定“最近一次” run ID：
+开始任何 dispatch 前，必须获取该 workflow 的单次稳定 inventory 快照：查询固定为同一仓库、workflow 和 `workflow_dispatch` event，上限为 100。只有结果长度小于 100，且每条记录仅含正安全整数 `databaseId` 与精确值 `completed` 的 `status` 时才能继续。任何活动状态、未知状态、畸形记录或长度达到 100 都 fail closed；旧活动 run 必须全部取消或等待结束，再重新从零开始核对。下面的 inventory 只用于排除旧活动 run，绝不用于给新 dispatch 绑定“最近一次” run ID；成功时保持静默，evidence 只记 PASS/FAIL，不记录旧 run ID：
 
 ```bash
 assert_no_stale_text_preview_runs() (
   set -euo pipefail
   repo='nuts-and-bytes/tiezheng'
 
-  for status in queued in_progress waiting pending requested; do
-    count="$(gh run list -R "$repo" --workflow text-ai-preview.yml \
-      --event workflow_dispatch --status "$status" --limit 100 \
-      --json databaseId --jq 'length')"
-    if [[ ! "$count" =~ ^[0-9]+$ ]] || [ "$count" -ne 0 ]; then
-      printf '%s\n' 'BLOCKED: older active preview run exists' >&2
-      return 1
-    fi
-    printf '%s=%s\n' "$status" "$count"
-  done
+  if ! gh run list --workflow text-ai-preview.yml \
+    --event workflow_dispatch --limit 100 \
+    --json databaseId,status --repo "$repo" \
+    | jq -e '
+        type == "array"
+        and length < 100
+        and all(.[];
+          type == "object"
+          and (keys | sort) == ["databaseId","status"]
+          and (.databaseId | type == "number")
+          and .databaseId > 0
+          and .databaseId < 9007199254740992
+          and .databaseId == (.databaseId | floor)
+          and (.status | type == "string")
+          and .status == "completed"
+        )
+      ' >/dev/null
+  then
+    printf '%s\n' 'BLOCKED: older active preview run exists' >&2
+    return 1
+  fi
 )
 ```
 

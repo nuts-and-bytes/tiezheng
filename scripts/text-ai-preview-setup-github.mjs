@@ -343,9 +343,33 @@ function validatePolicies(value) {
   if (policy.name !== 'main' || policy.type !== 'branch') fail();
 }
 
-function validateEmptyRunList(value) {
+function statusIsCompleted(value) {
+  if (typeof value !== 'string') return false;
+  for (const activeStatus of ACTIVE_STATUSES) {
+    if (value === activeStatus) return false;
+  }
+  return value === 'completed';
+}
+
+function validateStableRunInventory(value) {
   const parsed = parseJson(value);
-  if (!Array.isArray(parsed) || parsed.length !== 0) fail();
+  if (!Array.isArray(parsed) || parsed.length >= 100) fail();
+  const arrayKeys = Reflect.ownKeys(parsed);
+  if (arrayKeys.length !== parsed.length + 1) fail();
+  for (let index = 0; index < parsed.length; index += 1) {
+    if (!Object.hasOwn(parsed, String(index))) fail();
+    const record = plainRecord(parsed[index]);
+    const keys = Reflect.ownKeys(record);
+    if (
+      keys.length !== 2
+      || keys.some((key) => typeof key !== 'string')
+      || !Object.hasOwn(record, 'databaseId')
+      || !Object.hasOwn(record, 'status')
+    ) fail();
+    const databaseId = dataProperty(record, 'databaseId');
+    const status = dataProperty(record, 'status');
+    if (!Number.isSafeInteger(databaseId) || databaseId <= 0 || !statusIsCompleted(status)) fail();
+  }
 }
 
 function extractRunId(value) {
@@ -543,17 +567,14 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
   async function runDisabledPreflight(expectedSha) {
     try {
       if (typeof expectedSha !== 'string' || !SHA_PATTERN.test(expectedSha)) fail();
-      for (const status of ACTIVE_STATUSES) {
-        validateEmptyRunList(await run('gh', [
-          'run', 'list',
-          '--workflow', WORKFLOW,
-          '--event', 'workflow_dispatch',
-          '--status', status,
-          '--limit', '100',
-          '--json', 'databaseId',
-          '--repo', REPO,
-        ]));
-      }
+      validateStableRunInventory(await run('gh', [
+        'run', 'list',
+        '--workflow', WORKFLOW,
+        '--event', 'workflow_dispatch',
+        '--limit', '100',
+        '--json', 'databaseId,status',
+        '--repo', REPO,
+      ]));
       const dispatchOutput = await run('gh', [
         'workflow', 'run', WORKFLOW,
         '--ref', 'main',
