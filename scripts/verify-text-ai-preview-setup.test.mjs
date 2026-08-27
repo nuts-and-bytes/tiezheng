@@ -477,6 +477,14 @@ test('operations docs expose the bounded first-run setup contract', async () => 
   }
 
   assert.equal(plan.includes('用户直接输入 9 个 Environment secrets'), false);
+  assert.ok(plan.includes('Cloudflare token 权限不足发生在 `create-token` 之前'));
+  assert.ok(plan.includes('输出 `SETUP FAILED missing_permissions=` 并保持零远端写入'));
+  assert.ok(plan.includes('只有 9+2 名称已完整写入并核对后的关闭态 preflight 失败'));
+  assert.ok(plan.includes('保留完整凭据并输出 `SETUP BLOCKED preflight`'));
+  assert.equal(
+    plan.includes('若 Cloudflare token 权限不足、远端照片开关为 true 或 Worker 文字开关不是 false，状态为 `SETUP BLOCKED preflight`'),
+    false,
+  );
 });
 
 test('CLI accepts no arguments and prints only the fixed one-line JSON report', () => {
