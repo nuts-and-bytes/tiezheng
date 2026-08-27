@@ -914,7 +914,7 @@ test('runbook binds the unique job and dispatch step and drains every older acti
     'and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation")] | length == 1)',
     'and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation" and .conclusion == "success")] | length == 1)',
     'assert_no_stale_text_preview_runs() (',
-    'for status in queued in_progress waiting pending; do',
+    'for status in queued in_progress waiting pending requested; do',
     'assert_no_stale_text_preview_runs',
     '-f expected_sha="$expected_sha"',
   ]) {

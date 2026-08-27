@@ -22,8 +22,8 @@ const EXPECTED_TEST_NAMES = Object.freeze(EXPECTED_FILES.map((file) => (
 const EXPECTED_DIGESTS = Object.freeze({
   'scripts/text-ai-preview-setup-values.mjs': '5ac51ec36f81ccc1efd680bf9332dbdc44d5bc8804d47dd68a5b272fd25d50a3',
   'scripts/text-ai-preview-setup-prompt.mjs': 'eb04f7afe0dc9566c7d06b1c2595e16c4cf59005b567a380186902fe061a5c32',
-  'scripts/text-ai-preview-setup-cloudflare.mjs': '4e1c711426a85553708606d529ce4fc8bbabdaf8ecbe98fb5e84afa3cb901961',
-  'scripts/text-ai-preview-setup-github.mjs': 'a331ff8bfec61604f078ceb50f3e17bde9e0ea9b1acaf869be870ac1abef1cdf',
+  'scripts/text-ai-preview-setup-cloudflare.mjs': '831de9f780abbe8e83ca9e804075c87baa744222421755dff40bedd9ad71d90c',
+  'scripts/text-ai-preview-setup-github.mjs': '51c570183adda081bcce75383970dd71aa54c1e5ed46f27d22b5e8fa52dca76e',
   'scripts/text-ai-preview-setup.mjs': '11e30f582b0a61f99b77140073eb307bdb13238eba39a98b1c743818fd1e73d0',
 });
 
@@ -682,6 +682,7 @@ function verifyCloudflareContract(sources) {
   requireCount(cloudflare, "    if (name === SETUP_POLICY.serviceTokenName) fail();");
   requireCount(cloudflare, "    && data.get('name') === SETUP_POLICY.serviceTokenName");
   requireCount(cloudflare, "    && data.get('duration') === SETUP_POLICY.serviceTokenDuration");
+  requireCount(cloudflare, "    && (!data.has('enabled') || data.get('enabled') === true)");
 }
 
 function verifyGitHubContract(sources) {
@@ -692,6 +693,7 @@ function verifyGitHubContract(sources) {
   requireCount(github, "    const args = ['secret', 'set', name, '--env', ENVIRONMENT, '--repo', REPO];");
   requireCount(github, "    const args = ['variable', 'set', name, '--env', ENVIRONMENT, '--repo', REPO];");
   requireCount(github, "const WRITABLE_VARIABLE_NAMES = Object.freeze(['TEXT_AI_TEAM_DOMAIN']);");
+  requireCount(github, "const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'pending', 'requested']);");
   requireCount(github, '      if (secretNames.size !== 0) fail();');
   requireCount(github, '      exactNames(variableNames, [ACCOUNT_VARIABLE]);');
   requireCount(github, "        '-f', 'operation=preflight',");

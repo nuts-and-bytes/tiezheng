@@ -1013,9 +1013,9 @@ test('dispatches exact preflight SHA and accepts one canonical false log line', 
 });
 ```
 
-`validInspectionRunner()` 按 Step 4 的命令顺序返回：已登录、空 `git status --porcelain=v1`、`main`、本地/远端同一 40 位 SHA、Environment reviewer 数为 0、唯一 `main` deployment policy、secret 空集合、variable 精确 `['CLOUDFLARE_ACCOUNT_ID']`以及 32 位小写 account ID。`validPreflightRunner()` 按 Step 5 返回四个空活跃列表、唯一 canonical run URL、watch 成功、精确 metadata 与唯一 false JSON 日志行。Fake runner 记录 `input` 时必须 `Buffer.from(input)`，以便同时证明 stdin 内容正确且原 Buffer 已清零。
+`validInspectionRunner()` 按 Step 4 的命令顺序返回：已登录、空 `git status --porcelain=v1`、`main`、本地/远端同一 40 位 SHA、Environment reviewer 数为 0、唯一 `main` deployment policy、secret 空集合、variable 精确 `['CLOUDFLARE_ACCOUNT_ID']`以及 32 位小写 account ID。`validPreflightRunner()` 按 Step 5 返回五个空活跃列表、唯一 canonical run URL、watch 成功、精确 metadata 与唯一 false JSON 日志行。Fake runner 记录 `input` 时必须 `Buffer.from(input)`，以便同时证明 stdin 内容正确且原 Buffer 已清零。
 
-增加表驱动失败矩阵：工作树非空、分支非 `main`、本地/远端 SHA 不同、reviewer 非 0、branch policy 非唯一 `main`、目标 secret/variable 已存在、account ID 非 32 位小写十六进制、四种旧 active run 任一非空、dispatch URL 为 0/2 个、SHA/job/step 漂移、false JSON 缺失/重复/额外 key/true。每个失败 case 断言固定错误、无后续写命令且无 sentinel 出现。源码 mutation 再锁定 `shell:true`、`--body`、`GH_TOKEN` env、`gh run list --limit 1`、遗漏 `expected_sha`、接受 `workerTextEnabled=true` 或用“最近一次 run”回退时必须失败。
+增加表驱动失败矩阵：工作树非空、分支非 `main`、本地/远端 SHA 不同、reviewer 非 0、branch policy 非唯一 `main`、目标 secret/variable 已存在、account ID 非 32 位小写十六进制、五种旧 active run 任一非空、dispatch URL 为 0/2 个、SHA/job/step 漂移、false JSON 缺失/重复/额外 key/true。每个失败 case 断言固定错误、无后续写命令且无 sentinel 出现。源码 mutation 再锁定 `shell:true`、`--body`、`GH_TOKEN` env、`gh run list --limit 1`、遗漏 `expected_sha`、接受 `workerTextEnabled=true` 或用“最近一次 run”回退时必须失败。
 
 - [ ] **Step 2: 运行测试确认 RED**
 
@@ -1143,7 +1143,7 @@ await run('gh', ['variable', 'get', 'CLOUDFLARE_ACCOUNT_ID', '--repo', SETUP_POL
 
 `runDisabledPreflight(expectedSha)` 必须：
 
-1. 对 `queued`、`in_progress`、`waiting`、`pending` 分别执行 `gh run list --workflow text-ai-preview.yml --event workflow_dispatch --status <status> --limit 100 --json databaseId --repo nuts-and-bytes/tiezheng` 并要求空数组；
+1. 对 `queued`、`in_progress`、`waiting`、`pending`、`requested` 分别执行 `gh run list --workflow text-ai-preview.yml --event workflow_dispatch --status <status> --limit 100 --json databaseId --repo nuts-and-bytes/tiezheng` 并要求空数组；
 2. 执行：
 
 ```js

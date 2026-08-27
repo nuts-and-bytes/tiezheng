@@ -158,14 +158,14 @@ export TEXT_AI_REPO='nuts-and-bytes/tiezheng'
 export TEXT_AI_EXPECTED_SHA='<批准的40位SHA>'
 ```
 
-开始任何 dispatch 前，必须证明该 workflow 的旧 `queued`、`in_progress`、`waiting`、`pending` run 数量分别为 0。若任一项非零，旧活动 run 必须全部取消或等待结束，再重新从零开始核对；绝不能让旧的 enable 在新回滚之后继续执行。下面的 inventory 只用于排除旧活动 run，绝不用于给新 dispatch 绑定“最近一次” run ID：
+开始任何 dispatch 前，必须证明该 workflow 的旧 `queued`、`in_progress`、`waiting`、`pending`、`requested` run 数量分别为 0。若任一项非零，旧活动 run 必须全部取消或等待结束，再重新从零开始核对；绝不能让旧的 enable 在新回滚之后继续执行。下面的 inventory 只用于排除旧活动 run，绝不用于给新 dispatch 绑定“最近一次” run ID：
 
 ```bash
 assert_no_stale_text_preview_runs() (
   set -euo pipefail
   repo='nuts-and-bytes/tiezheng'
 
-  for status in queued in_progress waiting pending; do
+  for status in queued in_progress waiting pending requested; do
     count="$(gh run list -R "$repo" --workflow text-ai-preview.yml \
       --event workflow_dispatch --status "$status" --limit 100 \
       --json databaseId --jq 'length')"

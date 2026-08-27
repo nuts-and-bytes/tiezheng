@@ -1287,7 +1287,7 @@ Expected: 名称集合与 runbook 完全一致；输出没有值。首次配置 
 
 - [ ] **Step 4: 复核向导的只读 preflight**
 
-向导后续的所有 Task 11/12 手工 dispatch 都先加载 runbook 第 6 节的固定函数与变量，使用固定仓库、批准 SHA、精确 dispatch URL/run ID/watch/view 仪式；不得复制旧版“最近一次 run”查询。每次 dispatch 前必须证明旧 `queued`/`in_progress`/`waiting`/`pending` run 为 0，旧活动 run 必须全部取消或等待结束。单人受保护模式下，操作者必须在 dispatch 前再次核对远端 `main` 精确等于批准 SHA，并把同一 SHA 作为必填 `expected_sha` workflow input；workflow 在 job 启动前要求 `github.sha == inputs.expected_sha`，漂移时直接跳过且不得执行 dispatcher。
+向导后续的所有 Task 11/12 手工 dispatch 都先加载 runbook 第 6 节的固定函数与变量，使用固定仓库、批准 SHA、精确 dispatch URL/run ID/watch/view 仪式；不得复制旧版“最近一次 run”查询。每次 dispatch 前必须证明旧 `queued`/`in_progress`/`waiting`/`pending`/`requested` run 为 0，旧活动 run 必须全部取消或等待结束。单人受保护模式下，操作者必须在 dispatch 前再次核对远端 `main` 精确等于批准 SHA，并把同一 SHA 作为必填 `expected_sha` workflow input；workflow 在 job 启动前要求 `github.sha == inputs.expected_sha`，漂移时直接跳过且不得执行 dispatcher。
 
 复核向导绑定的 exact preflight run/SHA/job/step 均成功，且 `workerTextEnabled=false`、`photoEnabled=false`。向导已自动运行这一次 preflight；不为了“再确认”自动重试。
 

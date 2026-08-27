@@ -190,7 +190,7 @@ function responseIsValid(parsed) {
     && validId(data.get('id'))
     && data.get('name') === SETUP_POLICY.serviceTokenName
     && data.get('duration') === SETUP_POLICY.serviceTokenDuration
-    && data.get('enabled') === true
+    && (!data.has('enabled') || data.get('enabled') === true)
     && validClientId(data.get('client_id'))
     && validSecret(data.get('client_secret'));
 }

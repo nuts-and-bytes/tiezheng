@@ -242,6 +242,43 @@ test('create succeeds only for exact primitive fields and freezes the redacted r
   assert.equal('name' in result, false);
 });
 
+test('create accepts the official response shape without enabled while still requesting enabled true', async () => {
+  const response = validCreated();
+  delete response.enabled;
+  const { client, calls } = fakeClient({ 'POST /access/service_tokens': response });
+
+  const result = await createSetupServiceToken(client);
+
+  assert.deepEqual(result, {
+    id: 'service-token-1',
+    clientId: 'abcd1234.access',
+    clientSecret: 'secret-value',
+  });
+  assert.equal(Object.isFrozen(result), true);
+  assert.deepEqual(calls, [{
+    method: 'POST',
+    path: '/access/service_tokens',
+    body: {
+      name: SETUP_POLICY.serviceTokenName,
+      duration: SETUP_POLICY.serviceTokenDuration,
+      enabled: true,
+    },
+  }]);
+});
+
+test('create rejects explicit false enabled and compensates the observed token id', async () => {
+  const { client, calls } = fakeClient({
+    'POST /access/service_tokens': validCreated({ enabled: false }),
+    'DELETE /access/service_tokens/service-token-1': {},
+  });
+
+  await assertFailure(() => createSetupServiceToken(client), FAILURE, ['secret-value']);
+  assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [
+    'POST /access/service_tokens',
+    'DELETE /access/service_tokens/service-token-1',
+  ]);
+});
+
 test('reserved ids are rejected without direct delete or malformed-response delete', async () => {
   const reserved = ['.', '..', '__proto__', 'constructor', 'prototype'];
   let directDeleteCalls = 0;

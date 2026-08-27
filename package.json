@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run --exclude \"scripts/text-ai-preview-setup*.test.mjs\"",
-    "test:watch": "vitest",
+    "test:watch": "vitest --exclude \"scripts/text-ai-preview-setup*.test.mjs\"",
     "typecheck": "tsc --noEmit",
     "patch:cloudflare-vitest": "node scripts/patch-cloudflare-vitest-unicode-path.mjs",
     "postinstall": "npm run patch:cloudflare-vitest",

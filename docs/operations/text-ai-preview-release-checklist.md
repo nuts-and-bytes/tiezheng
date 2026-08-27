@@ -20,7 +20,7 @@ A–G 与 I 是标准双账号 Preview 的必需范围。H 是另行授权的条
 | 目标 commit SHA 是事先批准的 40 位 SHA，并与远程 `main` 一致 | NOT_RUN | 仅允许记录 SHA |
 | 操作仓库固定为 `nuts-and-bytes/tiezheng`，不依赖 cwd 或默认仓库 | NOT_RUN | 仅记录 PASS/FAIL |
 | workflow 只允许手动触发，目标 ref 为受保护 `main` | NOT_RUN | 仅记录布尔判断 |
-| 开始每次 dispatch 前，旧 `queued`/`in_progress`/`waiting`/`pending` run 均为 0；旧活动 run 已取消或结束 | NOT_RUN | 仅记录四项为 0；不得记录旧输入 |
+| 开始每次 dispatch 前，旧 `queued`/`in_progress`/`waiting`/`pending`/`requested` run 均为 0；旧活动 run 已取消或结束 | NOT_RUN | 仅记录五项为 0；不得记录旧输入 |
 | 每个 dispatch 都从本次返回的精确 URL 提取唯一纯数字 run ID | NOT_RUN | URL 缺失/格式不符即 BLOCKED；不记录 URL |
 | 未使用 `gh run list`、UI 或“最近一次”回退绑定 | NOT_RUN | 仅记录 PASS/FAIL |
 | 单人模式已由用户明确批准；操作者在 dispatch 前核对 exact head SHA 与当时 `main`，并把同一 SHA 作为必填 workflow input | NOT_RUN | 仅记录 PASS/FAIL 与 SHA |

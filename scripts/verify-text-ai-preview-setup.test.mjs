@@ -443,6 +443,10 @@ test('package scripts isolate node-only setup suites from Vitest and keep them i
     packageJson.scripts.test,
     'vitest run --exclude "scripts/text-ai-preview-setup*.test.mjs"',
   );
+  assert.equal(
+    packageJson.scripts['test:watch'],
+    'vitest --exclude "scripts/text-ai-preview-setup*.test.mjs"',
+  );
   assert.equal(packageJson.scripts['setup:text-preview'], 'node scripts/text-ai-preview-setup.mjs');
   assert.equal(
     packageJson.scripts['test:text-preview-setup'],
@@ -459,10 +463,11 @@ test('package scripts isolate node-only setup suites from Vitest and keep them i
 });
 
 test('operations docs expose the bounded first-run setup contract', async () => {
-  const [runbook, checklist, plan] = await Promise.all([
+  const [runbook, checklist, plan, setupPlan] = await Promise.all([
     readFile(resolve('docs/operations/text-ai-preview-runbook.md'), 'utf8'),
     readFile(resolve('docs/operations/text-ai-preview-release-checklist.md'), 'utf8'),
     readFile(resolve('docs/superpowers/plans/2026-08-24-tiezheng-text-ai-preview-release.md'), 'utf8'),
+    readFile(resolve('docs/superpowers/plans/2026-08-26-tiezheng-text-ai-setup-wizard.md'), 'utf8'),
   ]);
 
   for (const required of [
@@ -485,6 +490,14 @@ test('operations docs expose the bounded first-run setup contract', async () => 
   assert.ok(plan.includes('输出 `SETUP FAILED missing_permissions=` 并保持零远端写入'));
   assert.ok(plan.includes('只有 9+2 名称已完整写入并核对后的关闭态 preflight 失败'));
   assert.ok(plan.includes('保留完整凭据并输出 `SETUP BLOCKED preflight`'));
+  assert.ok(runbook.includes('for status in queued in_progress waiting pending requested; do'));
+  assert.ok(checklist.includes('`queued`/`in_progress`/`waiting`/`pending`/`requested`'));
+  assert.ok(checklist.includes('仅记录五项为 0'));
+  assert.ok(plan.includes('`queued`/`in_progress`/`waiting`/`pending`/`requested`'));
+  assert.ok(setupPlan.includes('五个空活跃列表'));
+  assert.equal(setupPlan.includes('四个空活跃列表'), false);
+  assert.ok(setupPlan.includes('五种旧 active run 任一非空'));
+  assert.ok(setupPlan.includes('`queued`、`in_progress`、`waiting`、`pending`、`requested`'));
   assert.equal(
     plan.includes('若 Cloudflare token 权限不足、远端照片开关为 true 或 Worker 文字开关不是 false，状态为 `SETUP BLOCKED preflight`'),
     false,
