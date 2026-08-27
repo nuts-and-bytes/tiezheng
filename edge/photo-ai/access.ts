@@ -1,4 +1,5 @@
 import { createRemoteJWKSet, customFetch, jwtVerify, type RemoteJWKSet } from 'jose';
+import { deriveOpaqueKey } from '../identity/opaqueKey';
 
 export interface AccessIdentity {
   accountKey: string;
@@ -85,17 +86,7 @@ export function parseAccessConfigFields(fields: AccessConfigFields): AccessConfi
 export async function deriveAccountKey(email: string, secret: string): Promise<string> {
   try {
     if (typeof email !== 'string' || !EMAIL.test(email)) throw new AccessDeniedError();
-    if (typeof secret !== 'string') throw new AccessDeniedError();
-
-    const key = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(secret),
-      { hash: 'SHA-256', name: 'HMAC' },
-      false,
-      ['sign'],
-    );
-    const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(email));
-    return hex(signature);
+    return await deriveOpaqueKey(email, secret);
   } catch {
     throw new AccessDeniedError();
   }
@@ -174,8 +165,4 @@ function remoteKeySet(issuer: string, fetcher: typeof fetch): RemoteJWKSet {
     byCertsUrl.set(certsUrl, keySet);
   }
   return keySet;
-}
-
-function hex(value: ArrayBuffer): string {
-  return Array.from(new Uint8Array(value), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
