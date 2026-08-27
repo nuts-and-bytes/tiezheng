@@ -58,7 +58,14 @@ function insertAfter(file, marker, insertion) {
   return replaceOnce(file, marker, `${marker}${insertion}`);
 }
 
-function expectPolicyFailure(value) {
+function expectSemanticPolicyFailure(value) {
+  assert.throws(
+    () => setupVerifier.verifyTextPreviewSetupSemanticsForTest(value),
+    (error) => error?.constructor === Error && error.message === FAILURE_MESSAGE,
+  );
+}
+
+function expectDigestPolicyFailure(value) {
   assert.throws(
     () => verifyTextPreviewSetup(value),
     (error) => error?.constructor === Error && error.message === FAILURE_MESSAGE,
@@ -99,11 +106,11 @@ test('accepts only the five fixed setup modules and returns the redacted contrac
 test('rejects missing, unknown, accessor, symbolic, inherited, and non-record source maps', () => {
   const missing = sourceRecord();
   delete missing[FIXED_FILES[0]];
-  expectPolicyFailure(missing);
+  expectSemanticPolicyFailure(missing);
 
   const extra = sourceRecord();
   extra['scripts/text-ai-preview-setup-extra.mjs'] = 'export {};\n';
-  expectPolicyFailure(extra);
+  expectSemanticPolicyFailure(extra);
 
   let getterCalls = 0;
   const accessor = sourceRecord();
@@ -114,24 +121,24 @@ test('rejects missing, unknown, accessor, symbolic, inherited, and non-record so
       return sources[FIXED_FILES[0]];
     },
   });
-  expectPolicyFailure(accessor);
+  expectSemanticPolicyFailure(accessor);
   assert.equal(getterCalls, 0);
 
   const symbolic = sourceRecord();
   symbolic[Symbol('extra')] = 'hidden';
-  expectPolicyFailure(symbolic);
+  expectSemanticPolicyFailure(symbolic);
 
   const inherited = Object.assign(Object.create({ unexpected: true }), sourceRecord());
-  expectPolicyFailure(inherited);
+  expectSemanticPolicyFailure(inherited);
 
-  for (const value of [null, [], new Map(), 'sources', 1]) expectPolicyFailure(value);
+  for (const value of [null, [], new Map(), 'sources', 1]) expectSemanticPolicyFailure(value);
 });
 
 test('rejects source type, encoding, size, proxy, and digest drift with one fixed error', () => {
   for (const badSource of [Buffer.from('source'), 42, '', 'export {};\0\n', 'export {};\r\n']) {
     const mutated = sourceRecord();
     mutated[FIXED_FILES[0]] = badSource;
-    expectPolicyFailure(mutated);
+    expectSemanticPolicyFailure(mutated);
   }
 
   const proxy = new Proxy(sourceRecord(), {
@@ -139,12 +146,16 @@ test('rejects source type, encoding, size, proxy, and digest drift with one fixe
       throw new Error('secret detail');
     },
   });
-  expectPolicyFailure(proxy);
+  expectSemanticPolicyFailure(proxy);
 
   for (const file of FIXED_FILES) {
     const mutated = sourceRecord();
     mutated[file] = `${mutated[file]}// harmless-looking digest drift\n`;
-    expectPolicyFailure(mutated);
+    assert.deepEqual(
+      setupVerifier.verifyTextPreviewSetupSemanticsForTest(mutated),
+      FIXED_REPORT,
+    );
+    expectDigestPolicyFailure(mutated);
   }
 });
 
@@ -160,9 +171,9 @@ test('locks the four setup inputs, hidden flags, and separate lowercase confirma
     ["    label: 'Continue? [y/N]',\n", "    label: 'Proceed? [y/N]',\n"],
     ["return answer.toString('utf8') === 'y';", "return answer.toString('utf8') === 'Y';"],
   ]) {
-    expectPolicyFailure(replaceOnce(file, before, after));
+    expectSemanticPolicyFailure(replaceOnce(file, before, after));
   }
-  expectPolicyFailure(replaceOnce(
+  expectSemanticPolicyFailure(replaceOnce(
     file,
     "      ['user-2 email', false],\n",
     "      ['user-2 email', false],\n      ['user-3 email', false],\n",
@@ -183,19 +194,19 @@ test('locks all nine secret names and the two environment variable names', () =>
     'TEXT_AI_CF_ACCESS_CLIENT_SECRET',
   ];
   for (const name of secretNames) {
-    expectPolicyFailure(replaceOnce(file, `    '${name}',\n`, `    '${name}_DRIFT',\n`));
+    expectSemanticPolicyFailure(replaceOnce(file, `    '${name}',\n`, `    '${name}_DRIFT',\n`));
   }
-  expectPolicyFailure(replaceOnce(
+  expectSemanticPolicyFailure(replaceOnce(
     file,
     "    'TEXT_AI_CF_ACCESS_CLIENT_SECRET',\n",
     "    'TEXT_AI_CF_ACCESS_CLIENT_SECRET',\n    'UNAPPROVED_SECRET',\n",
   ));
-  expectPolicyFailure(replaceOnce(
+  expectSemanticPolicyFailure(replaceOnce(
     file,
     "  variableNames: Object.freeze(['CLOUDFLARE_ACCOUNT_ID', 'TEXT_AI_TEAM_DOMAIN']),",
     "  variableNames: Object.freeze(['TEXT_AI_TEAM_DOMAIN', 'CLOUDFLARE_ACCOUNT_ID']),",
   ));
-  expectPolicyFailure(replaceOnce(
+  expectSemanticPolicyFailure(replaceOnce(
     file,
     "  variableNames: Object.freeze(['CLOUDFLARE_ACCOUNT_ID', 'TEXT_AI_TEAM_DOMAIN']),",
     "  variableNames: Object.freeze(['CLOUDFLARE_ACCOUNT_ID', 'TEXT_AI_TEAM_DOMAIN', 'EXTRA']),",
@@ -204,17 +215,17 @@ test('locks all nine secret names and the two environment variable names', () =>
 
 test('pins the unique Cloudflare service token name and 8760 hour duration', () => {
   const file = 'scripts/text-ai-preview-setup-values.mjs';
-  expectPolicyFailure(replaceOnce(
+  expectSemanticPolicyFailure(replaceOnce(
     file,
     "  serviceTokenName: 'tiezheng-text-ai-preview-github-actions',",
     "  serviceTokenName: 'tiezheng-text-ai-preview-admin',",
   ));
-  expectPolicyFailure(replaceOnce(
+  expectSemanticPolicyFailure(replaceOnce(
     file,
     "  serviceTokenDuration: '8760h',",
     "  serviceTokenDuration: 'forever',",
   ));
-  expectPolicyFailure(replaceOnce(
+  expectSemanticPolicyFailure(replaceOnce(
     'scripts/text-ai-preview-setup-cloudflare.mjs',
     '    duration: SETUP_POLICY.serviceTokenDuration,',
     "    duration: '8760h',",
@@ -232,7 +243,7 @@ test('requires shell false and single-item stdin for every secret or variable wr
     ["      await run('gh', args, { input: value });", "      await run('gh', args);"],
     ['          else child.stdin.end(safeInput);', '          else child.stdin.end();'],
   ]) {
-    expectPolicyFailure(replaceOnce(file, before, after));
+    expectSemanticPolicyFailure(replaceOnce(file, before, after));
   }
 });
 
@@ -243,7 +254,7 @@ test('requires a clean first-run environment and cannot overwrite existing value
     ['      exactNames(variableNames, [ACCOUNT_VARIABLE]);', '      if (!variableNames.has(ACCOUNT_VARIABLE)) fail();'],
     ["const WRITABLE_VARIABLE_NAMES = Object.freeze(['TEXT_AI_TEAM_DOMAIN']);", "const WRITABLE_VARIABLE_NAMES = Object.freeze(['CLOUDFLARE_ACCOUNT_ID', 'TEXT_AI_TEAM_DOMAIN']);"],
   ]) {
-    expectPolicyFailure(replaceOnce(file, before, after));
+    expectSemanticPolicyFailure(replaceOnce(file, before, after));
   }
 });
 
@@ -255,9 +266,9 @@ test('locks disabled preflight dispatch, approved SHA binding, and the exact fal
     ['        \'-f\', `expected_sha=${expectedSha}`,', '        \'-f\', `sha=${expectedSha}`,'],
     ['workerTextEnabled":false', 'workerTextEnabled":true'],
   ]) {
-    expectPolicyFailure(replaceOnce(file, before, after));
+    expectSemanticPolicyFailure(replaceOnce(file, before, after));
   }
-  expectPolicyFailure(replaceOnce(
+  expectSemanticPolicyFailure(replaceOnce(
     'scripts/text-ai-preview-setup.mjs',
     'workerTextEnabled=false photoEnabled=false',
     'workerTextEnabled=true photoEnabled=false',
@@ -274,7 +285,7 @@ test('locks the fixed COMPLETE, failure, cancellation, and BLOCKED output vocabu
     ["const SUCCESS_OUTPUT = 'SETUP COMPLETE\\n", "const SUCCESS_OUTPUT = 'SETUP READY\\n"],
     ["`SETUP BLOCKED cleanup=${blocked.join(',')}\\n`", "`SETUP FAILED cleanup=${blocked.join(',')}\\n`"],
   ]) {
-    expectPolicyFailure(replaceOnce(file, before, after));
+    expectSemanticPolicyFailure(replaceOnce(file, before, after));
   }
 });
 
@@ -300,7 +311,7 @@ test('rejects every forbidden deployment, enablement, model, disclosure, and per
     'curl https://example.invalid',
     'wget https://example.invalid',
   ]) {
-    expectPolicyFailure(insertAfter(file, marker, `const mutation = ${JSON.stringify(insertion)};\n`));
+    expectSemanticPolicyFailure(insertAfter(file, marker, `const mutation = ${JSON.stringify(insertion)};\n`));
   }
 });
 
@@ -317,7 +328,7 @@ test('rejects additional executable families outside the fixed git and gh runner
     'npx arbitrary-package',
     'node -e process.exit(0)',
   ]) {
-    expectPolicyFailure(insertAfter(file, marker, `const executableMutation = ${JSON.stringify(command)};\n`));
+    expectSemanticPolicyFailure(insertAfter(file, marker, `const executableMutation = ${JSON.stringify(command)};\n`));
   }
 });
 
@@ -340,6 +351,30 @@ test('semantic gate independently rejects extra spawn calls, aliases, and child 
       ),
       (error) => error?.constructor === Error && error.message === FAILURE_MESSAGE,
     );
+  }
+  for (const [before, after] of [
+    [
+      'function createBoundedCommandRunner(spawnCommand) {',
+      'function createUnsafeRunner(spawnCommand) {',
+    ],
+    [
+      "  if (typeof spawnCommand !== 'function') fail();",
+      "  spawnCommand('sh', ['-c', 'true']);",
+    ],
+    [
+      'const child = Reflect.apply(spawnCommand, undefined, [command, safeArguments, {',
+      'const child = spawnCommand(command, safeArguments, {',
+    ],
+    [
+      'export function createBoundedCommandRunnerForTest(spawnCommand) {',
+      'export function exposeUnsafeRunnerForTest(spawnCommand) {',
+    ],
+    [
+      '  return createBoundedCommandRunner(spawnCommand);',
+      '  return createUnsafeRunner(spawnCommand);',
+    ],
+  ]) {
+    expectSemanticPolicyFailure(replaceOnce(file, before, after));
   }
 });
 

@@ -205,10 +205,13 @@ function verifyGitHubContract(sources) {
     || (github.match(/\bspawnCommand\b/gu) ?? []).length !== 5
     || (github.match(/\bcreateBoundedCommandRunner\b/gu) ?? []).length !== 3
   ) fail();
-  requireCount(
-    github,
+  for (const context of [
+    'function createBoundedCommandRunner(spawnCommand) {',
+    "  if (typeof spawnCommand !== 'function') fail();",
     'const child = Reflect.apply(spawnCommand, undefined, [command, safeArguments, {',
-  );
+    'export function createBoundedCommandRunnerForTest(spawnCommand) {',
+    '  return createBoundedCommandRunner(spawnCommand);',
+  ]) requireCount(github, context);
   requireCount(github, 'const BOUNDED_COMMAND_RUNNER = createBoundedCommandRunner(spawn);');
   requireCount(github, "      if (command !== 'git' && command !== 'gh') fail();");
   requireCount(github, '          shell: false,');
