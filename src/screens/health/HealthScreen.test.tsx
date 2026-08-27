@@ -3,11 +3,9 @@ import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import {
   createMemoryRouter,
-  Router,
   RouterProvider,
   useLocation,
   useNavigationType,
-  type Navigator,
 } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { PRESET_FOODS } from '../../data/presetFoods';
@@ -22,13 +20,6 @@ import {
   savePhotoAiIntent,
   takePhotoAiIntent,
 } from '../../lib/photoAiIntent';
-import { TEXT_AI_LIMITS } from '../../lib/textAiContract';
-import {
-  clearTextAiIntent,
-  saveTextAiIntent,
-  takeTextAiIntent,
-  TEXT_AI_LOGIN_PATH,
-} from '../../lib/textAiIntent';
 import { seedPresetFoods } from '../../repos/foodRepo';
 import {
   removeMealItem,
@@ -55,6 +46,8 @@ const photoClient = vi.hoisted(() => ({
 }));
 
 const textClient = vi.hoisted(() => ({
+  login: vi.fn(),
+  logout: vi.fn(),
   session: vi.fn(),
   estimate: vi.fn(),
   estimateWithOutcome: vi.fn(),
@@ -140,6 +133,8 @@ beforeEach(async () => {
     .mockReset()
     .mockResolvedValue({ logoutUrl: '/cdn-cgi/access/logout' as const });
   textClient.session.mockReset().mockResolvedValue(textAiSessionSuccessFixture);
+  textClient.login.mockReset().mockResolvedValue({ ok: true });
+  textClient.logout.mockReset().mockResolvedValue({ ok: true });
   textClient.estimate.mockReset().mockImplementation(async (input: { requestId: string }) => ({
     ...textAiEstimateSuccessFixture,
     requestId: input.requestId,
@@ -280,95 +275,15 @@ test('文字开关 exact true 时由 picker 的同一操作行进入文字估算
   expect(textClient.estimate).not.toHaveBeenCalled();
 });
 
-test('文字 resume 在 StrictMode 一次性恢复日期餐段草稿，保留其他 query/hash 且不自动估算', async () => {
+test('旧文字 resume query 不再恢复草稿或触发路由清理', async () => {
   vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
-  saveTextAiIntent({
-    date: '2026-08-13',
-    slot: 'dinner',
-    description: '牛肉面一碗，少油',
-    amount: { value: 500, unit: 'g' },
-  });
-
-  const { router } = renderHealth('/health?keep=1&textAi=resume#nutrition', true);
-
-  expect(await screen.findByRole('dialog', { name: 'AI 估算晚餐' })).toBeInTheDocument();
-  expect(screen.getByText('2026-08-13')).toBeInTheDocument();
-  expect(await screen.findByLabelText('餐食描述')).toHaveValue('牛肉面一碗，少油');
-  expect(screen.getByLabelText('大约重量')).toHaveValue(500);
-  expect(router.state.location.search).toBe('?keep=1');
-  expect(router.state.location.hash).toBe('#nutrition');
-  expect(router.state.historyAction).toBe('REPLACE');
-  expect(takeTextAiIntent()).toBeUndefined();
-  expect(textClient.session).toHaveBeenCalledOnce();
-  expect(textClient.estimate).not.toHaveBeenCalled();
-  expect(screen.queryByRole('dialog', { name: /拍照识别/ })).not.toBeInTheDocument();
-});
-
-test('文字 resume 取出 intent 后 URL replace 同步失败仍恢复快照且不重复消费', async () => {
-  vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
-  saveTextAiIntent({
-    date: '2026-08-13',
-    slot: 'dinner',
-    description: '清理地址失败也要恢复',
-    amount: { value: 420, unit: 'g' },
-  });
-  const removeItem = vi.spyOn(Storage.prototype, 'removeItem');
-  const navigator = {
-    createHref: vi.fn(() => '/health'),
-    go: vi.fn(),
-    push: vi.fn(),
-    replace: vi.fn(() => {
-      throw new Error('router replace unavailable');
-    }),
-  } satisfies Navigator;
-
-  render(
-    <StrictMode>
-      <Router
-        location="/health?keep=1&textAi=resume#nutrition"
-        navigator={navigator}
-      >
-        <HealthScreen />
-      </Router>
-    </StrictMode>,
-  );
-
-  expect(await screen.findByRole('dialog', { name: 'AI 估算晚餐' })).toBeInTheDocument();
-  expect(screen.getByText('2026-08-13')).toBeInTheDocument();
-  expect(await screen.findByLabelText('餐食描述')).toHaveValue('清理地址失败也要恢复');
-  expect(screen.getByLabelText('大约重量')).toHaveValue(420);
-  expect(navigator.replace).toHaveBeenCalledOnce();
-  expect(navigator.replace).toHaveBeenCalledWith(
-    { pathname: '/health', search: '?keep=1', hash: '#nutrition' },
-    undefined,
-    { replace: true },
-  );
-  expect(
-    removeItem.mock.calls.filter(([key]) => key === 'tiezheng:text-ai-intent:v1'),
-  ).toHaveLength(1);
-  expect(sessionStorage.getItem('tiezheng:text-ai-intent:v1')).toBeNull();
-  expect(textClient.session).toHaveBeenCalledOnce();
-  expect(textClient.estimate).not.toHaveBeenCalled();
-});
-
-test('文字开关关闭时 resume 仍一次性清理 intent/query 且不能绕过开关', async () => {
-  saveTextAiIntent({
-    date: '2026-08-13',
-    slot: 'dinner',
-    description: '不能恢复的草稿',
-    amount: null,
-  });
-
   const { router } = renderHealth('/health?keep=1&textAi=resume#nutrition', true);
 
   expect(await screen.findByRole('heading', { name: '健康计划' })).toBeInTheDocument();
-  await waitFor(() => expect(router.state.location.search).toBe('?keep=1'));
-  expect(router.state.location.hash).toBe('#nutrition');
-  expect(router.state.historyAction).toBe('REPLACE');
   expect(screen.queryByRole('dialog', { name: /AI 估算/ })).not.toBeInTheDocument();
-  expect(takeTextAiIntent()).toBeUndefined();
+  expect(router.state.location.search).toBe('?keep=1&textAi=resume');
+  expect(router.state.location.hash).toBe('#nutrition');
   expect(textClient.session).not.toHaveBeenCalled();
-  expect(textClient.estimate).not.toHaveBeenCalled();
 });
 
 test('文字估算改用手动记录时预填原餐段手动表单，关闭重开不残留', async () => {
@@ -451,14 +366,17 @@ test('关闭文字面板和切换日期都会清空文字草稿与餐段状态',
   expect(await within(dialog).findByLabelText('餐食描述')).toHaveValue('');
 });
 
-test('文字未登录先精确保存日期餐段草稿，再导航到固定 session 路径', async () => {
+test('文字未登录时在 Sheet 内验证访问码，不导航也不写浏览器存储', async () => {
   vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
-  textClient.session.mockResolvedValue({
-    ok: false,
-    code: 'auth-required',
-    retryAt: null,
-    resetAt: null,
-  });
+  textClient.session
+    .mockResolvedValueOnce({
+      ok: false,
+      code: 'auth-required',
+      retryAt: null,
+      resetAt: null,
+    })
+    .mockResolvedValueOnce(textAiSessionSuccessFixture);
+  textClient.login.mockResolvedValue({ ok: true });
   const assign = vi.fn();
   vi.stubGlobal('location', { assign });
   const user = userEvent.setup();
@@ -467,117 +385,18 @@ test('文字未登录先精确保存日期餐段草稿，再导航到固定 sess
   await user.type(await within(dialog).findByLabelText('餐食描述'), '牛肉面一碗，少油');
   await user.type(within(dialog).getByLabelText('大约重量'), '500');
   const setItem = vi.spyOn(Storage.prototype, 'setItem');
+  await user.type(await within(dialog).findByLabelText('访问码'), 'A'.repeat(32));
 
-  await user.click(within(dialog).getByRole('button', { name: '登录后继续' }));
+  await user.click(within(dialog).getByRole('button', { name: '验证并继续' }));
 
-  expect(setItem).toHaveBeenCalledOnce();
-  expect(assign).toHaveBeenCalledWith(TEXT_AI_LOGIN_PATH);
-  expect(setItem.mock.invocationCallOrder[0]).toBeLessThan(
-    assign.mock.invocationCallOrder[0],
-  );
-  expect(takeTextAiIntent()).toEqual({
-    version: 1,
-    date: '2026-08-14',
-    slot: 'lunch',
-    description: '牛肉面一碗，少油',
-    amount: { value: 500, unit: 'g' },
-    createdAt: Date.now(),
-    expiresAt: Date.now() + TEXT_AI_LIMITS.intentMs,
-  });
-});
-
-test('文字登录意图存储失败时保留草稿、不导航，并可原样重试', async () => {
-  vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
-  textClient.session.mockResolvedValue({
-    ok: false,
-    code: 'auth-required',
-    retryAt: null,
-    resetAt: null,
-  });
-  const assign = vi.fn();
-  vi.stubGlobal('location', { assign });
-  const user = userEvent.setup();
-  renderHealth();
-  const { dialog } = await openTextEstimate(user);
-  await user.type(await within(dialog).findByLabelText('餐食描述'), '需要保留的草稿');
-  await user.type(within(dialog).getByLabelText('大约重量'), '360');
-  const setItem = vi
-    .spyOn(Storage.prototype, 'setItem')
-    .mockImplementation(() => {
-      throw new Error('session storage unavailable');
-    });
-
-  await user.click(within(dialog).getByRole('button', { name: '登录后继续' }));
-
+  await waitFor(() => expect(textClient.session).toHaveBeenCalledTimes(2));
+  expect(textClient.login).toHaveBeenCalledWith('A'.repeat(32));
   expect(assign).not.toHaveBeenCalled();
-  await waitFor(() => expect(textClient.session).toHaveBeenCalledTimes(2));
-  expect(await screen.findByLabelText('餐食描述')).toHaveValue('需要保留的草稿');
-  expect(screen.getByLabelText('大约重量')).toHaveValue(360);
-
-  setItem.mockRestore();
-  await user.click(await screen.findByRole('button', { name: '登录后继续' }));
-  expect(assign).toHaveBeenCalledWith(TEXT_AI_LOGIN_PATH);
-  expect(takeTextAiIntent()).toEqual(
-    expect.objectContaining({
-      date: '2026-08-14',
-      slot: 'lunch',
-      description: '需要保留的草稿',
-      amount: { value: 360, unit: 'g' },
-    }),
-  );
-  clearTextAiIntent();
-});
-
-test('文字登录导航同步失败时保留已保存 intent 与可操作草稿，并可再次导航', async () => {
-  vi.stubEnv('VITE_ENABLE_TEXT_AI', 'true');
-  textClient.session.mockResolvedValue({
-    ok: false,
-    code: 'auth-required',
-    retryAt: null,
-    resetAt: null,
-  });
-  const assign = vi
-    .fn()
-    .mockImplementationOnce(() => {
-      throw new Error('navigation unavailable');
-    })
-    .mockImplementationOnce(() => undefined);
-  vi.stubGlobal('location', { assign });
-  const user = userEvent.setup();
-  renderHealth();
-  const { dialog } = await openTextEstimate(user, '晚餐');
-  await user.type(await within(dialog).findByLabelText('餐食描述'), '导航失败也保留');
-  await user.type(within(dialog).getByLabelText('大约重量'), '360');
-
-  await user.click(within(dialog).getByRole('button', { name: '登录后继续' }));
-
-  expect(assign).toHaveBeenCalledOnce();
-  expect(JSON.parse(sessionStorage.getItem('tiezheng:text-ai-intent:v1') ?? 'null')).toEqual({
-    version: 1,
-    date: '2026-08-14',
-    slot: 'dinner',
-    description: '导航失败也保留',
-    amount: { value: 360, unit: 'g' },
-    createdAt: Date.now(),
-    expiresAt: Date.now() + TEXT_AI_LIMITS.intentMs,
-  });
-  await waitFor(() => expect(textClient.session).toHaveBeenCalledTimes(2));
-  expect(await screen.findByRole('dialog', { name: 'AI 估算晚餐' })).toBeInTheDocument();
-  expect(screen.getByLabelText('餐食描述')).toHaveValue('导航失败也保留');
-  expect(screen.getByLabelText('大约重量')).toHaveValue(360);
-  expect(screen.getByRole('button', { name: '登录后继续' })).toBeEnabled();
-
-  await user.click(screen.getByRole('button', { name: '登录后继续' }));
-
-  expect(assign).toHaveBeenCalledTimes(2);
-  expect(takeTextAiIntent()).toEqual(
-    expect.objectContaining({
-      date: '2026-08-14',
-      slot: 'dinner',
-      description: '导航失败也保留',
-      amount: { value: 360, unit: 'g' },
-    }),
-  );
+  expect(setItem).not.toHaveBeenCalled();
+  expect(sessionStorage.length).toBe(0);
+  expect(await within(dialog).findByLabelText('餐食描述'))
+    .toHaveValue('牛肉面一碗，少油');
+  expect(within(dialog).getByLabelText('大约重量')).toHaveValue(500);
 });
 
 test('文字候选经共享原子确认写入并实时更新原餐段与营养汇总', async () => {

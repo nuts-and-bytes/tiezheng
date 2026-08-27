@@ -3,10 +3,14 @@ import {
   TEXT_AI_VERSIONS,
   parseTextAiEstimateRequest,
   parseTextAiEstimateResponse,
+  parseTextAiLoginResponse,
+  parseTextAiLogoutResponse,
   parseTextAiSessionResponse,
   type TextAiErrorCode,
   type TextAiEstimateResponse,
   type TextAiFailure,
+  type TextAiLoginResponse,
+  type TextAiLogoutResponse,
   type TextAiSessionResponse,
   type TextMealDraft,
 } from './textAiContract';
@@ -21,13 +25,18 @@ export type TextAiEstimateOutcome =
   | { terminal: false; response: TextAiEstimateResponse };
 
 export interface TextAiClient {
+  login(accessCode: string): Promise<TextAiLoginResponse>;
+  logout(): Promise<TextAiLogoutResponse>;
   session(): Promise<TextAiSessionResponse>;
   estimate(input: TextAiEstimateInput): Promise<TextAiEstimateResponse>;
   estimateWithOutcome(input: TextAiEstimateInput): Promise<TextAiEstimateOutcome>;
 }
 
+const LOGIN_URL = '/api/nutrition/text/login';
+const LOGOUT_URL = '/api/nutrition/text/logout';
 const SESSION_URL = '/api/nutrition/text/session';
 const ESTIMATE_URL = '/api/nutrition/text/estimate';
+const ACCESS_CODE = /^[A-Za-z0-9_-]{32}$/;
 const MAX_RETRY_DELAY_MS = 2_000;
 const ESTIMATE_INPUT_KEYS = [
   'requestId',
@@ -53,6 +62,7 @@ const FAILURE_STATUS = Object.freeze({
 
 type Delay = (milliseconds: number) => Promise<void>;
 type Route = 'session' | 'estimate';
+type AuthRoute = 'login' | 'logout';
 
 class InvalidTextAiResponse extends Error {}
 
@@ -300,6 +310,59 @@ async function sendJson(
   return parsed;
 }
 
+async function sendAuthJson(
+  fetcher: typeof fetch,
+  route: AuthRoute,
+  signal: AbortSignal,
+  body?: string,
+): Promise<TextAiLoginResponse | TextAiLogoutResponse> {
+  const response = await fetcher(
+    route === 'login' ? LOGIN_URL : LOGOUT_URL,
+    route === 'login'
+      ? {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            accept: 'application/json',
+            'content-type': 'application/json',
+          },
+          body,
+          signal,
+        }
+      : {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { accept: 'application/json' },
+          signal,
+        },
+  );
+  if (
+    response.redirected ||
+    response.type === 'opaque' ||
+    response.type === 'opaqueredirect' ||
+    response.type === 'error'
+  ) {
+    cancelSilently(response.body);
+    return invalidResponse();
+  }
+  const raw = await boundedJson(response, signal);
+  let parsed: TextAiLoginResponse | TextAiLogoutResponse;
+  try {
+    parsed = route === 'login'
+      ? parseTextAiLoginResponse(raw)
+      : parseTextAiLogoutResponse(raw);
+  } catch {
+    return invalidResponse();
+  }
+  if (route === 'logout') {
+    if (!parsed.ok || response.status !== 200) return invalidResponse();
+    return parsed;
+  }
+  const expected = parsed.ok ? 200 : FAILURE_STATUS[parsed.code];
+  if (response.status !== expected) return invalidResponse();
+  return parsed;
+}
+
 async function defaultDelay(milliseconds: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -408,6 +471,18 @@ export function createTextAiClient(
   };
 
   return {
+    async login(accessCode) {
+      if (typeof accessCode !== 'string' || !ACCESS_CODE.test(accessCode)) {
+        return invalidRequest();
+      }
+      const body = JSON.stringify({ accessCode });
+      return withTimeout((signal) => sendAuthJson(fetcher, 'login', signal, body));
+    },
+
+    async logout() {
+      return withTimeout((signal) => sendAuthJson(fetcher, 'logout', signal));
+    },
+
     async session() {
       return withTimeout((signal) => sendJson(fetcher, 'session', signal));
     },

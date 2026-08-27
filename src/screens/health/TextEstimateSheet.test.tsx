@@ -33,7 +33,6 @@ interface RenderOptions {
   estimateResponse?: TextAiEstimateResponse;
   sessionResponse?: TextAiSessionResponse;
   initialDraft?: TextMealDraft;
-  onLogin?: (draft: TextMealDraft) => void;
   onUseManual?: (draft: TextMealDraft) => void;
   onConfirm?: (input: ConfirmTextEstimateInput) => Promise<void>;
   onClose?: () => void;
@@ -45,6 +44,8 @@ function renderSheet(options: RenderOptions = {}) {
     ?? structuredClone(textAiEstimateSuccessFixture);
   const estimate = vi.fn(async (_input: TextAiEstimateInput) => estimateResponse);
   const client: TextAiClient = options.client ?? {
+    login: vi.fn().mockResolvedValue({ ok: true }),
+    logout: vi.fn().mockResolvedValue({ ok: true }),
     session: vi.fn().mockResolvedValue(
       options.sessionResponse ?? structuredClone(textAiSessionSuccessFixture),
     ),
@@ -56,7 +57,6 @@ function renderSheet(options: RenderOptions = {}) {
         : { terminal: true as const, response };
     }),
   };
-  const onLogin = options.onLogin ?? vi.fn();
   const onUseManual = options.onUseManual ?? vi.fn();
   const onConfirm = options.onConfirm ?? vi.fn().mockResolvedValue(undefined);
   const onClose = options.onClose ?? vi.fn();
@@ -66,14 +66,13 @@ function renderSheet(options: RenderOptions = {}) {
       slot="dinner"
       initialDraft={options.initialDraft}
       client={client}
-      onLogin={onLogin}
       onUseManual={onUseManual}
       onConfirm={onConfirm}
       onClose={onClose}
     />
   );
   const view = render(options.strict ? <StrictMode>{sheet}</StrictMode> : sheet);
-  return { ...view, client, onLogin, onUseManual, onConfirm, onClose };
+  return { ...view, client, onUseManual, onConfirm, onClose };
 }
 
 function outcomeAwareClient(outcomes: Array<{
@@ -90,6 +89,8 @@ function outcomeAwareClient(outcomes: Array<{
     return next;
   });
   const client = {
+    login: vi.fn().mockResolvedValue({ ok: true }),
+    logout: vi.fn().mockResolvedValue({ ok: true }),
     session: vi.fn().mockResolvedValue(structuredClone(textAiSessionSuccessFixture)),
     estimate,
     estimateWithOutcome,
@@ -465,24 +466,178 @@ test('保存双击只启动一次，失败保留完整结果并用同一 operati
   expect(onConfirm.mock.calls[1]?.[0].candidate.confirmedEnergyKcal).toBe(901);
 });
 
-test('认证失败登录 callback 保留当前描述、重量与单位且不估算', async () => {
+test('访问码登录成功后保留草稿并恢复 session', async () => {
   const user = userEvent.setup();
-  const onLogin = vi.fn();
-  const { client } = renderSheet({
-    sessionResponse: failure('auth-required'),
-    onLogin,
+  const session = vi.fn()
+    .mockResolvedValueOnce(failure('auth-required'))
+    .mockResolvedValueOnce(structuredClone(textAiSessionSuccessFixture));
+  const login = vi.fn().mockResolvedValue({ ok: true });
+  const estimate = vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture));
+  const client: TextAiClient = {
+    login,
+    logout: vi.fn().mockResolvedValue({ ok: true }),
+    session,
+    estimate,
+    estimateWithOutcome: terminalOutcomeEstimate(estimate),
+  };
+  renderSheet({
+    client,
   });
 
-  await screen.findByRole('button', { name: '登录后继续' });
+  const accessCode = await screen.findByLabelText('访问码');
+  expect(accessCode).toHaveAttribute('type', 'password');
+  expect(accessCode).toHaveAttribute('autocomplete', 'off');
+  expect(accessCode).toHaveAttribute('autocapitalize', 'none');
+  expect(accessCode).toHaveAttribute('maxlength', '32');
+  expect(accessCode).toHaveAttribute('spellcheck', 'false');
   await enterDraft(user);
   await user.selectOptions(screen.getByLabelText('重量单位'), 'mL');
-  await user.click(screen.getByRole('button', { name: '登录后继续' }));
+  await user.type(accessCode, 'A'.repeat(32));
+  await user.click(screen.getByRole('button', { name: '验证并继续' }));
 
-  expect(onLogin).toHaveBeenCalledWith({
-    description: DESCRIPTION,
-    amount: { value: 500, unit: 'mL' },
-  });
+  await waitFor(() => expect(session).toHaveBeenCalledTimes(2));
+  expect(login).toHaveBeenCalledWith('A'.repeat(32));
+  expect(screen.getByLabelText('餐食描述')).toHaveValue(DESCRIPTION);
+  expect(screen.getByLabelText('大约重量')).toHaveValue(500);
+  expect(screen.getByLabelText('重量单位')).toHaveValue('mL');
+  expect(screen.queryByLabelText('访问码')).not.toBeInTheDocument();
   expect(client.estimate).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['错码', failure('auth-required'), textAiErrorCopy('auth-required')],
+  ['限流', failure('rate-limited'), textAiErrorCopy('rate-limited')],
+  ['服务关闭', failure('service-disabled'), textAiErrorCopy('service-disabled')],
+] as const)('登录%s保留草稿和访问码输入层', async (_label, result, message) => {
+  const user = userEvent.setup();
+  const login = vi.fn().mockResolvedValue(result);
+  const session = vi.fn().mockResolvedValue(failure('auth-required'));
+  const estimate = vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture));
+  renderSheet({
+    client: {
+      login,
+      logout: vi.fn().mockResolvedValue({ ok: true }),
+      session,
+      estimate,
+      estimateWithOutcome: terminalOutcomeEstimate(estimate),
+    },
+  });
+
+  await enterDraft(user);
+  await user.type(await screen.findByLabelText('访问码'), 'Z'.repeat(32));
+  await user.click(screen.getByRole('button', { name: '验证并继续' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(message);
+  expect(screen.getByLabelText('访问码')).toBeInTheDocument();
+  expect(screen.getByLabelText('餐食描述')).toHaveValue(DESCRIPTION);
+  expect(session).toHaveBeenCalledTimes(1);
+  expect(estimate).not.toHaveBeenCalled();
+});
+
+test('登录网络异常保留草稿且不暴露私有错误', async () => {
+  const user = userEvent.setup();
+  const login = vi.fn().mockRejectedValue(new Error('private network detail'));
+  const estimate = vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture));
+  renderSheet({
+    client: {
+      login,
+      logout: vi.fn().mockResolvedValue({ ok: true }),
+      session: vi.fn().mockResolvedValue(failure('auth-required')),
+      estimate,
+      estimateWithOutcome: terminalOutcomeEstimate(estimate),
+    },
+  });
+
+  await enterDraft(user);
+  await user.type(await screen.findByLabelText('访问码'), 'A'.repeat(32));
+  await user.click(screen.getByRole('button', { name: '验证并继续' }));
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(textAiErrorCopy('offline'));
+  expect(alert).not.toHaveTextContent('private network detail');
+  expect(screen.getByLabelText('餐食描述')).toHaveValue(DESCRIPTION);
+});
+
+test('登录双击只发一次，关闭后迟到成功不再检查 session', async () => {
+  const user = userEvent.setup();
+  let resolveLogin!: (value: { ok: true }) => void;
+  const login = vi.fn(() => new Promise<{ ok: true }>((resolve) => {
+    resolveLogin = resolve;
+  }));
+  const session = vi.fn().mockResolvedValue(failure('auth-required'));
+  const onClose = vi.fn();
+  const estimate = vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture));
+  renderSheet({
+    client: {
+      login,
+      logout: vi.fn().mockResolvedValue({ ok: true }),
+      session,
+      estimate,
+      estimateWithOutcome: terminalOutcomeEstimate(estimate),
+    },
+    onClose,
+  });
+
+  await user.type(await screen.findByLabelText('访问码'), 'A'.repeat(32));
+  const submit = screen.getByRole('button', { name: '验证并继续' });
+  fireEvent.click(submit);
+  fireEvent.click(submit);
+  expect(login).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole('button', { name: '关闭' }));
+
+  await act(async () => resolveLogin({ ok: true }));
+  expect(onClose).toHaveBeenCalledTimes(1);
+  expect(session).toHaveBeenCalledTimes(1);
+});
+
+test('session 成功后可退出 AI 登录，清除后回到访问码层并保留草稿', async () => {
+  const user = userEvent.setup();
+  const logout = vi.fn().mockResolvedValue({ ok: true });
+  const estimate = vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture));
+  renderSheet({
+    client: {
+      login: vi.fn().mockResolvedValue({ ok: true }),
+      logout,
+      session: vi.fn().mockResolvedValue(structuredClone(textAiSessionSuccessFixture)),
+      estimate,
+      estimateWithOutcome: terminalOutcomeEstimate(estimate),
+    },
+  });
+  await enterDraft(user);
+
+  await user.click(screen.getByRole('button', { name: '退出 AI 登录' }));
+
+  await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
+  expect(await screen.findByLabelText('访问码')).toBeInTheDocument();
+  expect(screen.getByLabelText('餐食描述')).toHaveValue(DESCRIPTION);
+});
+
+test('退出登录双击只发一次，pending 期间锁定估算表单', async () => {
+  let resolveLogout!: (value: { ok: true }) => void;
+  const logout = vi.fn(() => new Promise<{ ok: true }>((resolve) => {
+    resolveLogout = resolve;
+  }));
+  const estimate = vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture));
+  renderSheet({
+    client: {
+      login: vi.fn().mockResolvedValue({ ok: true }),
+      logout,
+      session: vi.fn().mockResolvedValue(structuredClone(textAiSessionSuccessFixture)),
+      estimate,
+      estimateWithOutcome: terminalOutcomeEstimate(estimate),
+    },
+  });
+  await screen.findByLabelText('餐食描述');
+  const exit = screen.getByRole('button', { name: '退出 AI 登录' });
+
+  fireEvent.click(exit);
+  fireEvent.click(exit);
+
+  expect(logout).toHaveBeenCalledTimes(1);
+  expect(screen.getByLabelText('餐食描述')).toBeDisabled();
+  expect(screen.queryByRole('button', { name: '开始估算' })).not.toBeInTheDocument();
+  await act(async () => resolveLogout({ ok: true }));
+  expect(await screen.findByLabelText('访问码')).toBeInTheDocument();
 });
 
 test.each([
@@ -523,9 +678,12 @@ test.each([
   expect(screen.getByLabelText('大约重量')).toHaveValue(500);
   expect(screen.getByRole('button', {
     name: code === 'auth-required' || code === 'auth-expired'
-      ? '登录后继续'
+      ? '验证并继续'
       : '重新估算',
   })).toBeInTheDocument();
+  if (code === 'auth-required' || code === 'auth-expired') {
+    expect(screen.getByLabelText('访问码')).toBeInTheDocument();
+  }
   expect(onConfirm).not.toHaveBeenCalled();
 });
 
@@ -548,6 +706,8 @@ test('session reject 可重试且保留恢复前输入', async () => {
     .mockRejectedValueOnce(new Error('network down'))
     .mockResolvedValueOnce(structuredClone(textAiSessionSuccessFixture));
   const client: TextAiClient = {
+    login: vi.fn().mockResolvedValue({ ok: true }),
+    logout: vi.fn().mockResolvedValue({ ok: true }),
     session,
     estimate: vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture)),
     estimateWithOutcome: vi.fn().mockResolvedValue({
@@ -811,6 +971,8 @@ test('估算重复点击只发一个请求，关闭后晚到成功不得污染�
   );
   const onClose = vi.fn();
   const client: TextAiClient = {
+    login: vi.fn().mockResolvedValue({ ok: true }),
+    logout: vi.fn().mockResolvedValue({ ok: true }),
     session: vi.fn().mockResolvedValue(structuredClone(textAiSessionSuccessFixture)),
     estimate,
     estimateWithOutcome: terminalOutcomeEstimate(estimate),
@@ -836,6 +998,8 @@ test('卸载后 session reject 被消费且不会更新已卸载组件', async (
     }),
   );
   const client: TextAiClient = {
+    login: vi.fn().mockResolvedValue({ ok: true }),
+    logout: vi.fn().mockResolvedValue({ ok: true }),
     session,
     estimate: vi.fn().mockResolvedValue(structuredClone(textAiEstimateSuccessFixture)),
     estimateWithOutcome: vi.fn().mockResolvedValue({

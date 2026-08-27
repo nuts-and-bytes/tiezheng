@@ -4,6 +4,8 @@ import {
   TEXT_AI_VERSIONS,
   parseTextAiEstimateRequest,
   parseTextAiEstimateResponse,
+  parseTextAiLoginResponse,
+  parseTextAiLogoutResponse,
   parseTextAiSessionResponse,
   textAiErrorCopy,
   type TextAiErrorCode,
@@ -13,6 +15,10 @@ import {
   type TextAiEstimateResponse,
   type TextAiEstimateSuccess,
   type TextAiFailure,
+  type TextAiLoginResponse,
+  type TextAiLoginSuccess,
+  type TextAiLogoutResponse,
+  type TextAiLogoutSuccess,
   type TextAiSessionResponse,
   type TextAiSessionSuccess,
   type TextMealDraft,
@@ -110,7 +116,6 @@ describe('fixed text AI contract', () => {
       candidates: 1,
       assumptions: 8,
       timeoutMs: 20_000,
-      intentMs: 15 * 60_000,
       requestBytes: 8 * 1024,
     });
     expect(Object.isFrozen(TEXT_AI_VERSIONS)).toBe(true);
@@ -335,6 +340,59 @@ describe('parseTextAiSessionResponse', () => {
     { ...textAiSessionSuccessFixture, resetAt: '2026-08-22T00:00:00Z' },
   ])('rejects invalid session response %#', (value) => {
     expect(() => parseTextAiSessionResponse(value)).toThrow(RESPONSE_ERROR);
+  });
+});
+
+describe('parseTextAiLoginResponse', () => {
+  test('accepts only exact login success and the three public authentication failures', () => {
+    expect(parseTextAiLoginResponse({ ok: true })).toEqual({ ok: true });
+    for (const code of ['auth-required', 'rate-limited', 'service-disabled'] as const) {
+      expect(parseTextAiLoginResponse({
+        ok: false,
+        code,
+        retryAt: code === 'rate-limited' ? '2026-08-27T09:15:00.000Z' : null,
+        resetAt: null,
+      })).toEqual({
+        ok: false,
+        code,
+        retryAt: code === 'rate-limited' ? '2026-08-27T09:15:00.000Z' : null,
+        resetAt: null,
+      });
+    }
+    expectTypeOf<TextAiLoginSuccess>().toEqualTypeOf<{ ok: true }>();
+    expectTypeOf<TextAiLoginResponse>().toMatchTypeOf<TextAiLoginSuccess | TextAiFailure>();
+  });
+
+  test.each([
+    { ok: true, extra: true },
+    { ok: false, code: 'offline', retryAt: null, resetAt: null },
+    { ok: false, code: 'auth-expired', retryAt: null, resetAt: null },
+    { ok: false, code: 'auth-required', retryAt: '2026-08-27T09:15:00.000Z', resetAt: null },
+    { ok: false, code: 'service-disabled', retryAt: null, resetAt: '2026-08-27T09:15:00.000Z' },
+    { ok: false, code: 'rate-limited', retryAt: null, resetAt: null },
+    { ok: false, code: 'rate-limited', retryAt: '2026-08-27T09:15:00.000Z', resetAt: '2026-08-28T00:00:00.000Z' },
+    { ok: false, code: 'rate-limited', retryAt: 'not-an-instant', resetAt: null },
+    Object.assign(Object.create({ inherited: true }), { ok: true }),
+    [],
+  ])('rejects an invalid login response %#', (value) => {
+    expect(() => parseTextAiLoginResponse(value)).toThrow(RESPONSE_ERROR);
+  });
+});
+
+describe('parseTextAiLogoutResponse', () => {
+  test('accepts only exact logout success', () => {
+    expect(parseTextAiLogoutResponse({ ok: true })).toEqual({ ok: true });
+    expectTypeOf<TextAiLogoutSuccess>().toEqualTypeOf<{ ok: true }>();
+    expectTypeOf<TextAiLogoutResponse>().toMatchTypeOf<TextAiLogoutSuccess | TextAiFailure>();
+  });
+
+  test.each([
+    { ok: true, extra: true },
+    { ok: false, code: 'auth-required', retryAt: null, resetAt: null },
+    Object.assign(Object.create({ inherited: true }), { ok: true }),
+    [],
+  ])('rejects an invalid logout response %#', (value) => {
+    expect(() => parseTextAiLogoutResponse(value)).toThrow(RESPONSE_ERROR);
   });
 });
 

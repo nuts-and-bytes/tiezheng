@@ -28,6 +28,7 @@ const CONTROL_CLASS =
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REQUEST_UNSAFE_CHARACTERS = /[\u0000-\u001f\u007f]/;
+const ACCESS_CODE_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const DISPLAY_UNSAFE_CHARACTERS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 const FIELD_ERROR_ID = 'text-estimate-field-error';
 const ERROR_CODES = new Set<TextAiErrorCode>([
@@ -59,7 +60,6 @@ export interface TextEstimateSheetProps {
   slot: MealSlot;
   initialDraft?: TextMealDraft;
   client: TextAiClient;
-  onLogin(draft: TextMealDraft): void;
   onUseManual(draft: TextMealDraft): void;
   onConfirm(input: ConfirmTextEstimateInput): Promise<void>;
   onClose(): void;
@@ -108,9 +108,9 @@ type TextFlowErrorState =
     }
   | {
       step: 'error';
-      recovery: 'login';
+      recovery: 'logout';
       draft: TextMealDraft;
-      code: 'auth-required' | 'auth-expired';
+      code: TextAiErrorCode;
       message: string;
     }
   | {
@@ -135,6 +135,13 @@ type TextFlowErrorState =
 
 type TextFlowState =
   | { step: 'checking-session' }
+  | {
+      step: 'login' | 'logging-in';
+      draft: TextMealDraft;
+      code: TextAiErrorCode | null;
+      message: string | null;
+    }
+  | { step: 'logging-out'; draft: TextMealDraft }
   | { step: 'input'; draft: TextMealDraft }
   | { step: 'estimating'; draft: TextMealDraft; requestId: string }
   | {
@@ -416,7 +423,6 @@ export function TextEstimateSheet({
   slot,
   initialDraft,
   client,
-  onLogin,
   onUseManual,
   onConfirm,
   onClose,
@@ -429,20 +435,29 @@ export function TextEstimateSheet({
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
   const amountRef = useRef<HTMLInputElement>(null);
   const unitRef = useRef<HTMLSelectElement>(null);
+  const accessCodeRef = useRef<HTMLInputElement>(null);
   const confirmationRef = useRef<HTMLDivElement>(null);
   const mounted = useRef(false);
   const closed = useRef(false);
   const initialSessionStarted = useRef(false);
   const sessionGeneration = useRef(0);
+  const loginGeneration = useRef(0);
+  const logoutGeneration = useRef(0);
   const estimateGeneration = useRef(0);
   const sessionLatch = useRef(false);
+  const loginLatch = useRef(false);
+  const logoutLatch = useRef(false);
   const estimateLatch = useRef(false);
   const saveLatch = useRef(false);
   const mealLabel = MEAL_LABELS[slot];
 
-  function active(generation?: { kind: 'session' | 'estimate'; value: number }): boolean {
+  function active(
+    generation?: { kind: 'session' | 'login' | 'logout' | 'estimate'; value: number },
+  ): boolean {
     if (!mounted.current || closed.current) return false;
     if (generation?.kind === 'session') return sessionGeneration.current === generation.value;
+    if (generation?.kind === 'login') return loginGeneration.current === generation.value;
+    if (generation?.kind === 'logout') return logoutGeneration.current === generation.value;
     if (generation?.kind === 'estimate') return estimateGeneration.current === generation.value;
     return true;
   }
@@ -456,7 +471,7 @@ export function TextEstimateSheet({
     ambiguousAttempt: EstimateAttempt | null = null,
   ): void {
     if (code === 'auth-required' || code === 'auth-expired') {
-      setState({ step: 'error', recovery: 'login', draft, code, message });
+      setState({ step: 'login', draft: cloneDraft(draft), code, message });
       return;
     }
     if (recovery === 'session') {
@@ -520,6 +535,33 @@ export function TextEstimateSheet({
     });
   }
 
+  function loginError(
+    draft: TextMealDraft,
+    code: TextAiErrorCode,
+    message: string = textAiErrorCopy(code),
+  ): void {
+    setState({
+      step: 'login',
+      draft: cloneDraft(draft),
+      code,
+      message,
+    });
+  }
+
+  function logoutError(
+    draft: TextMealDraft,
+    code: TextAiErrorCode,
+    message: string = textAiErrorCopy(code),
+  ): void {
+    setState({
+      step: 'error',
+      recovery: 'logout',
+      draft: cloneDraft(draft),
+      code,
+      message,
+    });
+  }
+
   async function checkSession(draft: TextMealDraft): Promise<void> {
     if (sessionLatch.current || closed.current) return;
     sessionLatch.current = true;
@@ -568,6 +610,11 @@ export function TextEstimateSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const loginFocusCode = state.step === 'login' ? state.code : null;
+  useEffect(() => {
+    if (state.step === 'login') accessCodeRef.current?.focus();
+  }, [state.step, loginFocusCode]);
+
   useEffect(() => {
     if (state.step !== 'error') return undefined;
     let control: HTMLElement | null = null;
@@ -597,6 +644,8 @@ export function TextEstimateSheet({
     if (closed.current || saveLatch.current) return;
     closed.current = true;
     sessionGeneration.current += 1;
+    loginGeneration.current += 1;
+    logoutGeneration.current += 1;
     estimateGeneration.current += 1;
     action();
   }
@@ -609,12 +658,10 @@ export function TextEstimateSheet({
     invalidateAnd(() => onUseManual(cloneDraft(draft)));
   }
 
-  function login(draft: TextMealDraft): void {
-    invalidateAnd(() => onLogin(cloneDraft(draft)));
-  }
-
   function updateDraft(draft: TextMealDraft): void {
     if (state.step === 'input') {
+      setState({ ...state, draft });
+    } else if (state.step === 'login') {
       setState({ ...state, draft });
     } else if (state.step === 'error' && state.recovery === 'input') {
       setState({ step: 'input', draft });
@@ -622,9 +669,84 @@ export function TextEstimateSheet({
       state.step === 'error' &&
       (state.recovery === 'session' ||
         state.recovery === 'estimate' ||
-        state.recovery === 'login')
+        state.recovery === 'logout')
     ) {
       setState({ ...state, draft });
+    }
+  }
+
+  async function startLogin(draft: TextMealDraft): Promise<void> {
+    if (loginLatch.current || closed.current) return;
+    const input = accessCodeRef.current;
+    const accessCode = input?.value ?? '';
+    if (input !== null) input.value = '';
+    const snapshot = cloneDraft(draft);
+    if (!ACCESS_CODE_PATTERN.test(accessCode)) {
+      loginError(snapshot, 'auth-required');
+      return;
+    }
+
+    loginLatch.current = true;
+    const generation = loginGeneration.current + 1;
+    loginGeneration.current = generation;
+    setState({
+      step: 'logging-in',
+      draft: snapshot,
+      code: null,
+      message: null,
+    });
+    try {
+      const response = await client.login(accessCode);
+      if (!active({ kind: 'login', value: generation })) return;
+      if (typeof response !== 'object' || response === null || !('ok' in response)) {
+        loginError(snapshot, 'invalid-estimate');
+      } else if (!response.ok) {
+        const code = knownFailureCode(response) ?? 'invalid-estimate';
+        loginError(snapshot, code);
+      } else {
+        await checkSession(snapshot);
+      }
+    } catch {
+      if (active({ kind: 'login', value: generation })) {
+        loginError(snapshot, 'offline');
+      }
+    } finally {
+      if (loginGeneration.current === generation) loginLatch.current = false;
+    }
+  }
+
+  async function startLogout(draft: TextMealDraft): Promise<void> {
+    if (logoutLatch.current || closed.current) return;
+    logoutLatch.current = true;
+    const generation = logoutGeneration.current + 1;
+    logoutGeneration.current = generation;
+    const snapshot = cloneDraft(draft);
+    sessionGeneration.current += 1;
+    loginGeneration.current += 1;
+    estimateGeneration.current += 1;
+    setState({ step: 'logging-out', draft: snapshot });
+    try {
+      const response = await client.logout();
+      if (!active({ kind: 'logout', value: generation })) return;
+      if (typeof response !== 'object' || response === null || !('ok' in response)) {
+        logoutError(snapshot, 'invalid-estimate');
+      } else if (!response.ok) {
+        const code = knownFailureCode(response) ?? 'invalid-estimate';
+        logoutError(snapshot, code);
+      } else {
+        setState({
+          step: 'login',
+          draft: snapshot,
+          code: null,
+          message: null,
+        });
+      }
+    } catch {
+      if (active({ kind: 'logout', value: generation })) {
+        logoutError(snapshot, 'offline');
+      }
+    } finally {
+      if (logoutGeneration.current === generation) logoutLatch.current = false;
     }
   }
 
@@ -830,8 +952,25 @@ export function TextEstimateSheet({
     state.step === 'saving' ||
     (state.step === 'error' &&
       (state.recovery === 'confirm' || state.recovery === 'save'));
-  const locked = state.step === 'estimating' || state.step === 'saving';
+  const locked =
+    state.step === 'logging-in' ||
+    state.step === 'logging-out' ||
+    state.step === 'estimating' ||
+    state.step === 'saving';
   const draft = state.step === 'checking-session' ? initialDraftRef.current : state.draft;
+  const canLogout =
+    state.step === 'input' ||
+    state.step === 'logging-out' ||
+    (state.step === 'error' && (
+      state.recovery === 'input' ||
+      state.recovery === 'estimate' ||
+      state.recovery === 'logout'
+    ));
+  const alertMessage = state.step === 'error'
+    ? state.message
+    : (state.step === 'login' || state.step === 'logging-in')
+      ? state.message
+      : null;
   const inputFieldError = state.step === 'error' && state.recovery === 'input'
     ? state
     : null;
@@ -924,9 +1063,21 @@ export function TextEstimateSheet({
     if (state.step === 'checking-session') {
       return <p role="status" className="py-6 text-center text-sm text-mute">正在检查估算权限…</p>;
     }
+    if (state.step === 'logging-out') return null;
     if (state.step === 'estimating') {
       return (
         <Button fullWidth loading>开始估算</Button>
+      );
+    }
+    if (state.step === 'login' || state.step === 'logging-in') {
+      return (
+        <Button
+          fullWidth
+          loading={state.step === 'logging-in'}
+          onClick={() => void startLogin(state.draft)}
+        >
+          验证并继续
+        </Button>
       );
     }
     if (state.step === 'input') {
@@ -937,9 +1088,7 @@ export function TextEstimateSheet({
       state.recovery === 'confirm' ||
       state.recovery === 'save'
     ) return null;
-    if (state.recovery === 'login') {
-      return <Button fullWidth onClick={() => login(state.draft)}>登录后继续</Button>;
-    }
+    if (state.recovery === 'logout') return null;
     if (state.recovery === 'estimate') {
       return (
         <Button
@@ -954,6 +1103,26 @@ export function TextEstimateSheet({
       return <Button fullWidth onClick={() => void startEstimate(state.draft)}>开始估算</Button>;
     }
     return <Button fullWidth onClick={() => void checkSession(state.draft)}>重试检查</Button>;
+  }
+
+  function renderLoginControl() {
+    if (state.step !== 'login' && state.step !== 'logging-in') return null;
+    return (
+      <label className="grid gap-1 text-xs text-mute">
+        访问码
+        <input
+          ref={accessCodeRef}
+          aria-label="访问码"
+          type="password"
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          maxLength={32}
+          disabled={state.step === 'logging-in'}
+          className={CONTROL_CLASS}
+        />
+      </label>
+    );
   }
 
   function renderConfirmation() {
@@ -1018,22 +1187,24 @@ export function TextEstimateSheet({
         </div>
         <div className="etch" />
         <div className="space-y-4">
-          {state.step === 'error' ? (
+          {alertMessage !== null ? (
             <p
               id={
-                state.recovery === 'input' || state.recovery === 'confirm'
+                state.step === 'error' &&
+                (state.recovery === 'input' || state.recovery === 'confirm')
                   ? FIELD_ERROR_ID
                   : undefined
               }
               role="alert"
               className="rounded-xl border border-amber/50 bg-bg p-3 text-sm text-amber"
             >
-              {state.message}
+              {alertMessage}
             </p>
           ) : null}
           {hasCandidate ? renderConfirmation() : (
             <>
               {state.step === 'checking-session' ? null : renderDraftForm()}
+              {renderLoginControl()}
               {renderInputAction()}
             </>
           )}
@@ -1045,6 +1216,18 @@ export function TextEstimateSheet({
           >
             改用手动记录
           </Button>
+          {canLogout ? (
+            <Button
+              variant="tertiary"
+              fullWidth
+              loading={state.step === 'logging-out'}
+              onClick={() => void startLogout(draft)}
+            >
+              {state.step === 'error' && state.recovery === 'logout'
+                ? '重试退出 AI 登录'
+                : '退出 AI 登录'}
+            </Button>
+          ) : null}
         </div>
       </div>
     </div>

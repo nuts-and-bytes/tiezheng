@@ -16,13 +16,10 @@ import { TodayScreen } from './screens/today/TodayScreen';
 import { Onboarding } from './screens/Onboarding';
 import { getProfile } from './repos/profileRepo';
 
-function bridgeNutritionAiResumeIntoHashRouter(): void {
+function bridgePhotoAiResumeIntoHashRouter(): void {
   if (window.location.hash !== '' || window.location.pathname !== '/health') return;
   const search = new URLSearchParams(window.location.search);
-  if (
-    search.get('photoAi') !== 'resume' &&
-    search.get('textAi') !== 'resume'
-  ) return;
+  if (search.get('photoAi') !== 'resume') return;
 
   const targetHash = `#/health${window.location.search}`;
   try {
@@ -82,7 +79,7 @@ function OnboardingGate() {
 }
 
 export default function App() {
-  bridgeNutritionAiResumeIntoHashRouter();
+  bridgePhotoAiResumeIntoHashRouter();
 
   return (
     <ErrorBoundary>

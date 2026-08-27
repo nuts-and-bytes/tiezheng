@@ -3,6 +3,8 @@ import {
   TEXT_AI_LIMITS,
   TEXT_AI_VERSIONS,
   type TextAiEstimateResponse,
+  type TextAiLoginResponse,
+  type TextAiLogoutResponse,
   type TextAiSessionResponse,
 } from './textAiContract';
 import {
@@ -61,10 +63,99 @@ afterEach(() => {
 
 describe('text AI same-origin client', () => {
   test('exports the exact public client types', () => {
+    expectTypeOf<TextAiClient['login']>().returns.resolves.toMatchTypeOf<TextAiLoginResponse>();
+    expectTypeOf<TextAiClient['logout']>().returns.resolves.toMatchTypeOf<TextAiLogoutResponse>();
     expectTypeOf<TextAiClient['session']>().returns.resolves.toMatchTypeOf<TextAiSessionResponse>();
     expectTypeOf<TextAiClient['estimate']>().returns.resolves.toMatchTypeOf<TextAiEstimateResponse>();
     expectTypeOf<TextAiClient['estimateWithOutcome']>()
       .returns.resolves.toMatchTypeOf<{ terminal: boolean; response: TextAiEstimateResponse }>();
+  });
+
+  test('login sends only the exact access-code JSON to the fixed same-origin endpoint', async () => {
+    const accessCode = 'A'.repeat(32);
+    const fetcher = fetchMock(async (url, init) => {
+      expect(url).toBe('/api/nutrition/text/login');
+      expect(init).toEqual({
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ accessCode }),
+        signal: expect.any(AbortSignal),
+      });
+      expect(String(url)).not.toContain(accessCode);
+      return jsonResponse({ ok: true });
+    });
+
+    await expect(createTextAiClient(fetcher).login(accessCode)).resolves.toEqual({ ok: true });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    '',
+    'A'.repeat(31),
+    'A'.repeat(33),
+    ` ${'A'.repeat(31)}`,
+    `${'A'.repeat(31)}=`,
+    `密${'A'.repeat(31)}`,
+  ])('rejects a noncanonical access code before fetch: %j', async (accessCode) => {
+    const fetcher = vi.fn() as unknown as typeof fetch;
+    await expect(createTextAiClient(fetcher).login(accessCode))
+      .rejects.toThrow('Invalid text AI request');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  test('logout posts an empty request only to the fixed same-origin endpoint', async () => {
+    const fetcher = fetchMock(async () => jsonResponse({ ok: true }));
+
+    await expect(createTextAiClient(fetcher).logout()).resolves.toEqual({ ok: true });
+    expect(fetcher).toHaveBeenCalledWith('/api/nutrition/text/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  test.each([
+    [200, { ok: true }],
+    [401, { ok: false, code: 'auth-required', retryAt: null, resetAt: null }],
+    [429, { ok: false, code: 'rate-limited', retryAt: '2026-08-27T09:15:00.000Z', resetAt: null }],
+    [503, { ok: false, code: 'service-disabled', retryAt: null, resetAt: null }],
+  ])('accepts a strict login response only on status %i', async (status, body) => {
+    const fetcher = fetchMock(async () => jsonResponse(body, { status }));
+    await expect(createTextAiClient(fetcher).login('A'.repeat(32))).resolves.toEqual(body);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['login redirect', 'login', 302, { ok: true }],
+    ['login wrong failure', 'login', 503, { ok: false, code: 'offline', retryAt: null, resetAt: null }],
+    ['login status mismatch', 'login', 200, { ok: false, code: 'auth-required', retryAt: null, resetAt: null }],
+    ['logout failure body', 'logout', 401, { ok: false, code: 'auth-required', retryAt: null, resetAt: null }],
+    ['logout status mismatch', 'logout', 201, { ok: true }],
+  ])('fails closed for %s', async (_label, route, status, body) => {
+    const fetcher = fetchMock(async () => jsonResponse(body, { status }));
+    const client = createTextAiClient(fetcher);
+    const response = route === 'login'
+      ? await client.login('A'.repeat(32))
+      : await client.logout();
+    expect(response).toEqual(failure('invalid-estimate'));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['login', 'logout'])('maps a %s network failure to offline without retrying', async (route) => {
+    const fetcher = fetchMock(async () => {
+      throw new TypeError('private network detail');
+    });
+    const client = createTextAiClient(fetcher);
+    const response = route === 'login'
+      ? await client.login('A'.repeat(32))
+      : await client.logout();
+    expect(response).toEqual(failure('offline'));
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   test('session only reads the fixed same-origin JSON endpoint', async () => {

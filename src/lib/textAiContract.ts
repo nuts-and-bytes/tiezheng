@@ -19,7 +19,6 @@ export const TEXT_AI_LIMITS = Object.freeze({
   candidates: 1,
   assumptions: 8,
   timeoutMs: 20_000,
-  intentMs: 15 * 60_000,
   requestBytes: 8 * 1024,
 } as const);
 
@@ -64,6 +63,14 @@ export interface TextAiSessionSuccess {
   resetAt: string;
 }
 
+export interface TextAiLoginSuccess {
+  ok: true;
+}
+
+export interface TextAiLogoutSuccess {
+  ok: true;
+}
+
 export interface TextAiEstimateCandidate extends MealEstimateCandidate {
   catalogFoodId: null;
   nutrientSource: 'model-range';
@@ -97,6 +104,10 @@ export interface TextAiFailure {
 }
 
 export type TextAiSessionResponse = TextAiSessionSuccess | TextAiFailure;
+
+export type TextAiLoginResponse = TextAiLoginSuccess | TextAiFailure;
+
+export type TextAiLogoutResponse = TextAiLogoutSuccess | TextAiFailure;
 
 export type TextAiEstimateResponse =
   | TextAiEstimateSuccess
@@ -568,6 +579,41 @@ export function parseTextAiSessionResponse(
     return invalidResponse();
   }
   return { ok, enabled, accountRemaining, globalRemaining, resetAt };
+}
+
+export function parseTextAiLoginResponse(
+  value: unknown,
+): TextAiLoginResponse {
+  const snapshot = snapshotObject(value, invalidResponse);
+  if (snapshot.get('ok') === true) {
+    if (!hasExactSnapshotKeys(snapshot, ['ok'])) return invalidResponse();
+    return { ok: true };
+  }
+  const failure = parseFailure(snapshot);
+  if (
+    failure.code !== 'auth-required' &&
+    failure.code !== 'rate-limited' &&
+    failure.code !== 'service-disabled'
+  ) {
+    return invalidResponse();
+  }
+  if (failure.resetAt !== null) return invalidResponse();
+  if (failure.code === 'rate-limited') {
+    if (failure.retryAt === null) return invalidResponse();
+  } else if (failure.retryAt !== null) {
+    return invalidResponse();
+  }
+  return failure;
+}
+
+export function parseTextAiLogoutResponse(
+  value: unknown,
+): TextAiLogoutResponse {
+  const snapshot = snapshotObject(value, invalidResponse);
+  if (!hasExactSnapshotKeys(snapshot, ['ok']) || snapshot.get('ok') !== true) {
+    return invalidResponse();
+  }
+  return { ok: true };
 }
 
 export function parseTextAiEstimateResponse(
