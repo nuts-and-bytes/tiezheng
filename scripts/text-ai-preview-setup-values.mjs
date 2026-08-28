@@ -1,47 +1,46 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 
 const FAILURE = 'Text preview setup failed';
-const EMAIL_PATTERN = /^(?=.{3,254}$)(?=.{1,64}@)[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u;
-const TEAM_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
-const CLIENT_ID_PATTERN = /^(?=.{8,255}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.access$/u;
-const BASE64_32_PATTERN = /^[A-Za-z0-9+/]{43}=$/u;
-const HEX_32_PATTERN = /^[a-f0-9]{64}$/u;
-const MAX_WIPE_NODES = 10_000;
-const MAX_WIPE_PROPERTIES = 100_000;
-const MAX_WIPE_GROUP_LENGTH = 10_000;
-const TYPED_ARRAY_FILL = Uint8Array.prototype.fill;
-const TYPED_ARRAY_SLICE = Uint8Array.prototype.slice;
-const TYPED_ARRAY_SOME = Uint8Array.prototype.some;
-const TYPED_ARRAY_BYTE_LENGTH_GET = Object.getOwnPropertyDescriptor(
-  Object.getPrototypeOf(Uint8Array.prototype),
-  'byteLength',
-).get;
-const BUFFER_TO_STRING = Buffer.prototype.toString;
-const SETUP_INPUT_NAMES = Object.freeze([
-  'cloudflareApiToken',
-  'arkApiKey',
-  'user1Email',
-  'user2Email',
+const SECRET_NAMES = Object.freeze([
+  'CLOUDFLARE_API_TOKEN',
+  'ARK_API_KEY',
+  'PHOTO_AI_CACHE_AES_KEY',
+  'PHOTO_AI_ACCOUNT_HMAC_KEY',
+  'TEXT_AI_USER_1_ACCESS_CODE_PEPPER',
+  'TEXT_AI_USER_1_ACCESS_CODE_DIGEST',
+  'TEXT_AI_USER_2_ACCESS_CODE_PEPPER',
+  'TEXT_AI_USER_2_ACCESS_CODE_DIGEST',
+  'TEXT_AI_SESSION_SIGNING_KEY',
+  'TEXT_AI_RATE_LIMIT_HMAC_KEY',
+  'TEXT_AI_ADMIN_SIGNING_KEY',
 ]);
-const SETUP_WRITE_NAMES = Object.freeze(['inputs', 'teamDomain', 'serviceClientId', 'serviceClientSecret', 'keys']);
+const MATERIAL_NAMES = Object.freeze([
+  'user1Code',
+  'user2Code',
+  'cacheAesKey',
+  'accountHmacKey',
+  'user1AccessCodePepper',
+  'user2AccessCodePepper',
+  'sessionSigningKey',
+  'rateLimitHmacKey',
+  'adminSigningKey',
+]);
+const INPUT_NAMES = Object.freeze(['cloudflareApiToken', 'arkApiKey']);
+const RANDOM_LENGTHS = Object.freeze([24, 24, 32, 32, 32, 32, 32, 32, 32]);
+const ACCESS_CODE = /^[A-Za-z0-9_-]{32}$/u;
+const BASE64URL_32 = /^[A-Za-z0-9_-]{43}$/u;
+const BASE64_32 = /^[A-Za-z0-9+/]{43}=$/u;
+const HEX_32 = /^[a-f0-9]{64}$/u;
+const MATERIALS = new WeakSet();
+const RENDERED = new WeakSet();
+const WRITES = new WeakSet();
+const TYPED_ARRAY_FILL = Uint8Array.prototype.fill;
 
 export const SETUP_POLICY = Object.freeze({
-  repo: 'nuts-and-bytes/tiezheng',
+  repository: 'nuts-and-bytes/tiezheng',
   environment: 'text-ai-preview',
-  serviceTokenName: 'tiezheng-text-ai-preview-github-actions',
-  serviceTokenDuration: '8760h',
-  secretNames: Object.freeze([
-    'CLOUDFLARE_API_TOKEN',
-    'ARK_API_KEY',
-    'PHOTO_AI_CACHE_AES_KEY',
-    'PHOTO_AI_ACCOUNT_HMAC_KEY',
-    'TEXT_AI_USER_1_EMAIL',
-    'TEXT_AI_USER_2_EMAIL',
-    'TEXT_AI_ADMIN_EMAIL',
-    'TEXT_AI_CF_ACCESS_CLIENT_ID',
-    'TEXT_AI_CF_ACCESS_CLIENT_SECRET',
-  ]),
-  variableNames: Object.freeze(['CLOUDFLARE_ACCOUNT_ID', 'TEXT_AI_TEAM_DOMAIN']),
+  secretNames: SECRET_NAMES,
+  variableNames: Object.freeze(['CLOUDFLARE_ACCOUNT_ID']),
 });
 
 function fail() {
@@ -53,8 +52,11 @@ function exactDataRecord(value, names) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) fail();
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) fail();
-    const ownKeys = Reflect.ownKeys(value);
-    if (ownKeys.length !== names.length || ownKeys.some((key) => typeof key !== 'string' || !names.includes(key))) fail();
+    const keys = Reflect.ownKeys(value);
+    if (
+      keys.length !== names.length
+      || keys.some((key) => typeof key !== 'string' || !names.includes(key))
+    ) fail();
     const result = {};
     for (const name of names) {
       const descriptor = Object.getOwnPropertyDescriptor(value, name);
@@ -67,13 +69,21 @@ function exactDataRecord(value, names) {
   }
 }
 
-function peekDataProperty(value, name) {
+function dataMethod(value, name) {
   try {
-    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
-    const descriptor = Object.getOwnPropertyDescriptor(value, name);
-    return descriptor !== undefined && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) fail();
+    let current = value;
+    for (let depth = 0; current !== null && depth < 32; depth += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, name);
+      if (descriptor !== undefined) {
+        if (!Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'function') fail();
+        return descriptor.value;
+      }
+      current = Object.getPrototypeOf(current);
+    }
+    fail();
   } catch {
-    return undefined;
+    fail();
   }
 }
 
@@ -85,34 +95,18 @@ function validSecret(value) {
     && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
-function parseTeamSlug(value) {
-  if (typeof value !== 'string' || !TEAM_SLUG_PATTERN.test(value)) fail();
-  return value;
-}
-
 export function parseSetupInputs(value) {
-  const input = exactDataRecord(value, SETUP_INPUT_NAMES);
+  const input = exactDataRecord(value, INPUT_NAMES);
   if (!validSecret(input.cloudflareApiToken) || !validSecret(input.arkApiKey)) fail();
-  if (typeof input.user1Email !== 'string' || typeof input.user2Email !== 'string') fail();
-  if (!EMAIL_PATTERN.test(input.user1Email) || !EMAIL_PATTERN.test(input.user2Email)) fail();
-  if (input.user1Email === input.user2Email) fail();
   return Object.freeze({
     cloudflareApiToken: input.cloudflareApiToken,
     arkApiKey: input.arkApiKey,
-    user1Email: input.user1Email,
-    user2Email: input.user2Email,
   });
 }
 
-export function parseTeamDomain(authDomain) {
-  const suffix = '.cloudflareaccess.com';
-  if (typeof authDomain !== 'string' || !authDomain.endsWith(suffix)) fail();
-  return parseTeamSlug(authDomain.slice(0, -suffix.length));
-}
-
-function zeroBuffer(value) {
+function wipeBuffer(value) {
   try {
-    if (!Buffer.isBuffer(value)) return true;
+    if (!Buffer.isBuffer(value)) return false;
     Reflect.apply(TYPED_ARRAY_FILL, value, [0]);
     return true;
   } catch {
@@ -120,423 +114,199 @@ function zeroBuffer(value) {
   }
 }
 
-function wipeBuffers(values) {
-  let failed = false;
+function wipeAll(values) {
+  let ok = true;
   for (const value of values) {
-    if (!zeroBuffer(value)) failed = true;
+    if (value !== undefined && !wipeBuffer(value)) ok = false;
   }
-  if (failed) fail();
+  return ok;
 }
 
-function bufferByteLength(value) {
-  try {
-    if (!Buffer.isBuffer(value)) fail();
-    const length = Reflect.apply(TYPED_ARRAY_BYTE_LENGTH_GET, value, []);
-    if (!Number.isSafeInteger(length) || length < 0) fail();
-    return length;
-  } catch {
-    fail();
-  }
+function encodedBuffer(value, encoding) {
+  if (!Buffer.isBuffer(value)) fail();
+  return Buffer.from(value.toString(encoding), 'ascii');
 }
 
-function encodeRawBuffer(value, expectedLength, encoding) {
-  let snapshot;
-  let copy;
-  try {
-    const length = bufferByteLength(value);
-    if (length !== expectedLength) fail();
-    snapshot = Reflect.apply(TYPED_ARRAY_SLICE, value, [0, length]);
-    copy = Buffer.from(snapshot);
-    if (bufferByteLength(copy) !== length) fail();
-    const text = Reflect.apply(BUFFER_TO_STRING, copy, [encoding]);
-    return Buffer.from(text, 'ascii');
-  } catch {
-    fail();
-  } finally {
-    wipeBuffers([snapshot, copy]);
-  }
+function bufferText(value, pattern) {
+  if (!Buffer.isBuffer(value)) fail();
+  for (const byte of value) if (byte > 0x7f) fail();
+  const text = value.toString('ascii');
+  if (!pattern.test(text) || Buffer.byteLength(text, 'ascii') !== value.byteLength) fail();
+  return text;
 }
 
-export function generateSetupKeys(random = randomBytes) {
-  let aes;
-  let hmac;
+function materialRecord(value, { requireCodes = true } = {}) {
+  if (!MATERIALS.has(value)) fail();
+  const record = exactDataRecord(value, MATERIAL_NAMES);
+  const patterns = [
+    ACCESS_CODE,
+    ACCESS_CODE,
+    BASE64_32,
+    HEX_32,
+    BASE64URL_32,
+    BASE64URL_32,
+    BASE64URL_32,
+    BASE64URL_32,
+    BASE64URL_32,
+  ];
+  const result = {};
+  for (let index = 0; index < MATERIAL_NAMES.length; index += 1) {
+    const name = MATERIAL_NAMES[index];
+    if (!Buffer.isBuffer(record[name])) fail();
+    if (requireCodes || index > 1) result[name] = bufferText(record[name], patterns[index]);
+  }
+  return Object.freeze(result);
+}
+
+export function generateSetupMaterials(random = randomBytes) {
+  const raw = [];
+  const encoded = [];
+  let complete = false;
   try {
     if (typeof random !== 'function') fail();
-    aes = random(32);
-    hmac = random(32);
-    if (!Buffer.isBuffer(hmac) || bufferByteLength(hmac) !== 32) fail();
-    if (!Buffer.isBuffer(aes) || bufferByteLength(aes) !== 32) fail();
-    return Object.freeze({
-      aesKey: encodeRawBuffer(aes, 32, 'base64'),
-      hmacKey: encodeRawBuffer(hmac, 32, 'hex'),
-    });
-  } catch {
-    fail();
-  } finally {
-    wipeBuffers([aes, hmac]);
-  }
-}
+    for (const length of RANDOM_LENGTHS) {
+      const value = random(length);
+      raw.push(value);
+      if (!Buffer.isBuffer(value) || value.byteLength !== length) fail();
+    }
+    if (raw[0].equals(raw[1])) fail();
+    const keyFingerprints = raw.slice(2).map((value) => value.toString('hex'));
+    if (new Set(keyFingerprints).size !== 7) fail();
 
-function asciiBufferText(value, pattern) {
-  let snapshot;
-  let copy;
-  try {
-    const length = bufferByteLength(value);
-    snapshot = Reflect.apply(TYPED_ARRAY_SLICE, value, [0, length]);
-    copy = Buffer.from(snapshot);
-    if (bufferByteLength(copy) !== length) fail();
-    if (Reflect.apply(TYPED_ARRAY_SOME, copy, [(byte) => byte > 0x7f])) fail();
-    const text = Reflect.apply(BUFFER_TO_STRING, copy, ['ascii']);
-    if (!pattern.test(text)) fail();
-    return text;
+    encoded.push(
+      encodedBuffer(raw[0], 'base64url'),
+      encodedBuffer(raw[1], 'base64url'),
+      encodedBuffer(raw[2], 'base64'),
+      encodedBuffer(raw[3], 'hex'),
+      encodedBuffer(raw[4], 'base64url'),
+      encodedBuffer(raw[5], 'base64url'),
+      encodedBuffer(raw[6], 'base64url'),
+      encodedBuffer(raw[7], 'base64url'),
+      encodedBuffer(raw[8], 'base64url'),
+    );
+    const materials = Object.freeze(Object.fromEntries(
+      MATERIAL_NAMES.map((name, index) => [name, encoded[index]]),
+    ));
+    MATERIALS.add(materials);
+    materialRecord(materials);
+    complete = true;
+    return materials;
   } catch {
     fail();
   } finally {
-    wipeBuffers([snapshot, copy]);
+    wipeAll(raw);
+    if (!complete) wipeAll(encoded);
   }
-}
-
-function validEncodedKeys(keys) {
-  const parsed = exactDataRecord(keys, ['aesKey', 'hmacKey']);
-  const aesText = asciiBufferText(parsed.aesKey, BASE64_32_PATTERN);
-  let decoded;
-  try {
-    decoded = Buffer.from(aesText, 'base64');
-    if (bufferByteLength(decoded) !== 32
-      || Reflect.apply(BUFFER_TO_STRING, decoded, ['base64']) !== aesText) fail();
-  } catch {
-    fail();
-  } finally {
-    wipeBuffers([decoded]);
-  }
-  asciiBufferText(parsed.hmacKey, HEX_32_PATTERN);
-  return parsed;
 }
 
 function entry(name, value) {
-  return Object.freeze({ name, value: Buffer.from(value) });
+  const buffer = Buffer.isBuffer(value) ? Buffer.from(value) : Buffer.from(value, 'utf8');
+  return Object.freeze({ name, value: buffer });
+}
+
+function accessCodeDigest(code, pepper) {
+  const key = Buffer.from(pepper, 'base64url');
+  try {
+    if (key.byteLength !== 32 || key.toString('base64url') !== pepper) fail();
+    return createHmac('sha256', key).update(code, 'utf8').digest('hex');
+  } finally {
+    wipeBuffer(key);
+  }
 }
 
 export function assembleSetupWrites(value) {
-  let sourceKeys;
+  const created = [];
+  let complete = false;
   try {
-    sourceKeys = peekDataProperty(value, 'keys');
-    const args = exactDataRecord(value, SETUP_WRITE_NAMES);
-    const inputs = parseSetupInputs(args.inputs);
-    const keys = validEncodedKeys(args.keys);
-    if (typeof args.serviceClientId !== 'string' || !CLIENT_ID_PATTERN.test(args.serviceClientId)) fail();
-    if (!validSecret(args.serviceClientSecret)) fail();
-    const teamDomain = parseTeamSlug(args.teamDomain);
-    const secrets = Object.freeze([
-      entry('CLOUDFLARE_API_TOKEN', inputs.cloudflareApiToken),
-      entry('ARK_API_KEY', inputs.arkApiKey),
-      entry('PHOTO_AI_CACHE_AES_KEY', keys.aesKey),
-      entry('PHOTO_AI_ACCOUNT_HMAC_KEY', keys.hmacKey),
-      entry('TEXT_AI_USER_1_EMAIL', inputs.user1Email),
-      entry('TEXT_AI_USER_2_EMAIL', inputs.user2Email),
-      entry('TEXT_AI_ADMIN_EMAIL', inputs.user1Email),
-      entry('TEXT_AI_CF_ACCESS_CLIENT_ID', args.serviceClientId),
-      entry('TEXT_AI_CF_ACCESS_CLIENT_SECRET', args.serviceClientSecret),
+    const record = exactDataRecord(value, ['inputs', 'materials']);
+    const inputs = parseSetupInputs(record.inputs);
+    if (RENDERED.has(record.materials)) fail();
+    const materials = materialRecord(record.materials);
+    const values = new Map([
+      ['CLOUDFLARE_API_TOKEN', inputs.cloudflareApiToken],
+      ['ARK_API_KEY', inputs.arkApiKey],
+      ['PHOTO_AI_CACHE_AES_KEY', materials.cacheAesKey],
+      ['PHOTO_AI_ACCOUNT_HMAC_KEY', materials.accountHmacKey],
+      ['TEXT_AI_USER_1_ACCESS_CODE_PEPPER', materials.user1AccessCodePepper],
+      [
+        'TEXT_AI_USER_1_ACCESS_CODE_DIGEST',
+        accessCodeDigest(materials.user1Code, materials.user1AccessCodePepper),
+      ],
+      ['TEXT_AI_USER_2_ACCESS_CODE_PEPPER', materials.user2AccessCodePepper],
+      [
+        'TEXT_AI_USER_2_ACCESS_CODE_DIGEST',
+        accessCodeDigest(materials.user2Code, materials.user2AccessCodePepper),
+      ],
+      ['TEXT_AI_SESSION_SIGNING_KEY', materials.sessionSigningKey],
+      ['TEXT_AI_RATE_LIMIT_HMAC_KEY', materials.rateLimitHmacKey],
+      ['TEXT_AI_ADMIN_SIGNING_KEY', materials.adminSigningKey],
     ]);
-    return Object.freeze({
-      secrets,
-      variables: Object.freeze([entry('TEXT_AI_TEAM_DOMAIN', teamDomain)]),
-    });
+    const secrets = Object.freeze(SECRET_NAMES.map((name) => {
+      const item = entry(name, values.get(name));
+      created.push(item.value);
+      return item;
+    }));
+    const writes = Object.freeze({ secrets });
+    WRITES.add(writes);
+    complete = true;
+    return writes;
   } catch {
     fail();
   } finally {
-    const keys = sourceKeys;
-    if (keys !== null && (typeof keys === 'object' || typeof keys === 'function')) {
-      wipeBuffers([
-        peekDataProperty(keys, 'aesKey'),
-        peekDataProperty(keys, 'hmacKey'),
-      ]);
-    }
+    if (!complete) wipeAll(created);
   }
 }
 
-function newWipeScan() {
-  return {
-    seen: new WeakSet(),
-    nodes: 0,
-    properties: 0,
-    complete: true,
-  };
-}
-
-function canonicalGroupPrepass(group, buffers) {
-  let valid = true;
-  if (!Array.isArray(group)) return false;
-  let lengthDescriptor;
+export function renderAccessCodesOnce(output, materials) {
+  let record;
   try {
-    lengthDescriptor = Object.getOwnPropertyDescriptor(group, 'length');
+    if (RENDERED.has(materials)) fail();
+    record = materialRecord(materials);
+    RENDERED.add(materials);
+    const write = dataMethod(output, 'write');
+    const result = Reflect.apply(write, output, [
+      `TEXT AI ACCESS CODES - save now\nuser-1: ${record.user1Code}\nuser-2: ${record.user2Code}\n`,
+    ]);
+    if (result !== undefined && typeof result !== 'boolean') fail();
   } catch {
-    return false;
-  }
-  if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')
-    || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return false;
-  const length = lengthDescriptor.value;
-  if (length > MAX_WIPE_GROUP_LENGTH) valid = false;
-  const limit = Math.min(length, MAX_WIPE_GROUP_LENGTH);
-  for (let index = 0; index < limit; index += 1) {
-    let itemDescriptor;
-    try {
-      itemDescriptor = Object.getOwnPropertyDescriptor(group, String(index));
-    } catch {
-      valid = false;
-      continue;
-    }
-    if (itemDescriptor === undefined || !Object.hasOwn(itemDescriptor, 'value')) {
-      valid = false;
-      continue;
-    }
-    const item = itemDescriptor.value;
-    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
-      valid = false;
-      continue;
-    }
-    let nameDescriptor;
-    let valueDescriptor;
-    try {
-      nameDescriptor = Object.getOwnPropertyDescriptor(item, 'name');
-    } catch {
-      valid = false;
-    }
-    try {
-      valueDescriptor = Object.getOwnPropertyDescriptor(item, 'value');
-    } catch {
-      valid = false;
-    }
-    if (valueDescriptor !== undefined && Object.hasOwn(valueDescriptor, 'value')) {
-      if (Buffer.isBuffer(valueDescriptor.value)) buffers.add(valueDescriptor.value);
-      else valid = false;
-    } else {
-      valid = false;
-    }
-    if (nameDescriptor === undefined || !Object.hasOwn(nameDescriptor, 'value')
-      || typeof nameDescriptor.value !== 'string') valid = false;
-  }
-  return valid;
-}
-
-function canonicalPrepass(writes, buffers) {
-  let valid = true;
-  for (const name of ['secrets', 'variables']) {
-    let descriptor;
-    try {
-      descriptor = Object.getOwnPropertyDescriptor(writes, name);
-    } catch {
-      valid = false;
-      continue;
-    }
-    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
-      valid = false;
-      continue;
-    }
-    if (!canonicalGroupPrepass(descriptor.value, buffers)) valid = false;
-  }
-  return valid;
-}
-
-function takeWipePropertyPrefix(scan, count) {
-  if (!Number.isSafeInteger(count) || count < 0) {
-    scan.complete = false;
-    return 0;
-  }
-  const remaining = Math.max(0, MAX_WIPE_PROPERTIES - scan.properties);
-  const allowed = Math.min(count, remaining);
-  scan.properties += allowed;
-  if (allowed < count) scan.complete = false;
-  return allowed;
-}
-
-function reserveWipeProperties(scan, count) {
-  return takeWipePropertyPrefix(scan, count) === count;
-}
-
-function collectBufferProperty(value, buffers, scan = newWipeScan()) {
-  const frames = [{ value, keys: null, index: 0, end: 0 }];
-  while (frames.length > 0) {
-    const frame = frames[frames.length - 1];
-    const current = frame.value;
-    if (frame.keys === null) {
-      if (Buffer.isBuffer(current)) {
-        buffers.add(current);
-        frames.pop();
-        continue;
-      }
-      if (current === null || (typeof current !== 'object' && typeof current !== 'function')) {
-        frames.pop();
-        continue;
-      }
-      if (scan.seen.has(current)) {
-        frames.pop();
-        continue;
-      }
-      scan.seen.add(current);
-      scan.nodes += 1;
-      if (scan.nodes > MAX_WIPE_NODES) {
-        scan.complete = false;
-        frames.pop();
-        continue;
-      }
-      let keys;
+    fail();
+  } finally {
+    if (MATERIALS.has(materials)) {
+      let raw;
       try {
-        keys = Reflect.ownKeys(current);
+        raw = exactDataRecord(materials, MATERIAL_NAMES);
       } catch {
-        scan.complete = false;
-        frames.pop();
-        continue;
+        raw = {};
       }
-      const remaining = Math.max(0, MAX_WIPE_PROPERTIES - scan.properties);
-      frame.keys = keys;
-      frame.index = 0;
-      frame.end = Math.min(keys.length, remaining);
-      if (frame.end < keys.length) scan.complete = false;
-      if (frame.end === 0) {
-        frames.pop();
-        continue;
-      }
-    }
-    if (frame.index >= frame.end) {
-      frames.pop();
-      continue;
-    }
-    if (scan.properties >= MAX_WIPE_PROPERTIES) {
-      scan.complete = false;
-      frames.pop();
-      continue;
-    }
-    const key = frame.keys[frame.index];
-    frame.index += 1;
-    scan.properties += 1;
-    let descriptor;
-    try {
-      descriptor = Object.getOwnPropertyDescriptor(current, key);
-    } catch {
-      scan.complete = false;
-      continue;
-    }
-    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) continue;
-    const child = descriptor.value;
-    if (Buffer.isBuffer(child)) buffers.add(child);
-    else if (child !== null && (typeof child === 'object' || typeof child === 'function')) {
-      frames.push({ value: child, keys: null, index: 0, end: 0 });
+      wipeAll([raw.user1Code, raw.user2Code]);
     }
   }
-  return scan.complete;
 }
 
-function inspectWriteGroup(group, buffers, scan) {
-  if (!Array.isArray(group)) {
-    collectBufferProperty(group, buffers, scan);
-    return false;
-  }
-  let valid = true;
+export function wipeSetupMaterials(materials) {
+  let record;
   try {
-    if (!reserveWipeProperties(scan, 1)) return false;
-    const lengthDescriptor = Object.getOwnPropertyDescriptor(group, 'length');
-    if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')
-      || !Number.isSafeInteger(lengthDescriptor.value)
-      || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_WIPE_GROUP_LENGTH) return false;
-    const length = lengthDescriptor.value;
-    const keys = Reflect.ownKeys(group);
-    const allowedKeys = takeWipePropertyPrefix(scan, keys.length);
-    if (allowedKeys < keys.length) valid = false;
-    let indexCount = 0;
-    for (let keyIndex = 0; keyIndex < allowedKeys; keyIndex += 1) {
-      const key = keys[keyIndex];
-      if (key === 'length') continue;
-      if (typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= length) {
-        valid = false;
-        continue;
-      }
-      indexCount += 1;
-      const descriptor = Object.getOwnPropertyDescriptor(group, key);
-      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
-        valid = false;
-        continue;
-      }
-      const item = descriptor.value;
-      if (item === null || typeof item !== 'object' || Array.isArray(item)) {
-        collectBufferProperty(item, buffers, scan);
-        valid = false;
-        continue;
-      }
-      collectBufferProperty(item, buffers, scan);
-      const itemKeys = Reflect.ownKeys(item);
-      const allowedItemKeys = takeWipePropertyPrefix(scan, itemKeys.length);
-      const itemDescriptors = new Map();
-      for (let itemKeyIndex = 0; itemKeyIndex < allowedItemKeys; itemKeyIndex += 1) {
-        const itemKey = itemKeys[itemKeyIndex];
-        let itemDescriptor;
-        try {
-          itemDescriptor = Object.getOwnPropertyDescriptor(item, itemKey);
-        } catch {
-          valid = false;
-          continue;
-        }
-        itemDescriptors.set(itemKey, itemDescriptor);
-        if (itemDescriptor !== undefined && Object.hasOwn(itemDescriptor, 'value')) {
-          const child = itemDescriptor.value;
-          if (Buffer.isBuffer(child)) buffers.add(child);
-          else if (child !== null && (typeof child === 'object' || typeof child === 'function')) {
-            collectBufferProperty(child, buffers, scan);
-          }
-        }
-      }
-      if (allowedItemKeys < itemKeys.length
-        || itemKeys.length !== 2
-        || itemKeys.some((itemKey) => typeof itemKey !== 'string' || !['name', 'value'].includes(itemKey))) {
-        valid = false;
-        continue;
-      }
-      const nameDescriptor = itemDescriptors.get('name');
-      const valueDescriptor = itemDescriptors.get('value');
-      if (nameDescriptor === undefined || !Object.hasOwn(nameDescriptor, 'value')
-        || valueDescriptor === undefined || !Object.hasOwn(valueDescriptor, 'value')
-        || typeof nameDescriptor.value !== 'string' || !Buffer.isBuffer(valueDescriptor.value)) valid = false;
-    }
-    if (length !== indexCount) valid = false;
+    if (!MATERIALS.has(materials)) fail();
+    record = exactDataRecord(materials, MATERIAL_NAMES);
   } catch {
-    valid = false;
+    fail();
   }
-  return valid;
+  if (!wipeAll(MATERIAL_NAMES.map((name) => record[name]))) fail();
 }
 
 export function wipeSetupWrites(writes) {
-  const buffers = new Set();
-  let canonicalValid;
   try {
-    canonicalValid = canonicalPrepass(writes, buffers);
+    if (!WRITES.has(writes)) fail();
+    const record = exactDataRecord(writes, ['secrets']);
+    if (!Array.isArray(record.secrets) || record.secrets.length !== SECRET_NAMES.length) fail();
+    const buffers = [];
+    for (let index = 0; index < SECRET_NAMES.length; index += 1) {
+      const item = exactDataRecord(record.secrets[index], ['name', 'value']);
+      if (item.name !== SECRET_NAMES[index] || !Buffer.isBuffer(item.value)) fail();
+      buffers.push(item.value);
+    }
+    if (!wipeAll(buffers)) fail();
   } catch {
-    canonicalValid = false;
+    fail();
   }
-  const scan = newWipeScan();
-  let valid = collectBufferProperty(writes, buffers, scan);
-  try {
-    if (writes === null || typeof writes !== 'object' || Array.isArray(writes)) fail();
-    const prototype = Object.getPrototypeOf(writes);
-    if (prototype !== Object.prototype && prototype !== null) fail();
-    const ownKeys = Reflect.ownKeys(writes);
-    if (ownKeys.length !== 2 || ownKeys.some((key) => typeof key !== 'string' || !['secrets', 'variables'].includes(key))) fail();
-    const secretDescriptor = Object.getOwnPropertyDescriptor(writes, 'secrets');
-    const variableDescriptor = Object.getOwnPropertyDescriptor(writes, 'variables');
-    if (secretDescriptor === undefined || !Object.hasOwn(secretDescriptor, 'value')
-      || variableDescriptor === undefined || !Object.hasOwn(variableDescriptor, 'value')) fail();
-    const secretsValid = inspectWriteGroup(secretDescriptor.value, buffers, scan);
-    const variablesValid = inspectWriteGroup(variableDescriptor.value, buffers, scan);
-    valid = canonicalValid && valid && secretsValid && variablesValid;
-  } catch {
-    valid = false;
-    const secrets = peekDataProperty(writes, 'secrets');
-    const variables = peekDataProperty(writes, 'variables');
-    const secretsValid = inspectWriteGroup(secrets, buffers, scan);
-    const variablesValid = inspectWriteGroup(variables, buffers, scan);
-    if (!secretsValid) collectBufferProperty(secrets, buffers, scan);
-    if (!variablesValid) collectBufferProperty(variables, buffers, scan);
-  } finally {
-    wipeBuffers(buffers);
-  }
-  if (!valid) fail();
 }

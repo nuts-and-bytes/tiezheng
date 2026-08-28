@@ -2,9 +2,9 @@ const FAILURE = 'Text preview setup failed';
 const PROMPT_LABELS = new Set([
   'Cloudflare API Token',
   'ARK_API_KEY',
-  'user-1 email',
-  'user-2 email',
   'Continue? [y/N]',
+  'Saved user-1 code? [y/N]',
+  'Saved user-2 code? [y/N]',
 ]);
 
 function failure() {
@@ -240,19 +240,13 @@ export async function readTtyLine(options = {}) {
 export async function promptSetupInputs(input, output) {
   const buffers = [];
   try {
-    for (const [label, hidden] of [
-      ['Cloudflare API Token', true],
-      ['ARK_API_KEY', true],
-      ['user-1 email', false],
-      ['user-2 email', false],
-    ]) {
+    for (const label of ['Cloudflare API Token', 'ARK_API_KEY']) {
+      const hidden = true;
       buffers.push(await readTtyLine({ input, output, label, hidden }));
     }
     const result = Object.freeze({
       cloudflareApiToken: buffers[0].toString('utf8'),
       arkApiKey: buffers[1].toString('utf8'),
-      user1Email: buffers[2].toString('utf8'),
-      user2Email: buffers[3].toString('utf8'),
     });
     return result;
   } finally {
@@ -267,6 +261,22 @@ export async function confirmSetup(input, output) {
     input,
     output,
     label: 'Continue? [y/N]',
+    hidden: false,
+    maxBytes: 1,
+  });
+  try {
+    return answer.toString('utf8') === 'y';
+  } finally {
+    answer.fill(0);
+  }
+}
+
+export async function confirmAccessCodeSaved(input, output, target) {
+  if (target !== 'user-1' && target !== 'user-2') throw failure();
+  const answer = await readTtyLine({
+    input,
+    output,
+    label: `Saved ${target} code? [y/N]`,
     hidden: false,
     maxBytes: 1,
   });

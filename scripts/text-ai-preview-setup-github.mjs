@@ -11,14 +11,13 @@ const MAX_ARGUMENT_LENGTH = 4_096;
 const DEFAULT_TIMEOUT = 20_000;
 const WATCH_TIMEOUT = 300_000;
 const ALLOWED_ENV = Object.freeze(['PATH', 'HOME', 'XDG_CONFIG_HOME', 'LANG', 'LC_ALL']);
-const REPO = 'nuts-and-bytes/tiezheng';
-const ENVIRONMENT = 'text-ai-preview';
+const REPO = SETUP_POLICY.repository;
+const ENVIRONMENT = SETUP_POLICY.environment;
 const WORKFLOW = 'text-ai-preview.yml';
 const WORKFLOW_NAME = 'Text AI Preview Control';
 const JOB_NAME = 'text-ai-preview';
 const STEP_NAME = 'Dispatch fixed operation';
 const ACCOUNT_VARIABLE = 'CLOUDFLARE_ACCOUNT_ID';
-const WRITABLE_VARIABLE_NAMES = Object.freeze(['TEXT_AI_TEAM_DOMAIN']);
 const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
@@ -356,6 +355,7 @@ function validateStableRunInventory(value) {
   if (!Array.isArray(parsed) || parsed.length >= 100) fail();
   const arrayKeys = Reflect.ownKeys(parsed);
   if (arrayKeys.length !== parsed.length + 1) fail();
+  const ids = new Set();
   for (let index = 0; index < parsed.length; index += 1) {
     if (!Object.hasOwn(parsed, String(index))) fail();
     const record = plainRecord(parsed[index]);
@@ -368,8 +368,15 @@ function validateStableRunInventory(value) {
     ) fail();
     const databaseId = dataProperty(record, 'databaseId');
     const status = dataProperty(record, 'status');
-    if (!Number.isSafeInteger(databaseId) || databaseId <= 0 || !statusIsCompleted(status)) fail();
+    if (
+      !Number.isSafeInteger(databaseId)
+      || databaseId <= 0
+      || ids.has(databaseId)
+      || !statusIsCompleted(status)
+    ) fail();
+    ids.add(databaseId);
   }
+  return ids;
 }
 
 function extractRunId(value) {
@@ -462,7 +469,7 @@ function validatePreflightLog(value) {
 export function createGitHubSetupClient(runner = runBoundedCommand) {
   const run = createCheckedRunner(runner);
 
-  async function inspectFirstRun() {
+  async function inspectRepository(expectedSecretNames) {
     try {
       await run('gh', ['auth', 'status', '--hostname', 'github.com']);
       if (await run('git', ['status', '--porcelain=v1']) !== '') fail();
@@ -488,11 +495,11 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
       const secretNames = parseNames(await run('gh', [
         'secret', 'list', '--repo', REPO, '--env', ENVIRONMENT, '--json', 'name',
       ]));
-      if (secretNames.size !== 0) fail();
+      exactNames(secretNames, expectedSecretNames);
       const variableNames = parseNames(await run('gh', [
         'variable', 'list', '--repo', REPO, '--env', ENVIRONMENT, '--json', 'name',
       ]));
-      exactNames(variableNames, [ACCOUNT_VARIABLE]);
+      exactNames(variableNames, SETUP_POLICY.variableNames);
       const accountId = canonicalLine(await run('gh', [
         'variable', 'get', ACCOUNT_VARIABLE, '--repo', REPO, '--env', ENVIRONMENT,
       ]));
@@ -501,6 +508,14 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
     } catch {
       fail();
     }
+  }
+
+  async function inspectFirstRun() {
+    return inspectRepository([]);
+  }
+
+  async function inspectRotation() {
+    return inspectRepository(SETUP_POLICY.secretNames);
   }
 
   async function writeValue(allowedNames, name, value, args) {
@@ -523,11 +538,6 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
     return writeValue(SETUP_POLICY.secretNames, name, value, args);
   }
 
-  async function setVariable(name, value) {
-    const args = ['variable', 'set', name, '--env', ENVIRONMENT, '--repo', REPO];
-    return writeValue(WRITABLE_VARIABLE_NAMES, name, value, args);
-  }
-
   async function deleteValue(allowedNames, name, args) {
     try {
       if (!allowedNames.includes(name)) fail();
@@ -540,12 +550,6 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
   async function deleteSecret(name) {
     return deleteValue(SETUP_POLICY.secretNames, name, [
       'secret', 'delete', name, '--env', ENVIRONMENT, '--repo', REPO,
-    ]);
-  }
-
-  async function deleteVariable(name) {
-    return deleteValue(WRITABLE_VARIABLE_NAMES, name, [
-      'variable', 'delete', name, '--env', ENVIRONMENT, '--repo', REPO,
     ]);
   }
 
@@ -567,7 +571,7 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
   async function runDisabledPreflight(expectedSha) {
     try {
       if (typeof expectedSha !== 'string' || !SHA_PATTERN.test(expectedSha)) fail();
-      validateStableRunInventory(await run('gh', [
+      const priorRunIds = validateStableRunInventory(await run('gh', [
         'run', 'list',
         '--workflow', WORKFLOW,
         '--event', 'workflow_dispatch',
@@ -585,6 +589,7 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
         '-f', 'confirmation=',
       ]);
       const runId = extractRunId(dispatchOutput);
+      if (priorRunIds.has(Number(runId))) fail();
       await run('gh', [
         'run', 'watch', runId, '--exit-status', '--repo', REPO,
       ], { timeoutMs: WATCH_TIMEOUT });
@@ -606,13 +611,53 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
     }
   }
 
+  async function runAccessCodeRotation(target, expectedSha) {
+    try {
+      if (
+        (target !== 'user-1' && target !== 'user-2')
+        || typeof expectedSha !== 'string'
+        || !SHA_PATTERN.test(expectedSha)
+      ) fail();
+      const priorRunIds = validateStableRunInventory(await run('gh', [
+        'run', 'list',
+        '--workflow', WORKFLOW,
+        '--event', 'workflow_dispatch',
+        '--limit', '100',
+        '--json', 'databaseId,status',
+        '--repo', REPO,
+      ]));
+      const dispatchOutput = await run('gh', [
+        'workflow', 'run', WORKFLOW,
+        '--ref', 'main',
+        '--repo', REPO,
+        '-f', 'operation=rotate-user-code',
+        '-f', `target=${target}`,
+        '-f', `expected_sha=${expectedSha}`,
+        '-f', 'confirmation=ROTATE_ONE_TEXT_ACCESS_CODE',
+      ]);
+      const runId = extractRunId(dispatchOutput);
+      if (priorRunIds.has(Number(runId))) fail();
+      await run('gh', [
+        'run', 'watch', runId, '--exit-status', '--repo', REPO,
+      ], { timeoutMs: WATCH_TIMEOUT });
+      const metadata = await run('gh', [
+        'run', 'view', runId,
+        '--repo', REPO,
+        '--json', 'event,headBranch,headSha,status,conclusion,workflowName,jobs',
+      ]);
+      parseJobId(metadata, expectedSha);
+    } catch {
+      fail();
+    }
+  }
+
   return Object.freeze({
     inspectFirstRun,
+    inspectRotation,
     setSecret,
-    setVariable,
     deleteSecret,
-    deleteVariable,
     verifyNames,
     runDisabledPreflight,
+    runAccessCodeRotation,
   });
 }

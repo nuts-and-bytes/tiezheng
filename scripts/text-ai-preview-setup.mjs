@@ -3,35 +3,31 @@ import { pathToFileURL } from 'node:url';
 
 import { createCloudflareClient as createCloudflareApiClient } from './cloudflare-api.mjs';
 import { TEXT_PREVIEW_SETUP_PERMISSION_NAMES } from './text-ai-preview-control.mjs';
-import {
-  createSetupServiceToken,
-  deleteSetupServiceToken,
-  inspectCloudflareSetup,
-} from './text-ai-preview-setup-cloudflare.mjs';
+import { inspectCloudflareSetup } from './text-ai-preview-setup-cloudflare.mjs';
 import { createGitHubSetupClient } from './text-ai-preview-setup-github.mjs';
 import { confirmSetup, promptSetupInputs } from './text-ai-preview-setup-prompt.mjs';
 import {
   SETUP_POLICY,
   assembleSetupWrites,
-  generateSetupKeys,
+  generateSetupMaterials,
   parseSetupInputs,
+  renderAccessCodesOnce,
+  wipeSetupMaterials,
   wipeSetupWrites,
 } from './text-ai-preview-setup-values.mjs';
 
 const FAILURE = 'Text preview setup failed';
-const CLOUDFLARE_BLOCKED = 'Text preview setup blocked: cloudflare.service-token';
 const FAILED_OUTPUT = 'SETUP FAILED\n';
 const CANCELLED_OUTPUT = 'SETUP CANCELLED\n';
 const PREFLIGHT_BLOCKED_OUTPUT = 'SETUP BLOCKED preflight\n';
 const REPORT_BLOCKED_OUTPUT = 'SETUP BLOCKED output\n';
-const SUCCESS_OUTPUT = 'SETUP COMPLETE\nsecrets=9 variables=2 preflight=pass workerTextEnabled=false photoEnabled=false\n';
+const SUCCESS_OUTPUT = 'SETUP COMPLETE\nsecrets=11 variables=1 preflight=pass workerTextEnabled=false photoEnabled=false\n';
 const PREVIEW_OUTPUT = [
   'SETUP PREVIEW',
-  `repo=${SETUP_POLICY.repo}`,
+  `repo=${SETUP_POLICY.repository}`,
   `environment=${SETUP_POLICY.environment}`,
-  `service_token=${SETUP_POLICY.serviceTokenName}`,
-  `secrets=${SETUP_POLICY.secretNames.join(',')}`,
-  'variable=TEXT_AI_TEAM_DOMAIN',
+  'secrets=11',
+  'variables=1(existing)',
   '不会部署、不会启用、不会调用模型',
   '',
 ].join('\n');
@@ -41,27 +37,20 @@ const DEPENDENCY_NAMES = Object.freeze([
   'confirm',
   'createCloudflareClient',
   'inspectCloudflare',
-  'createServiceToken',
-  'deleteServiceToken',
-  'generateKeys',
+  'generateMaterials',
   'stdout',
   'stderr',
 ]);
-const GITHUB_METHOD_NAMES = Object.freeze([
+const GITHUB_METHODS = Object.freeze([
   'inspectFirstRun',
   'setSecret',
-  'setVariable',
   'deleteSecret',
-  'deleteVariable',
   'verifyNames',
   'runDisabledPreflight',
 ]);
 const OVERRIDE_NAMES = Object.freeze(['githubRunner', 'fetcher', 'random']);
-const ID_PATTERN = /^(?=.{1,255}$)[A-Za-z0-9._-]+$/u;
-const TEAM_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
-const RESERVED_IDS = new Set(['.', '..', '__proto__', 'constructor', 'prototype']);
-const TYPED_ARRAY_FILL = Uint8Array.prototype.fill;
-const MAX_WIPE_PROPERTIES = 4_096;
+const ACCOUNT_ID = /^[a-f0-9]{32}$/u;
+const SHA = /^[a-f0-9]{40}$/u;
 
 function fail() {
   throw new Error(FAILURE);
@@ -69,18 +58,6 @@ function fail() {
 
 function isObjectLike(value) {
   return value !== null && (typeof value === 'object' || typeof value === 'function');
-}
-
-function ownDataValue(value, name) {
-  try {
-    if (!isObjectLike(value)) return undefined;
-    const descriptor = Object.getOwnPropertyDescriptor(value, name);
-    return descriptor !== undefined && Object.hasOwn(descriptor, 'value')
-      ? descriptor.value
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function exactDataRecord(value, names) {
@@ -117,364 +94,173 @@ function dataMethod(value, name) {
       }
       current = Object.getPrototypeOf(current);
     }
-  } catch {
     fail();
-  }
-  fail();
-}
-
-function captureWriter(value) {
-  try {
-    return Object.freeze({ owner: value, method: dataMethod(value, 'write') });
-  } catch {
-    return null;
-  }
-}
-
-async function writeFixed(writer, value) {
-  if (writer === null) fail();
-  try {
-    await Reflect.apply(writer.method, writer.owner, [value]);
   } catch {
     fail();
   }
 }
 
-async function writeFixedNoThrow(writer, value) {
-  if (writer === null) return false;
+function ownData(value, name) {
   try {
-    await Reflect.apply(writer.method, writer.owner, [value]);
-    return true;
+    if (!isObjectLike(value)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    return descriptor !== undefined && Object.hasOwn(descriptor, 'value')
+      ? descriptor.value
+      : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
-function captureFunction(owner, value) {
-  if (typeof value !== 'function') fail();
-  return Object.freeze({ owner, method: value });
+function captureCall(owner, name) {
+  return Object.freeze({ owner, method: dataMethod(owner, name) });
 }
 
 function invoke(target, ...args) {
   return Reflect.apply(target.method, target.owner, args);
 }
 
-function parseDependencies(value) {
-  const record = exactDataRecord(value, DEPENDENCY_NAMES);
-  const githubRecord = exactDataRecord(record.github, GITHUB_METHOD_NAMES);
-  const github = {};
-  for (const name of GITHUB_METHOD_NAMES) {
-    github[name] = captureFunction(record.github, githubRecord[name]);
+function captureWriter(value) {
+  try {
+    return captureCall(value, 'write');
+  } catch {
+    return null;
   }
-  const parsed = {
-    github: Object.freeze(github),
-    promptInputs: captureFunction(value, record.promptInputs),
-    confirm: captureFunction(value, record.confirm),
-    createCloudflareClient: captureFunction(value, record.createCloudflareClient),
-    inspectCloudflare: captureFunction(value, record.inspectCloudflare),
-    createServiceToken: captureFunction(value, record.createServiceToken),
-    deleteServiceToken: captureFunction(value, record.deleteServiceToken),
-    generateKeys: captureFunction(value, record.generateKeys),
-    stdout: captureWriter(record.stdout),
-    stderr: captureWriter(record.stderr),
-  };
-  if (parsed.stdout === null || parsed.stderr === null) fail();
-  return Object.freeze(parsed);
 }
 
-function snapshotDenseStrings(value) {
+async function writeText(writer, value) {
+  if (writer === null) fail();
   try {
-    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) fail();
-    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
-    if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, 'value')) fail();
-    const length = lengthDescriptor.value;
-    if (
-      !Number.isSafeInteger(length)
-      || length < 1
-      || length > TEXT_PREVIEW_SETUP_PERMISSION_NAMES.length
-    ) fail();
-    const keys = Reflect.ownKeys(value);
-    if (keys.length !== length + 1) fail();
-    const result = [];
-    for (let index = 0; index < length; index += 1) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-      if (
-        descriptor === undefined
-        || !Object.hasOwn(descriptor, 'value')
-        || typeof descriptor.value !== 'string'
-      ) fail();
-      result.push(descriptor.value);
-    }
-    if (keys.some((key) => {
-      if (key === 'length') return false;
-      return typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= length;
-    })) fail();
-    return result;
+    await invoke(writer, value);
   } catch {
     fail();
   }
 }
 
-function renderMissingPermissions(value) {
-  const missing = snapshotDenseStrings(value);
-  if (
-    new Set(missing).size !== missing.length
-    || missing.some((name) => !TEXT_PREVIEW_SETUP_PERMISSION_NAMES.includes(name))
-  ) fail();
-  const ordered = TEXT_PREVIEW_SETUP_PERMISSION_NAMES.filter((name) => missing.includes(name));
-  return `SETUP FAILED missing_permissions=${ordered.join(',')}\n`;
-}
-
-function parseGitHubState(value) {
-  const state = exactDataRecord(value, ['accountId', 'expectedSha']);
-  if (typeof state.accountId !== 'string' || typeof state.expectedSha !== 'string') fail();
-  return Object.freeze(state);
-}
-
-function parseCloudflareState(value) {
-  const status = ownDataValue(value, 'status');
-  if (status === 'missing-permissions') {
-    const state = exactDataRecord(value, ['status', 'missingPermissions']);
-    return Object.freeze({
-      status,
-      missingPermissions: state.missingPermissions,
-    });
-  }
-  if (status === 'ready') {
-    const state = exactDataRecord(value, ['status', 'teamDomain']);
-    if (typeof state.teamDomain !== 'string' || !TEAM_SLUG_PATTERN.test(state.teamDomain)) fail();
-    return Object.freeze({ status, teamDomain: state.teamDomain });
-  }
-  fail();
-}
-
-function validServiceTokenId(value) {
-  return typeof value === 'string' && ID_PATTERN.test(value) && !RESERVED_IDS.has(value);
-}
-
-function inspectResolvedCredential(value) {
-  let safeId = null;
+async function writeTextNoThrow(writer, value) {
   try {
-    if (isObjectLike(value)) {
-      const idDescriptor = Object.getOwnPropertyDescriptor(value, 'id');
-      if (
-        idDescriptor !== undefined
-        && Object.hasOwn(idDescriptor, 'value')
-        && validServiceTokenId(idDescriptor.value)
-      ) safeId = idDescriptor.value;
-    }
-  } catch {
-    return Object.freeze({ valid: false, safeId: null });
-  }
-
-  try {
-    const credential = exactDataRecord(value, ['id', 'clientId', 'clientSecret']);
-    if (!validServiceTokenId(credential.id)) fail();
-    if (typeof credential.clientId !== 'string' || typeof credential.clientSecret !== 'string') fail();
-    return Object.freeze({
-      valid: true,
-      safeId: credential.id,
-      credential: Object.freeze(credential),
-    });
-  } catch {
-    return Object.freeze({ valid: false, safeId });
-  }
-}
-
-function readWriteEntry(value, expectedName) {
-  const entry = exactDataRecord(value, ['name', 'value']);
-  if (entry.name !== expectedName || !Buffer.isBuffer(entry.value)) fail();
-  return Object.freeze(entry);
-}
-
-function snapshotWriteGroup(value, expectedNames) {
-  try {
-    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) fail();
-    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
-    if (
-      lengthDescriptor === undefined
-      || !Object.hasOwn(lengthDescriptor, 'value')
-      || lengthDescriptor.value !== expectedNames.length
-    ) fail();
-    const keys = Reflect.ownKeys(value);
-    if (keys.length !== expectedNames.length + 1) fail();
-    return Object.freeze(expectedNames.map((name, index) => {
-      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) fail();
-      return readWriteEntry(descriptor.value, name);
-    }));
-  } catch {
-    fail();
-  }
-}
-
-function snapshotWrites(value) {
-  const record = exactDataRecord(value, ['secrets', 'variables']);
-  return Object.freeze({
-    secrets: snapshotWriteGroup(record.secrets, SETUP_POLICY.secretNames),
-    variables: snapshotWriteGroup(record.variables, ['TEXT_AI_TEAM_DOMAIN']),
-  });
-}
-
-function isCloudflareBlockedError(error) {
-  try {
-    if (!(error instanceof Error)) return false;
-    const descriptor = Object.getOwnPropertyDescriptor(error, 'message');
-    return descriptor !== undefined
-      && Object.hasOwn(descriptor, 'value')
-      && descriptor.value === CLOUDFLARE_BLOCKED;
-  } catch {
-    return false;
-  }
-}
-
-function intrinsicWipe(value) {
-  try {
-    if (!Buffer.isBuffer(value)) return true;
-    Reflect.apply(TYPED_ARRAY_FILL, value, [0]);
+    if (writer === null) return false;
+    await invoke(writer, value);
     return true;
   } catch {
     return false;
   }
 }
 
-function wipeSecretCandidates(candidates) {
-  const buffers = new Set();
-  const seen = new WeakSet();
-  const records = [];
-  const priorityNames = ['aesKey', 'hmacKey', 'clientSecret'];
-  for (const value of candidates) {
-    try {
-      if (Buffer.isBuffer(value)) {
-        buffers.add(value);
-        continue;
-      }
-      if (!isObjectLike(value) || seen.has(value)) continue;
-      seen.add(value);
-      records.push(value);
-    } catch {
-      continue;
-    }
-  }
-
-  for (const value of records) {
-    for (const name of priorityNames) {
-      const candidate = ownDataValue(value, name);
-      try {
-        if (Buffer.isBuffer(candidate)) buffers.add(candidate);
-      } catch {
-        // Continue the bounded data-property scan below.
-      }
-    }
-  }
-
-  let properties = 0;
-  for (const value of records) {
-    if (properties >= MAX_WIPE_PROPERTIES) break;
-    let keys;
-    try {
-      keys = Reflect.ownKeys(value);
-    } catch {
-      continue;
-    }
-    for (const key of keys) {
-      if (priorityNames.includes(key)) continue;
-      if (properties >= MAX_WIPE_PROPERTIES) break;
-      properties += 1;
-      try {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        if (
-          descriptor !== undefined
-          && Object.hasOwn(descriptor, 'value')
-          && Buffer.isBuffer(descriptor.value)
-        ) buffers.add(descriptor.value);
-      } catch {
-        // Cleanup is best effort, bounded, and never changes the fixed public result.
-      }
-    }
-  }
-  for (const buffer of buffers) intrinsicWipe(buffer);
+function parseDependencies(value) {
+  const record = exactDataRecord(value, DEPENDENCY_NAMES);
+  const github = {};
+  for (const name of GITHUB_METHODS) github[name] = captureCall(record.github, name);
+  return Object.freeze({
+    github: Object.freeze(github),
+    promptInputs: captureCall(value, 'promptInputs'),
+    confirm: captureCall(value, 'confirm'),
+    createCloudflareClient: captureCall(value, 'createCloudflareClient'),
+    inspectCloudflare: captureCall(value, 'inspectCloudflare'),
+    generateMaterials: captureCall(value, 'generateMaterials'),
+    stdout: captureWriter(record.stdout),
+    stderr: captureWriter(record.stderr),
+  });
 }
 
-async function compensateAttemptedResources(attempted, dependencies, cloudflareClient) {
-  const blocked = [];
-  for (let index = attempted.variables.length - 1; index >= 0; index -= 1) {
-    const name = attempted.variables[index];
-    try {
-      await invoke(dependencies.github.deleteVariable, name);
-    } catch {
-      blocked.push(`github.variable:${name}`);
-    }
+function parseGitHubState(value) {
+  const state = exactDataRecord(value, ['accountId', 'expectedSha']);
+  if (!ACCOUNT_ID.test(state.accountId) || !SHA.test(state.expectedSha)) fail();
+  return Object.freeze(state);
+}
+
+function parseMissingPermissions(value) {
+  try {
+    if (!Array.isArray(value) || value.length < 1 || value.length > 3) fail();
+    const result = [...value];
+    if (
+      new Set(result).size !== result.length
+      || result.some((name) => (
+        typeof name !== 'string' || !TEXT_PREVIEW_SETUP_PERMISSION_NAMES.includes(name)
+      ))
+    ) fail();
+    return TEXT_PREVIEW_SETUP_PERMISSION_NAMES.filter((name) => result.includes(name));
+  } catch {
+    fail();
   }
-  for (let index = attempted.secrets.length - 1; index >= 0; index -= 1) {
-    const name = attempted.secrets[index];
+}
+
+function parseCloudflareState(value) {
+  const status = ownData(value, 'status');
+  if (status === 'ready') {
+    exactDataRecord(value, ['status']);
+    return Object.freeze({ status });
+  }
+  if (status === 'missing-permissions') {
+    const state = exactDataRecord(value, ['status', 'missingPermissions']);
+    return Object.freeze({ status, missingPermissions: parseMissingPermissions(state.missingPermissions) });
+  }
+  fail();
+}
+
+function snapshotWrites(writes) {
+  const record = exactDataRecord(writes, ['secrets']);
+  try {
+    if (!Array.isArray(record.secrets) || record.secrets.length !== SETUP_POLICY.secretNames.length) fail();
+    return Object.freeze(SETUP_POLICY.secretNames.map((name, index) => {
+      const item = exactDataRecord(record.secrets[index], ['name', 'value']);
+      if (item.name !== name || !Buffer.isBuffer(item.value) || item.value.byteLength < 1) fail();
+      return Object.freeze(item);
+    }));
+  } catch {
+    fail();
+  }
+}
+
+async function compensateSecrets(names, dependencies) {
+  const blocked = [];
+  for (let index = names.length - 1; index >= 0; index -= 1) {
+    const name = names[index];
     try {
       await invoke(dependencies.github.deleteSecret, name);
     } catch {
       blocked.push(`github.secret:${name}`);
     }
   }
-  if (attempted.serviceTokenResolved) {
-    if (attempted.serviceTokenId === null) {
-      blocked.push('cloudflare.service-token');
-    } else {
-      try {
-        await invoke(
-          dependencies.deleteServiceToken,
-          cloudflareClient,
-          attempted.serviceTokenId,
-        );
-      } catch {
-        blocked.push('cloudflare.service-token');
-      }
-    }
-  }
   return blocked;
 }
 
-function cleanupLocalSecrets(writes, candidates) {
+function cleanupLocal(writes, materials) {
   if (writes !== undefined) {
     try {
       wipeSetupWrites(writes);
     } catch {
-      // wipeSetupWrites already attempts intrinsic clearing before reporting malformed input.
+      // The public failure remains fixed after best-effort intrinsic cleanup.
     }
   }
-  wipeSecretCandidates(candidates);
+  if (materials !== undefined) {
+    try {
+      wipeSetupMaterials(materials);
+    } catch {
+      // The public failure remains fixed after best-effort intrinsic cleanup.
+    }
+  }
 }
 
 export async function runTextPreviewSetup(dependencies) {
-  const fallbackStderr = captureWriter(ownDataValue(dependencies, 'stderr'));
+  const fallbackStderr = captureWriter(ownData(dependencies, 'stderr'));
   let parsed;
   try {
     parsed = parseDependencies(dependencies);
+    if (parsed.stdout === null || parsed.stderr === null) fail();
   } catch {
-    await writeFixedNoThrow(fallbackStderr, FAILED_OUTPUT);
+    await writeTextNoThrow(fallbackStderr, FAILED_OUTPUT);
     return 1;
   }
 
-  const attempted = {
-    serviceTokenResolved: false,
-    serviceTokenId: null,
-    secrets: [],
-    variables: [],
-  };
-  let keys;
+  let materials;
   let writes;
-  let cloudflareClient;
-  let rawKeysCandidate;
-  let resolvedKeysCandidate;
-  let rawCredentialCandidate;
-  let resolvedCredentialCandidate;
-  let phase = 'read-only-checks';
+  let phase = 'read-only';
+  const attemptedSecrets = [];
   try {
     const githubState = parseGitHubState(await invoke(parsed.github.inspectFirstRun));
-
-    phase = 'collect';
     const inputs = parseSetupInputs(await invoke(parsed.promptInputs));
-
-    phase = 'validate';
-    cloudflareClient = await invoke(parsed.createCloudflareClient, {
+    const cloudflareClient = await invoke(parsed.createCloudflareClient, {
       accountId: githubState.accountId,
       apiToken: inputs.cloudflareApiToken,
     });
@@ -484,89 +270,59 @@ export async function runTextPreviewSetup(dependencies) {
       cloudflareClient,
     ));
     if (cloudflareState.status === 'missing-permissions') {
-      await writeFixed(parsed.stderr, renderMissingPermissions(cloudflareState.missingPermissions));
+      await writeText(
+        parsed.stderr,
+        `SETUP FAILED missing_permissions=${cloudflareState.missingPermissions.join(',')}\n`,
+      );
       return 1;
     }
 
-    rawKeysCandidate = invoke(parsed.generateKeys);
-    resolvedKeysCandidate = await rawKeysCandidate;
-    keys = resolvedKeysCandidate;
-    await writeFixed(parsed.stdout, PREVIEW_OUTPUT);
+    materials = await invoke(parsed.generateMaterials);
+    writes = assembleSetupWrites({ inputs, materials });
+    const writePlan = snapshotWrites(writes);
+    await writeText(parsed.stdout, PREVIEW_OUTPUT);
 
     phase = 'confirm';
     const confirmed = await invoke(parsed.confirm);
     if (confirmed === false) {
-      await writeFixed(parsed.stderr, CANCELLED_OUTPUT);
+      await writeText(parsed.stderr, CANCELLED_OUTPUT);
       return 1;
     }
     if (confirmed !== true) fail();
 
-    phase = 'create-token';
-    rawCredentialCandidate = invoke(parsed.createServiceToken, cloudflareClient);
-    resolvedCredentialCandidate = await rawCredentialCandidate;
-    attempted.serviceTokenResolved = true;
-    const inspectedCredential = inspectResolvedCredential(resolvedCredentialCandidate);
-    attempted.serviceTokenId = inspectedCredential.safeId;
-    if (!inspectedCredential.valid) fail();
-
-    writes = assembleSetupWrites({
-      inputs,
-      teamDomain: cloudflareState.teamDomain,
-      serviceClientId: inspectedCredential.credential.clientId,
-      serviceClientSecret: inspectedCredential.credential.clientSecret,
-      keys,
-    });
-    const writePlan = snapshotWrites(writes);
-
     phase = 'write-github';
-    for (const item of writePlan.secrets) {
-      attempted.secrets.push(item.name);
+    for (const item of writePlan) {
+      attemptedSecrets.push(item.name);
       await invoke(parsed.github.setSecret, item.name, item.value);
-    }
-    for (const item of writePlan.variables) {
-      attempted.variables.push(item.name);
-      await invoke(parsed.github.setVariable, item.name, item.value);
     }
 
     phase = 'verify-names';
     await invoke(parsed.github.verifyNames);
 
+    phase = 'render-codes';
+    renderAccessCodesOnce(parsed.stdout.owner, materials);
+
     phase = 'preflight';
     await invoke(parsed.github.runDisabledPreflight, githubState.expectedSha);
 
     phase = 'report';
-    await writeFixed(parsed.stdout, SUCCESS_OUTPUT);
-
+    await writeText(parsed.stdout, SUCCESS_OUTPUT);
     phase = 'complete';
     return 0;
-  } catch (error) {
-    if (phase === 'create-token' && isCloudflareBlockedError(error)) {
-      await writeFixedNoThrow(parsed.stderr, 'SETUP BLOCKED cleanup=cloudflare.service-token\n');
-      return 1;
+  } catch {
+    const blocked = await compensateSecrets(attemptedSecrets, parsed);
+    if (blocked.length > 0) {
+      await writeTextNoThrow(parsed.stderr, `SETUP BLOCKED cleanup=${blocked.join(',')}\n`);
+    } else if (phase === 'preflight') {
+      await writeTextNoThrow(parsed.stderr, PREFLIGHT_BLOCKED_OUTPUT);
+    } else if (phase === 'report') {
+      await writeTextNoThrow(parsed.stderr, REPORT_BLOCKED_OUTPUT);
+    } else {
+      await writeTextNoThrow(parsed.stderr, FAILED_OUTPUT);
     }
-    if (phase === 'preflight') {
-      await writeFixedNoThrow(parsed.stderr, PREFLIGHT_BLOCKED_OUTPUT);
-      return 1;
-    }
-    if (phase === 'report') {
-      await writeFixedNoThrow(parsed.stderr, REPORT_BLOCKED_OUTPUT);
-      return 1;
-    }
-    const blocked = await compensateAttemptedResources(attempted, parsed, cloudflareClient);
-    await writeFixedNoThrow(
-      parsed.stderr,
-      blocked.length === 0
-        ? FAILED_OUTPUT
-        : `SETUP BLOCKED cleanup=${blocked.join(',')}\n`,
-    );
     return 1;
   } finally {
-    cleanupLocalSecrets(writes, [
-      rawKeysCandidate,
-      resolvedKeysCandidate,
-      rawCredentialCandidate,
-      resolvedCredentialCandidate,
-    ]);
+    cleanupLocal(writes, materials);
   }
 }
 
@@ -592,14 +348,14 @@ function parseOverrides(value) {
   }
 }
 
-function readIoChannel(io, name) {
+function ioChannel(io, name) {
   if (io === process) return process[name];
-  const value = ownDataValue(io, name);
+  const value = ownData(io, name);
   if (value === undefined) fail();
   return value;
 }
 
-function dataBoolean(value, name) {
+function booleanProperty(value, name) {
   try {
     if (!isObjectLike(value)) return undefined;
     let current = value;
@@ -620,29 +376,23 @@ function dataBoolean(value, name) {
 
 function emptyArguments(value) {
   try {
-    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
-    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
-    if (
-      lengthDescriptor === undefined
-      || !Object.hasOwn(lengthDescriptor, 'value')
-      || lengthDescriptor.value !== 0
-    ) return false;
-    const keys = Reflect.ownKeys(value);
-    return keys.length === 1 && keys[0] === 'length';
+    return Array.isArray(value)
+      && Object.getPrototypeOf(value) === Array.prototype
+      && value.length === 0
+      && Reflect.ownKeys(value).length === 1;
   } catch {
     return false;
   }
 }
 
 function createRealDependencies(io, overrides) {
-  const stdin = readIoChannel(io, 'stdin');
-  const stdout = readIoChannel(io, 'stdout');
-  const stderr = readIoChannel(io, 'stderr');
+  const stdin = ioChannel(io, 'stdin');
+  const stdout = ioChannel(io, 'stdout');
+  const stderr = ioChannel(io, 'stderr');
   const parsedOverrides = parseOverrides(overrides);
   const github = parsedOverrides.githubRunner === undefined
     ? createGitHubSetupClient()
     : createGitHubSetupClient(parsedOverrides.githubRunner);
-
   return Object.freeze({
     github,
     promptInputs: () => promptSetupInputs(stdin, stdout),
@@ -653,34 +403,31 @@ function createRealDependencies(io, overrides) {
       ...(parsedOverrides.fetcher === undefined ? {} : { fetcher: parsedOverrides.fetcher }),
     }),
     inspectCloudflare: inspectCloudflareSetup,
-    createServiceToken: createSetupServiceToken,
-    deleteServiceToken: deleteSetupServiceToken,
-    generateKeys: () => parsedOverrides.random === undefined
-      ? generateSetupKeys()
-      : generateSetupKeys(parsedOverrides.random),
+    generateMaterials: () => parsedOverrides.random === undefined
+      ? generateSetupMaterials()
+      : generateSetupMaterials(parsedOverrides.random),
     stdout,
     stderr,
   });
 }
 
 export async function runTextPreviewSetupCli(argv, io = process, overrides = {}) {
-  let stderrWriter = null;
+  let stderr = null;
   try {
-    const stdin = readIoChannel(io, 'stdin');
-    const stdout = readIoChannel(io, 'stdout');
-    const stderr = readIoChannel(io, 'stderr');
-    stderrWriter = captureWriter(stderr);
+    const stdin = ioChannel(io, 'stdin');
+    const stdout = ioChannel(io, 'stdout');
+    stderr = captureWriter(ioChannel(io, 'stderr'));
     if (
       !emptyArguments(argv)
-      || dataBoolean(stdin, 'isTTY') !== true
-      || dataBoolean(stdout, 'isTTY') !== true
+      || booleanProperty(stdin, 'isTTY') !== true
+      || booleanProperty(stdout, 'isTTY') !== true
     ) {
-      await writeFixedNoThrow(stderrWriter, FAILED_OUTPUT);
+      await writeTextNoThrow(stderr, FAILED_OUTPUT);
       return 1;
     }
     return await runTextPreviewSetup(createRealDependencies(io, overrides));
   } catch {
-    await writeFixedNoThrow(stderrWriter, FAILED_OUTPUT);
+    await writeTextNoThrow(stderr, FAILED_OUTPUT);
     return 1;
   }
 }
