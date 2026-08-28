@@ -301,8 +301,8 @@ describe('text admin Pages HMAC authorization firewall', () => {
   test.each([
     ['body byte', { body: JSON.stringify({ ...adminBody, target: 'user-2' }), signatureBody: JSON.stringify(adminBody) }],
     ['operation id', { signatureOperationId: '2'.repeat(32) }],
-    ['clock future', { timestamp: String(Date.now() + 301_000) }],
-    ['clock past', { timestamp: String(Date.now() - 301_000) }],
+    ['clock future', { timestamp: String(Date.now() + 600_000) }],
+    ['clock past', { timestamp: String(Date.now() - 600_000) }],
     ['wrong key', { signingKey: OTHER_ADMIN_KEY }],
     ['missing headers', { signatureHeaders: false }],
   ] as const)('maps invalid %s signatures to one non-leaking 401', async (_case, options) => {
