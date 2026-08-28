@@ -3,32 +3,27 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { createCloudflareClient } from './cloudflare-api.mjs';
+import { signTextAdminRequest } from './text-ai-admin-signature.mjs';
 
 const FAILURE_MESSAGE = 'Text preview control failed';
 const ACCOUNT_ID_PATTERN = /^[a-f0-9]{32}$/;
-const TEAM_DOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-const EMAIL_PATTERN = /^(?=.{3,254}$)(?=.{1,64}@)[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
-const SERVICE_CLIENT_ID_PATTERN = /^(?=.{8,255}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.access$/;
+const BASE64URL_32_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_SECRET_LENGTH = 4_096;
 const WORKER_NAME = 'tiezheng-photo-ai-gateway';
 const PAGES_PROJECT_NAME = 'tiezheng';
-const USER_APP_NAME = 'tiezheng-text-ai-preview-users';
-const ADMIN_APP_NAME = 'tiezheng-text-ai-preview-admin';
-const DEDICATED_APP_PREFIX = 'tiezheng-text-ai-preview-';
 const PREVIEW_HOST = 'text-ai-preview.tiezheng.pages.dev';
 const PREVIEW_ORIGIN = `https://${PREVIEW_HOST}`;
-const USER_APP_DOMAIN = `${PREVIEW_HOST}/api/nutrition/text`;
-const ADMIN_APP_DOMAIN = `${PREVIEW_HOST}/api/nutrition/text-admin`;
 const EXPECTED_PREVIEW_ENV_NAMES = new Set([
-  'PHOTO_AI_TEAM_DOMAIN',
   'PHOTO_AI_ALLOWED_ORIGINS',
   'PHOTO_AI_ACCOUNT_HMAC_KEY',
-  'TEXT_AI_ACCESS_AUD',
-  'TEXT_AI_ALLOWED_EMAILS',
-  'TEXT_AI_ALLOWED_EMAIL_COUNT',
-  'TEXT_AI_ADMIN_ACCESS_AUD',
-  'TEXT_AI_ADMIN_EMAIL',
-  'TEXT_AI_ADMIN_SERVICE_CLIENT_ID',
+  'TEXT_AI_USER_1_ACCESS_CODE_PEPPER',
+  'TEXT_AI_USER_1_ACCESS_CODE_DIGEST',
+  'TEXT_AI_USER_2_ACCESS_CODE_PEPPER',
+  'TEXT_AI_USER_2_ACCESS_CODE_DIGEST',
+  'TEXT_AI_SESSION_SIGNING_KEY',
+  'TEXT_AI_RATE_LIMIT_HMAC_KEY',
+  'TEXT_AI_ADMIN_SIGNING_KEY',
 ]);
 const EXPECTED_PREVIEW_SERVICE_NAMES = new Set(['PHOTO_AI_GATEWAY']);
 const PREVIEW_BINDING_CONTAINER_NAMES = Object.freeze([
@@ -83,27 +78,15 @@ const REQUIRED_TOKEN_CAPABILITY_ALIASES = Object.freeze([
   Object.freeze(['Account API Tokens Read']),
   Object.freeze(['Workers Scripts Edit', 'Workers Scripts Write']),
   Object.freeze(['Cloudflare Pages Edit', 'Pages Write']),
-  Object.freeze(['Access: Apps and Policies Edit', 'Access: Apps and Policies Write']),
-  Object.freeze([
-    'Access: Identity Providers Read',
-    'Access: Organizations, Identity Providers, and Groups Read',
-  ]),
-  Object.freeze(['Access: Service Tokens Read']),
 ]);
-const SETUP_TOKEN_CAPABILITY_ALIASES = Object.freeze([
-  Object.freeze(['Account API Tokens Read']),
-  Object.freeze(['Workers Scripts Edit', 'Workers Scripts Write']),
-  Object.freeze(['Cloudflare Pages Edit', 'Pages Write']),
-  Object.freeze(['Access: Apps and Policies Edit', 'Access: Apps and Policies Write']),
-  Object.freeze(['Access: Organizations, Identity Providers, and Groups Read']),
-  Object.freeze(['Access: Service Tokens Read']),
-  Object.freeze(['Access: Service Tokens Write']),
-]);
+const SETUP_TOKEN_CAPABILITY_ALIASES = REQUIRED_TOKEN_CAPABILITY_ALIASES;
+export const TEXT_PREVIEW_TOKEN_PERMISSION_NAMES = Object.freeze(
+  REQUIRED_TOKEN_CAPABILITY_ALIASES.map((aliases) => aliases[0]),
+);
 export const TEXT_PREVIEW_SETUP_PERMISSION_NAMES = Object.freeze(
   SETUP_TOKEN_CAPABILITY_ALIASES.map((aliases) => aliases[0]),
 );
 const VALID_CONFIGS = new WeakSet();
-const VALID_CLOUDFLARE_CONFIGS = new WeakSet();
 
 function fail() {
   throw new Error(FAILURE_MESSAGE);
@@ -177,14 +160,6 @@ function safeIdentifier(value) {
 
 function configIsValid(config) {
   return config !== null && typeof config === 'object' && VALID_CONFIGS.has(config);
-}
-
-function cloudflareConfigIsValid(config) {
-  return (
-    config !== null
-    && typeof config === 'object'
-    && VALID_CLOUDFLARE_CONFIGS.has(config)
-  );
 }
 
 function clientGet(client) {
@@ -288,8 +263,14 @@ function isSecret(value, minimumLength = 1) {
   );
 }
 
-function isNormalizedEmail(value) {
-  return EMAIL_PATTERN.test(value);
+function isCanonicalBase64Url32(value) {
+  if (typeof value !== 'string' || !BASE64URL_32_PATTERN.test(value)) return false;
+  try {
+    const decoded = Buffer.from(value, 'base64url');
+    return decoded.byteLength === 32 && decoded.toString('base64url') === value;
+  } catch {
+    return false;
+  }
 }
 
 function parseCloudflareCredentials(env) {
@@ -303,76 +284,85 @@ function parseCloudflareCredentials(env) {
   });
 }
 
-function loadCloudflareControlConfig(env) {
-  try {
-    const config = parseCloudflareCredentials(env);
-    VALID_CLOUDFLARE_CONFIGS.add(config);
-    return config;
-  } catch {
-    fail();
-  }
-}
-
 export function loadTextPreviewConfig(env) {
   try {
     const { accountId, apiToken } = parseCloudflareCredentials(env);
-    const teamDomain = requiredString(env, 'TEXT_AI_TEAM_DOMAIN', (value) => TEAM_DOMAIN_PATTERN.test(value));
-    const countValue = requiredString(env, 'TEXT_AI_ALLOWED_EMAIL_COUNT', (value) => value === '2' || value === '3');
-    const allowedEmailCount = Number(countValue);
-    const user1Email = requiredString(env, 'TEXT_AI_USER_1_EMAIL', isNormalizedEmail);
-    const user2Email = requiredString(env, 'TEXT_AI_USER_2_EMAIL', isNormalizedEmail);
-    const adminEmail = requiredString(env, 'TEXT_AI_ADMIN_EMAIL', isNormalizedEmail);
-    const serviceClientId = requiredString(
+    const arkApiKey = requiredString(env, 'ARK_API_KEY', (value) => isSecret(value));
+    const cacheAesKey = requiredString(
       env,
-      'TEXT_AI_CF_ACCESS_CLIENT_ID',
-      (value) => SERVICE_CLIENT_ID_PATTERN.test(value),
-    );
-    const serviceClientSecret = requiredString(
-      env,
-      'TEXT_AI_CF_ACCESS_CLIENT_SECRET',
-      (value) => isSecret(value),
+      'PHOTO_AI_CACHE_AES_KEY',
+      (value) => isSecret(value, 32),
     );
     const accountHmacKey = requiredString(
       env,
       'PHOTO_AI_ACCOUNT_HMAC_KEY',
       (value) => isSecret(value, 32),
     );
-    const thirdValue = ownDataValue(env, 'TEXT_AI_USER_3_EMAIL', false);
-
-    if (user1Email === user2Email || adminEmail !== user1Email) fail();
-
-    let user3Email;
-    if (allowedEmailCount === 3) {
-      if (typeof thirdValue !== 'string' || !isNormalizedEmail(thirdValue)) fail();
-      if (thirdValue === user1Email || thirdValue === user2Email) fail();
-      user3Email = thirdValue;
-    } else if (thirdValue !== undefined) {
+    const user1AccessCodePepper = requiredString(
+      env,
+      'TEXT_AI_USER_1_ACCESS_CODE_PEPPER',
+      isCanonicalBase64Url32,
+    );
+    const user1AccessCodeDigest = requiredString(
+      env,
+      'TEXT_AI_USER_1_ACCESS_CODE_DIGEST',
+      (value) => DIGEST_PATTERN.test(value),
+    );
+    const user2AccessCodePepper = requiredString(
+      env,
+      'TEXT_AI_USER_2_ACCESS_CODE_PEPPER',
+      isCanonicalBase64Url32,
+    );
+    const user2AccessCodeDigest = requiredString(
+      env,
+      'TEXT_AI_USER_2_ACCESS_CODE_DIGEST',
+      (value) => DIGEST_PATTERN.test(value),
+    );
+    const sessionSigningKey = requiredString(
+      env,
+      'TEXT_AI_SESSION_SIGNING_KEY',
+      isCanonicalBase64Url32,
+    );
+    const rateLimitHmacKey = requiredString(
+      env,
+      'TEXT_AI_RATE_LIMIT_HMAC_KEY',
+      isCanonicalBase64Url32,
+    );
+    const adminSigningKey = requiredString(
+      env,
+      'TEXT_AI_ADMIN_SIGNING_KEY',
+      isCanonicalBase64Url32,
+    );
+    const independentKeys = [
+      user1AccessCodePepper,
+      user2AccessCodePepper,
+      sessionSigningKey,
+      rateLimitHmacKey,
+      adminSigningKey,
+    ];
+    if (
+      new Set(independentKeys).size !== independentKeys.length
+      || user1AccessCodeDigest === user2AccessCodeDigest
+    ) {
       fail();
     }
-
-    const allowedEmailList = Object.freeze([
-      user1Email,
-      user2Email,
-      ...(user3Email === undefined ? [] : [user3Email]),
-    ]);
 
     const config = Object.freeze({
       accountId,
       apiToken,
-      teamDomain,
-      allowedEmailCount,
-      allowedEmailList,
-      allowedEmails: allowedEmailList.join(','),
-      user1Email,
-      user2Email,
-      ...(user3Email === undefined ? {} : { user3Email }),
-      adminEmail,
-      serviceClientId,
-      serviceClientSecret,
+      arkApiKey,
+      cacheAesKey,
       accountHmacKey,
+      user1AccessCodePepper,
+      user1AccessCodeDigest,
+      user2AccessCodePepper,
+      user2AccessCodeDigest,
+      sessionSigningKey,
+      rateLimitHmacKey,
+      adminSigningKey,
+      allowedOrigin: PREVIEW_ORIGIN,
     });
     VALID_CONFIGS.add(config);
-    VALID_CLOUDFLARE_CONFIGS.add(config);
     return config;
   } catch {
     fail();
@@ -600,20 +590,6 @@ function parseWorkerSettings(value) {
   });
 }
 
-function parseOtpProvider(value) {
-  const provider = requireSingleBy(value, (snapshot) => snapshot.get('type') === 'onetimepin');
-  const id = provider.get('id');
-  if (!safeIdentifier(id)) fail();
-  return id;
-}
-
-function parseServiceToken(value, clientId) {
-  const token = requireSingleBy(value, (snapshot) => snapshot.get('client_id') === clientId);
-  const id = token.get('id');
-  if (!safeIdentifier(id)) fail();
-  return id;
-}
-
 export async function preflightTextPreview(config, client) {
   try {
     if (!configIsValid(config)) fail();
@@ -631,17 +607,10 @@ export async function preflightTextPreview(config, client) {
       await get(`/workers/scripts/${WORKER_NAME}/settings`),
     );
     if (workerSettings.photoAiGatewayEnabled) fail();
-    const otpProviderId = parseOtpProvider(await get('/access/identity_providers'));
-    const serviceTokenId = parseServiceToken(
-      await get('/access/service_tokens'),
-      config.serviceClientId,
-    );
 
     return Object.freeze({
       project,
       workerName: WORKER_NAME,
-      otpProviderId,
-      serviceTokenId,
       photoAiGatewayEnabled: workerSettings.photoAiGatewayEnabled,
       workerTextEnabled: workerSettings.workerTextEnabled,
     });
@@ -658,125 +627,6 @@ export async function verifyTextPreviewSetupToken(accountId, client) {
   }
 }
 
-function desiredUserApp() {
-  return Object.freeze({
-    name: USER_APP_NAME,
-    domain: USER_APP_DOMAIN,
-    type: 'self_hosted',
-    session_duration: '30m',
-    app_launcher_visible: false,
-  });
-}
-
-function desiredAdminApp() {
-  return Object.freeze({
-    name: ADMIN_APP_NAME,
-    domain: ADMIN_APP_DOMAIN,
-    type: 'self_hosted',
-    session_duration: '30m',
-    app_launcher_visible: false,
-  });
-}
-
-function parseDedicatedApp(value, expectedName) {
-  const snapshot = snapshotRecord(value);
-  const id = snapshot.get('id');
-  const aud = snapshot.get('aud');
-  const name = snapshot.get('name');
-  if (!safeIdentifier(id) || !safeIdentifier(aud) || name !== expectedName) fail();
-  for (const key of ['domain', 'type', 'session_duration']) {
-    if (typeof snapshot.get(key) !== 'string') fail();
-  }
-  if (typeof snapshot.get('app_launcher_visible') !== 'boolean') fail();
-  return Object.freeze({ value: cloneJsonValue(value), snapshot, id, aud, name });
-}
-
-function scanDedicatedApps(value) {
-  const matches = new Map([
-    [USER_APP_NAME, []],
-    [ADMIN_APP_NAME, []],
-  ]);
-  const seenIds = new Set();
-  for (const item of snapshotUnpaginatedList(value)) {
-    const snapshot = snapshotRecord(item);
-    const id = snapshot.get('id');
-    const name = snapshot.get('name');
-    const domain = snapshot.get('domain');
-    if (!safeIdentifier(id) || typeof name !== 'string' || seenIds.has(id)) fail();
-    seenIds.add(id);
-    if (domain !== undefined && typeof domain !== 'string') fail();
-    if (
-      (domain === USER_APP_DOMAIN && name !== USER_APP_NAME)
-      || (domain === ADMIN_APP_DOMAIN && name !== ADMIN_APP_NAME)
-    ) {
-      fail();
-    }
-    if (name.startsWith(DEDICATED_APP_PREFIX) && !matches.has(name)) fail();
-    if (matches.has(name)) matches.get(name).push(item);
-  }
-  for (const resources of matches.values()) {
-    if (resources.length > 1) fail();
-  }
-  return Object.freeze({
-    observedAppIds: Object.freeze([...seenIds]),
-    user: matches.get(USER_APP_NAME).length === 0
-      ? undefined
-      : parseDedicatedApp(matches.get(USER_APP_NAME)[0], USER_APP_NAME),
-    admin: matches.get(ADMIN_APP_NAME).length === 0
-      ? undefined
-      : parseDedicatedApp(matches.get(ADMIN_APP_NAME)[0], ADMIN_APP_NAME),
-  });
-}
-
-function appMatches(app, desired) {
-  return (
-    app.snapshot.get('name') === desired.name
-    && app.snapshot.get('domain') === desired.domain
-    && app.snapshot.get('type') === desired.type
-    && app.snapshot.get('session_duration') === desired.session_duration
-    && app.snapshot.get('app_launcher_visible') === desired.app_launcher_visible
-  );
-}
-
-function parseWrittenApp(value, desired) {
-  const app = parseDedicatedApp(value, desired.name);
-  if (!appMatches(app, desired)) fail();
-  return app;
-}
-
-function desiredUserPolicy(config, otpProviderId) {
-  return Object.freeze({
-    name: `${USER_APP_NAME}-allow`,
-    decision: 'allow',
-    session_duration: '30m',
-    include: config.allowedEmailList.map((email) => ({ email: { email } })),
-    require: [{ login_method: { id: otpProviderId } }],
-    exclude: [],
-  });
-}
-
-function desiredAdminHumanPolicy(config, otpProviderId) {
-  return Object.freeze({
-    name: `${ADMIN_APP_NAME}-human`,
-    decision: 'allow',
-    session_duration: '30m',
-    include: [{ email: { email: config.adminEmail } }],
-    require: [{ login_method: { id: otpProviderId } }],
-    exclude: [],
-  });
-}
-
-function desiredAdminServicePolicy(serviceTokenId) {
-  return Object.freeze({
-    name: `${ADMIN_APP_NAME}-service`,
-    decision: 'non_identity',
-    session_duration: '30m',
-    include: [{ service_token: { token_id: serviceTokenId } }],
-    require: [],
-    exclude: [],
-  });
-}
-
 function stableJson(value) {
   if (value === null || typeof value === 'boolean' || typeof value === 'string') {
     return JSON.stringify(value);
@@ -791,106 +641,6 @@ function stableJson(value) {
   const snapshot = snapshotRecord(value);
   const keys = [...snapshot.keys()].sort();
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(snapshot.get(key))}`).join(',')}}`;
-}
-
-function policyComparable(policySnapshot) {
-  const comparable = {};
-  for (const key of ['name', 'decision', 'session_duration', 'include', 'require', 'exclude']) {
-    if (!policySnapshot.has(key)) fail();
-    comparable[key] = cloneJsonValue(policySnapshot.get(key));
-  }
-  return comparable;
-}
-
-function parsePolicies(value, expectedNames, observedResourceIds = new Set()) {
-  const result = new Map();
-  for (const item of snapshotUnpaginatedList(value)) {
-    cloneJsonValue(item);
-    const snapshot = snapshotRecord(item);
-    const id = snapshot.get('id');
-    const name = snapshot.get('name');
-    if (
-      !safeIdentifier(id)
-      || typeof name !== 'string'
-      || !expectedNames.has(name)
-      || result.has(name)
-      || observedResourceIds.has(id)
-    ) {
-      fail();
-    }
-    observedResourceIds.add(id);
-    result.set(name, Object.freeze({ id, snapshot }));
-  }
-  return result;
-}
-
-function parseDeletedApp(value, expectedId) {
-  const snapshot = snapshotRecord(value);
-  if (snapshot.size !== 1 || snapshot.get('id') !== expectedId) fail();
-}
-
-function appIsExactDisableTarget(app, desired) {
-  return (
-    app.snapshot.get('name') === desired.name
-    && app.snapshot.get('domain') === desired.domain
-    && app.snapshot.get('type') === desired.type
-  );
-}
-
-function inspectDedicatedAppIdentities(apps) {
-  const resourceIds = new Set(apps.observedAppIds);
-  const audiences = new Set();
-  for (const app of [apps.user, apps.admin]) {
-    if (app === undefined) continue;
-    if (audiences.has(app.aud)) fail();
-    audiences.add(app.aud);
-  }
-  return { resourceIds, audiences };
-}
-
-export async function disableTextPreviewAccess(config, client) {
-  try {
-    if (!cloudflareConfigIsValid(config)) fail();
-    const get = clientGet(client);
-    const remove = clientMethod(client, 'delete');
-    const apps = scanDedicatedApps(await get('/access/apps'));
-    if (
-      (apps.user !== undefined && !appIsExactDisableTarget(apps.user, desiredUserApp()))
-      || (apps.admin !== undefined && !appIsExactDisableTarget(apps.admin, desiredAdminApp()))
-    ) {
-      fail();
-    }
-    const observedResourceIds = new Set(apps.observedAppIds);
-
-    if (apps.user !== undefined) {
-      parsePolicies(
-        await get(`/access/apps/${apps.user.id}/policies`),
-        new Set([`${USER_APP_NAME}-allow`]),
-        observedResourceIds,
-      );
-    }
-    if (apps.admin !== undefined) {
-      parsePolicies(
-        await get(`/access/apps/${apps.admin.id}/policies`),
-        new Set([`${ADMIN_APP_NAME}-human`, `${ADMIN_APP_NAME}-service`]),
-        observedResourceIds,
-      );
-    }
-
-    const deletedApps = [];
-    if (apps.user !== undefined) {
-      parseDeletedApp(await remove(`/access/apps/${apps.user.id}`), apps.user.id);
-      deletedApps.push(USER_APP_NAME);
-    }
-    if (apps.admin !== undefined) {
-      parseDeletedApp(await remove(`/access/apps/${apps.admin.id}`), apps.admin.id);
-      deletedApps.push(ADMIN_APP_NAME);
-    }
-
-    return { disabled: true, deletedApps };
-  } catch {
-    fail();
-  }
 }
 
 function isNonNegativeInteger(value) {
@@ -1101,13 +851,14 @@ function defaultOperationId() {
 
 function parseInvokeDependencies(dependencies) {
   const snapshot = snapshotRecord(dependencies);
-  const allowed = new Set(['generateOperationId', 'setTimeout', 'clearTimeout']);
+  const allowed = new Set(['generateOperationId', 'now', 'setTimeout', 'clearTimeout']);
   for (const key of snapshot.keys()) {
     if (!allowed.has(key)) fail();
   }
   const generateOperationId = snapshot.has('generateOperationId')
     ? snapshot.get('generateOperationId')
     : defaultOperationId;
+  const now = snapshot.has('now') ? snapshot.get('now') : () => Date.now();
   const setDeadline = snapshot.has('setTimeout')
     ? snapshot.get('setTimeout')
     : (callback, delay) => globalThis.setTimeout(callback, delay);
@@ -1116,12 +867,13 @@ function parseInvokeDependencies(dependencies) {
     : (timer) => globalThis.clearTimeout(timer);
   if (
     typeof generateOperationId !== 'function'
+    || typeof now !== 'function'
     || typeof setDeadline !== 'function'
     || typeof clearDeadline !== 'function'
   ) {
     fail();
   }
-  return Object.freeze({ generateOperationId, setDeadline, clearDeadline });
+  return Object.freeze({ generateOperationId, now, setDeadline, clearDeadline });
 }
 
 export async function invokeTextPreviewAdmin(
@@ -1140,7 +892,21 @@ export async function invokeTextPreviewAdmin(
     const parsed = parseInvokeOptions(options);
     const operationId = runtime.generateOperationId();
     if (typeof operationId !== 'string' || !OPERATION_ID_PATTERN.test(operationId)) fail();
-    const targetEmail = parsed.target === 'user-1' ? config.user1Email : config.user2Email;
+    const now = runtime.now();
+    if (!Number.isSafeInteger(now) || now < 0) fail();
+    const timestamp = String(now);
+    const body = JSON.stringify({
+      schemaVersion: 1,
+      operationId,
+      operation: parsed.operation,
+      target: parsed.target,
+    });
+    const signature = signTextAdminRequest({
+      key: config.adminSigningKey,
+      timestamp,
+      operationId,
+      body,
+    });
     const controller = new AbortController();
     timer = runtime.setDeadline(() => {
       deadlineExpired = true;
@@ -1153,18 +919,15 @@ export async function invokeTextPreviewAdmin(
         method: 'POST',
         redirect: 'error',
         headers: {
-          'content-type': 'application/json',
-          'cf-access-client-id': config.serviceClientId,
-          'cf-access-client-secret': config.serviceClientSecret,
           origin: PREVIEW_ORIGIN,
           'sec-fetch-site': 'same-origin',
+          'content-type': 'application/json',
+          'content-length': String(Buffer.byteLength(body, 'utf8')),
+          'x-tiezheng-admin-version': 'v1',
+          'x-tiezheng-admin-timestamp': timestamp,
+          'x-tiezheng-admin-signature': signature,
         },
-        body: JSON.stringify({
-          schemaVersion: 1,
-          operationId,
-          operation: parsed.operation,
-          targetEmail,
-        }),
+        body,
         signal: controller.signal,
       },
     ));
@@ -1200,7 +963,7 @@ function parseCliArguments(argv) {
   if (values.some((value) => typeof value !== 'string')) fail();
   if (
     values.length === 1
-    && (values[0] === 'preflight' || values[0] === 'configure' || values[0] === 'disable-access')
+    && (values[0] === 'preflight' || values[0] === 'configure')
   ) {
     return Object.freeze({ command: values[0] });
   }
@@ -1224,6 +987,7 @@ function parseCliDependencies(dependencies) {
     'clientFactory',
     'fetcher',
     'generateOperationId',
+    'now',
     'writeStdout',
     'writeStderr',
   ]);
@@ -1240,19 +1004,21 @@ function parseCliDependencies(dependencies) {
   const generateOperationId = snapshot.has('generateOperationId')
     ? snapshot.get('generateOperationId')
     : defaultOperationId;
+  const now = snapshot.has('now') ? snapshot.get('now') : () => Date.now();
   const writeStdout = snapshot.has('writeStdout')
     ? snapshot.get('writeStdout')
     : (value) => process.stdout.write(value);
   const writeStderr = snapshot.has('writeStderr')
     ? snapshot.get('writeStderr')
     : (value) => process.stderr.write(value);
-  for (const value of [clientFactory, fetcher, generateOperationId, writeStdout, writeStderr]) {
+  for (const value of [clientFactory, fetcher, generateOperationId, now, writeStdout, writeStderr]) {
     if (typeof value !== 'function') fail();
   }
   return Object.freeze({
     clientFactory,
     fetcher,
     generateOperationId,
+    now,
     writeStdout,
     writeStderr,
   });
@@ -1270,15 +1036,16 @@ export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
     const parsedDependencies = parseCliDependencies(dependencies);
     writeStderr = parsedDependencies.writeStderr;
     const command = parseCliArguments(argv);
-    const config = command.command === 'disable-access'
-      ? loadCloudflareControlConfig(env)
-      : loadTextPreviewConfig(env);
+    const config = loadTextPreviewConfig(env);
     if (command.command === 'invoke-admin') {
       const result = await invokeTextPreviewAdmin(
         config,
         { operation: command.operation, target: command.target },
         parsedDependencies.fetcher,
-        { generateOperationId: parsedDependencies.generateOperationId },
+        {
+          generateOperationId: parsedDependencies.generateOperationId,
+          now: parsedDependencies.now,
+        },
       );
       writeCliLine(parsedDependencies.writeStdout, result);
       return 0;
@@ -1299,13 +1066,7 @@ export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
       writeCliLine(parsedDependencies.writeStdout, { command: 'configure', status: 'configured' });
       return 0;
     }
-    const result = await disableTextPreviewAccess(config, client);
-    writeCliLine(parsedDependencies.writeStdout, {
-      command: 'disable-access',
-      status: 'disabled',
-      deletedApps: result.deletedApps,
-    });
-    return 0;
+    fail();
   } catch {
     try {
       writeStderr(`${FAILURE_MESSAGE}\n`);
@@ -1329,10 +1090,6 @@ function isDirectExecution() {
 
 if (isDirectExecution()) {
   process.exitCode = await runTextPreviewControlCli(process.argv.slice(2), process.env);
-}
-
-function policyMatches(policy, desired) {
-  return stableJson(policyComparable(policy.snapshot)) === stableJson(desired);
 }
 
 function inspectNamedRecord(value, allowedNames) {
@@ -1441,20 +1198,41 @@ function productionHash(project) {
     .digest('hex');
 }
 
-function desiredPagesPatch(config, userAudience, adminAudience) {
+function desiredPagesPatch(config) {
   return {
     deployment_configs: {
       preview: {
         env_vars: {
-          PHOTO_AI_TEAM_DOMAIN: { type: 'plain_text', value: config.teamDomain },
           PHOTO_AI_ALLOWED_ORIGINS: { type: 'plain_text', value: PREVIEW_ORIGIN },
           PHOTO_AI_ACCOUNT_HMAC_KEY: { type: 'secret_text', value: config.accountHmacKey },
-          TEXT_AI_ACCESS_AUD: { type: 'secret_text', value: userAudience },
-          TEXT_AI_ALLOWED_EMAILS: { type: 'secret_text', value: config.allowedEmails },
-          TEXT_AI_ALLOWED_EMAIL_COUNT: { type: 'plain_text', value: String(config.allowedEmailCount) },
-          TEXT_AI_ADMIN_ACCESS_AUD: { type: 'secret_text', value: adminAudience },
-          TEXT_AI_ADMIN_EMAIL: { type: 'secret_text', value: config.adminEmail },
-          TEXT_AI_ADMIN_SERVICE_CLIENT_ID: { type: 'secret_text', value: config.serviceClientId },
+          TEXT_AI_USER_1_ACCESS_CODE_PEPPER: {
+            type: 'secret_text',
+            value: config.user1AccessCodePepper,
+          },
+          TEXT_AI_USER_1_ACCESS_CODE_DIGEST: {
+            type: 'secret_text',
+            value: config.user1AccessCodeDigest,
+          },
+          TEXT_AI_USER_2_ACCESS_CODE_PEPPER: {
+            type: 'secret_text',
+            value: config.user2AccessCodePepper,
+          },
+          TEXT_AI_USER_2_ACCESS_CODE_DIGEST: {
+            type: 'secret_text',
+            value: config.user2AccessCodeDigest,
+          },
+          TEXT_AI_SESSION_SIGNING_KEY: {
+            type: 'secret_text',
+            value: config.sessionSigningKey,
+          },
+          TEXT_AI_RATE_LIMIT_HMAC_KEY: {
+            type: 'secret_text',
+            value: config.rateLimitHmacKey,
+          },
+          TEXT_AI_ADMIN_SIGNING_KEY: {
+            type: 'secret_text',
+            value: config.adminSigningKey,
+          },
         },
         services: {
           PHOTO_AI_GATEWAY: {
@@ -1508,176 +1286,16 @@ function inspectExpectedPreviewProject(project, desiredPreview) {
   return actual;
 }
 
-async function writeApp(client, existing, desired) {
-  if (existing === undefined) {
-    return {
-      app: parseWrittenApp(await client.post('/access/apps', desired), desired),
-      created: true,
-    };
-  }
-  if (!appMatches(existing, desired)) {
-    const app = parseWrittenApp(await client.put(`/access/apps/${existing.id}`, desired), desired);
-    if (app.id !== existing.id) fail();
-    return {
-      app,
-      created: false,
-    };
-  }
-  return { app: existing, created: false };
-}
-
-async function writePolicy(client, appId, existing, desired) {
-  const value = existing === undefined
-    ? await client.post(`/access/apps/${appId}/policies`, desired)
-    : policyMatches(existing, desired)
-      ? undefined
-      : await client.put(`/access/apps/${appId}/policies/${existing.id}`, desired);
-  if (value === undefined) return existing.id;
-  const snapshot = snapshotRecord(value);
-  const id = snapshot.get('id');
-  if (
-    !safeIdentifier(id)
-    || (existing !== undefined && id !== existing.id)
-    || stableJson(policyComparable(snapshot)) !== stableJson(desired)
-  ) {
-    fail();
-  }
-  return id;
-}
-
-async function writeObservedPolicy(client, appId, existing, desired, observedResourceIds) {
-  const policyId = await writePolicy(client, appId, existing, desired);
-  if (existing === undefined) {
-    if (observedResourceIds.has(policyId)) fail();
-    observedResourceIds.add(policyId);
-  }
-  return policyId;
-}
-
-async function reconcileAccessAppPlans(client, plans, observedResourceIds, observedAudiences) {
-  const results = new Map();
-
-  for (const plan of plans) {
-    if (plan.existing !== undefined) continue;
-    const written = await writeApp(client, undefined, plan.desiredApp);
-    if (
-      observedResourceIds.has(written.app.id)
-      || observedAudiences.has(written.app.aud)
-    ) {
-      fail();
-    }
-    observedResourceIds.add(written.app.id);
-    observedAudiences.add(written.app.aud);
-    for (const policy of plan.policies) {
-      await writeObservedPolicy(
-        client,
-        written.app.id,
-        undefined,
-        policy.desired,
-        observedResourceIds,
-      );
-    }
-    results.set(plan.name, written);
-  }
-
-  for (const plan of plans) {
-    if (plan.existing === undefined) continue;
-    for (const policy of plan.policies) {
-      await writeObservedPolicy(
-        client,
-        plan.existing.id,
-        policy.existing,
-        policy.desired,
-        observedResourceIds,
-      );
-    }
-  }
-
-  for (const plan of plans) {
-    if (plan.existing === undefined) continue;
-    const written = await writeApp(client, plan.existing, plan.desiredApp);
-    if (written.app.aud !== plan.existing.aud) {
-      observedAudiences.delete(plan.existing.aud);
-      if (observedAudiences.has(written.app.aud)) fail();
-      observedAudiences.add(written.app.aud);
-    }
-    results.set(plan.name, written);
-  }
-
-  return results;
-}
-
 export async function reconcileTextPreview(config, client) {
   try {
     if (!configIsValid(config)) fail();
     const get = clientGet(client);
-    const post = clientMethod(client, 'post');
-    const put = clientMethod(client, 'put');
     const patch = clientMethod(client, 'patch');
-    const api = Object.freeze({ get, post, put, patch });
 
     const preflight = await preflightTextPreview(config, client);
     const beforePreview = inspectPreviewProject(preflight.project);
     const beforeProductionHash = productionHash(preflight.project);
-    const apps = scanDedicatedApps(await get('/access/apps'));
-    const identities = inspectDedicatedAppIdentities(apps);
-    const userPolicies = apps.user === undefined
-      ? new Map()
-      : parsePolicies(
-        await get(`/access/apps/${apps.user.id}/policies`),
-        new Set([`${USER_APP_NAME}-allow`]),
-        identities.resourceIds,
-      );
-    const adminPolicies = apps.admin === undefined
-      ? new Map()
-      : parsePolicies(
-        await get(`/access/apps/${apps.admin.id}/policies`),
-        new Set([`${ADMIN_APP_NAME}-human`, `${ADMIN_APP_NAME}-service`]),
-        identities.resourceIds,
-      );
-
-    const userPolicy = desiredUserPolicy(config, preflight.otpProviderId);
-    const adminHumanPolicy = desiredAdminHumanPolicy(config, preflight.otpProviderId);
-    const adminServicePolicy = desiredAdminServicePolicy(preflight.serviceTokenId);
-
-    const writtenApps = await reconcileAccessAppPlans(api, [
-      {
-        name: 'user',
-        existing: apps.user,
-        desiredApp: desiredUserApp(),
-        policies: [{
-          existing: userPolicies.get(userPolicy.name),
-          desired: userPolicy,
-        }],
-      },
-      {
-        name: 'admin',
-        existing: apps.admin,
-        desiredApp: desiredAdminApp(),
-        policies: [
-          {
-            existing: adminPolicies.get(adminHumanPolicy.name),
-            desired: adminHumanPolicy,
-          },
-          {
-            existing: adminPolicies.get(adminServicePolicy.name),
-            desired: adminServicePolicy,
-          },
-        ],
-      },
-    ], identities.resourceIds, identities.audiences);
-    const writtenUser = writtenApps.get('user');
-    const writtenAdmin = writtenApps.get('admin');
-    if (
-      writtenUser === undefined
-      || writtenAdmin === undefined
-      || writtenUser.app.id === writtenAdmin.app.id
-      || writtenUser.app.aud === writtenAdmin.app.aud
-    ) {
-      fail();
-    }
-
-    const pagesPatch = desiredPagesPatch(config, writtenUser.app.aud, writtenAdmin.app.aud);
+    const pagesPatch = desiredPagesPatch(config);
     const recheckedProject = parsePagesProject(await get('/pages/projects/tiezheng'));
     const recheckedPreview = inspectPreviewProject(recheckedProject);
     if (
@@ -1709,11 +1327,7 @@ export async function reconcileTextPreview(config, client) {
       fail();
     }
 
-    return {
-      configured: true,
-      userApp: { name: USER_APP_NAME, created: writtenUser.created },
-      adminApp: { name: ADMIN_APP_NAME, created: writtenAdmin.created },
-    };
+    return { configured: true };
   } catch {
     fail();
   }

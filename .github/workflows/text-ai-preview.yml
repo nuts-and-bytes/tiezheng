@@ -10,6 +10,7 @@ on:
         options:
           - preflight
           - deploy-disabled
+          - rotate-user-code
           - enable-admin-preview
           - status
           - enable-second-account
@@ -87,16 +88,16 @@ jobs:
           TEXT_AI_USER_2_STATUS_FILE: ${{ runner.temp }}/text-ai-preview-user-2-status-${{ github.run_id }}-${{ github.run_attempt }}.json
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TEXT_AI_TEAM_DOMAIN: ${{ vars.TEXT_AI_TEAM_DOMAIN }}
-          TEXT_AI_ALLOWED_EMAIL_COUNT: '2'
-          TEXT_AI_USER_1_EMAIL: ${{ secrets.TEXT_AI_USER_1_EMAIL }}
-          TEXT_AI_USER_2_EMAIL: ${{ secrets.TEXT_AI_USER_2_EMAIL }}
-          TEXT_AI_ADMIN_EMAIL: ${{ secrets.TEXT_AI_ADMIN_EMAIL }}
-          TEXT_AI_CF_ACCESS_CLIENT_ID: ${{ secrets.TEXT_AI_CF_ACCESS_CLIENT_ID }}
-          TEXT_AI_CF_ACCESS_CLIENT_SECRET: ${{ secrets.TEXT_AI_CF_ACCESS_CLIENT_SECRET }}
+          TEXT_AI_USER_1_ACCESS_CODE_PEPPER: ${{ secrets.TEXT_AI_USER_1_ACCESS_CODE_PEPPER }}
+          TEXT_AI_USER_1_ACCESS_CODE_DIGEST: ${{ secrets.TEXT_AI_USER_1_ACCESS_CODE_DIGEST }}
+          TEXT_AI_USER_2_ACCESS_CODE_PEPPER: ${{ secrets.TEXT_AI_USER_2_ACCESS_CODE_PEPPER }}
+          TEXT_AI_USER_2_ACCESS_CODE_DIGEST: ${{ secrets.TEXT_AI_USER_2_ACCESS_CODE_DIGEST }}
+          TEXT_AI_SESSION_SIGNING_KEY: ${{ secrets.TEXT_AI_SESSION_SIGNING_KEY }}
+          TEXT_AI_RATE_LIMIT_HMAC_KEY: ${{ secrets.TEXT_AI_RATE_LIMIT_HMAC_KEY }}
+          TEXT_AI_ADMIN_SIGNING_KEY: ${{ secrets.TEXT_AI_ADMIN_SIGNING_KEY }}
           PHOTO_AI_ACCOUNT_HMAC_KEY: ${{ secrets.PHOTO_AI_ACCOUNT_HMAC_KEY }}
-          ARK_API_KEY: ${{ inputs.operation == 'enable-admin-preview' && secrets.ARK_API_KEY || '' }}
-          PHOTO_AI_CACHE_AES_KEY: ${{ inputs.operation == 'enable-admin-preview' && secrets.PHOTO_AI_CACHE_AES_KEY || '' }}
+          ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+          PHOTO_AI_CACHE_AES_KEY: ${{ secrets.PHOTO_AI_CACHE_AES_KEY }}
         run: |
           set -euo pipefail
           umask 077
@@ -504,6 +505,17 @@ jobs:
               deploy_worker_disabled
               deploy_pages_preview
               ;;
+            rotate-user-code)
+              if [ "$TEXT_AI_CONFIRMATION" != 'ROTATE_ONE_TEXT_ACCESS_CODE' ]; then
+                exit 1
+              fi
+              case "$TEXT_AI_TARGET" in
+                user-1|user-2) ;;
+                *) exit 1 ;;
+              esac
+              node scripts/text-ai-preview-control.mjs configure > /dev/null
+              deploy_pages_preview
+              ;;
             enable-admin-preview)
               if [ "$TEXT_AI_TARGET" != 'user-1' ] || [ "$TEXT_AI_CONFIRMATION" != 'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT' ]; then
                 exit 1
@@ -556,39 +568,19 @@ jobs:
               else
                 disable_failure_mask=$((disable_failure_mask | 2))
               fi
-              TEXT_AI_DISABLE_ACCESS_ATTEMPTED='false'
-              if [ "$disable_failure_mask" -eq 0 ]; then
-                TEXT_AI_DISABLE_ACCESS_ATTEMPTED='true'
-                if node scripts/text-ai-preview-control.mjs disable-access > /dev/null; then
-                  :
-                else
-                  disable_failure_mask=$((disable_failure_mask | 4))
-                fi
-              else
-                disable_failure_mask=$((disable_failure_mask | 4))
-              fi
-              TEXT_AI_DISABLE_FAILURE_MASK="$disable_failure_mask" TEXT_AI_DISABLE_ACCESS_ATTEMPTED="$TEXT_AI_DISABLE_ACCESS_ATTEMPTED" node --input-type=module <<'NODE'
+              TEXT_AI_DISABLE_FAILURE_MASK="$disable_failure_mask" node --input-type=module <<'NODE'
           const rawMask = process.env.TEXT_AI_DISABLE_FAILURE_MASK;
-          const rawAccessAttempted = process.env.TEXT_AI_DISABLE_ACCESS_ATTEMPTED;
           if (
             typeof rawMask !== 'string'
-            || !/^[0-7]$/u.test(rawMask)
-            || (rawAccessAttempted !== 'true' && rawAccessAttempted !== 'false')
+            || !/^[0-3]$/u.test(rawMask)
           ) {
             throw new Error('invalid disable failure mask');
           }
           const failureMask = Number(rawMask);
-          const accessAttempted = rawAccessAttempted === 'true';
-          if (
-            accessAttempted !== ((failureMask & 3) === 0)
-            || (!accessAttempted && (failureMask & 4) === 0)
-          ) {
-            throw new Error('invalid disable failure mask');
-          }
-          const stepNames = Object.freeze(['disable-text-global', 'deploy-worker-disabled', 'disable-access']);
+          const stepNames = Object.freeze(['disable-text-global', 'deploy-worker-disabled']);
           const steps = stepNames.map((name, index) => Object.freeze({
             name,
-            attempted: index < 2 || accessAttempted,
+            attempted: true,
             failed: (failureMask & (1 << index)) !== 0,
           }));
           process.stdout.write(`${JSON.stringify({ failureMask, steps })}\n`);
