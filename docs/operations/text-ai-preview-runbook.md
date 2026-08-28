@@ -1,623 +1,252 @@
 # 文字餐食 AI Preview 运维手册
 
-本文只适用于单人受保护模式下的双账号文字 AI Preview。它不授权生产发布、照片 AI、额外账号、第二次真实模型请求或任何凭证外传。
+本文是文字餐食 AI Preview 的当前执行依据，适用于固定仓库 `nuts-and-bytes/tiezheng`、固定 GitHub Environment `text-ai-preview` 和两个逻辑账号槽位 `user-1` / `user-2`。
+
+当前方案以 2026-08-27 的访问码认证设计为准。2026-08-24 与 2026-08-26 的 Access 方案、spec 和 plan 仅保留为决策历史，不能用于当前首次配置。文字路径不需要银行卡，不开通 Zero Trust，不使用邮箱、OTP、Access Application 或 Access service token。照片 AI 仍保留自己的既有认证边界，不得因为文字方案迁移而删除或放宽。
 
 ## 1. 固定边界
 
-- GitHub workflow：`.github/workflows/text-ai-preview.yml`，只能从受保护的 `main` 手动触发。
-- GitHub Environment：`text-ai-preview`。
-- Cloudflare Pages 项目：`tiezheng`；`production_branch` 必须精确为 `main`。
-- Pages Preview branch：固定为 `text-ai-preview`。
-- Preview origin：`https://text-ai-preview.tiezheng.pages.dev`。
-- Worker：`tiezheng-photo-ai-gateway`。
-- 文字模型：`doubao-seed-2-1-pro-260628`；`TEXT_AI_MAX_PROVIDER_ATTEMPTS=1`。
-- Preview 前端：文字入口开启、照片入口关闭；Worker 端 `PHOTO_AI_GATEWAY_ENABLED=false`。
-- 当前允许账号数由 workflow 内部常量精确锁定为 `2`，不是 GitHub Environment variable。
-- workflow 不发送餐食请求。唯一真实模型请求只能在 Task 12 的 user-1 浏览器验收中发生一次；user-2 只做 OTP、session 与 `status` 验证。
+- Pages 项目：`tiezheng`，Preview host：`text-ai-preview.tiezheng.pages.dev`。
+- 私有 Worker：`tiezheng-photo-ai-gateway`；Pages 只通过固定 `PHOTO_AI_GATEWAY` service binding 调用它。
+- 用户身份只有 `user-1` 和 `user-2` 两个槽位，不接收邮箱或任意目标字符串。
+- 文字用户以随机访问码登录；GitHub 管理请求以独立 HMAC 签名。
+- workflow 只允许 `workflow_dispatch`，必须来自受保护 `main`，并绑定用户输入的 40 位远端 `main` SHA。
+- setup 只完成关闭态配置与关闭态 preflight，不部署、不启用、不调用模型。
+- Preview 部署需要新的明确授权；任何真实模型调用还需要另一份明确授权。
+- 生产文字 AI、生产照片 AI 和其他账号不在本文授权范围内。
 
-生产 Pages 配置、生产入口和照片 AI 必须始终不变且关闭。任一检查不能证明该边界时，停止并把对应 checklist 项标为 `BLOCKED`。
+## 2. GitHub 与 Cloudflare 前置条件
 
-## 2. GitHub 保护配置
+GitHub 必须满足：
 
-在仓库 **Settings → Environments → text-ai-preview** 中完成以下外部配置：
+- 当前 checkout 无未提交变更，分支为 `main`，push remote 精确指向 `nuts-and-bytes/tiezheng`；
+- 本地 `HEAD`、远端 `main` 与本次批准 SHA 三者一致；
+- `text-ai-preview` Environment 已存在，只允许 `main` deployment branch policy；
+- Environment 无 reviewer 要求；单人模式的替代门禁是受保护分支、固定 SHA、固定 operation、固定确认短语和关闭态验证；
+- `CLOUDFLARE_ACCOUNT_ID` 已存在，向导只读取和校验，不覆盖、不输出值；
+- 首次运行前，目标 11 个 Environment secret 全部不存在。任一已存在即失败关闭，不提供 `--force`。
 
-1. **Deployment branches and tags** 选择 **Selected branches and tags**。
-2. 只添加一个 `Branch` 规则：`main`；不要添加 tag 规则或通配规则。
-3. 不得使用存在空规则歧义的 **Protected branches only**。GitHub 官方说明：如果仓库没有任何 branch protection rule，该选项会允许所有分支部署。
-4. 单人模式已由用户明确批准；Environment 不配置 required reviewer，也不依赖 Environment reviewer 或 Prevent self-review。
-5. 单人受保护模式不会出现 pending deployment 审批阶段。每次 dispatch 前由当前操作者再次核对固定仓库、用户批准的 40 位 SHA 与远端 `main`，并把同一 SHA 作为必填 workflow input；workflow 在 job 启动前要求 `github.sha == inputs.expected_sha`。
-6. `main` 必须被 branch protection 或 ruleset 实际覆盖。workflow 同时校验 `github.ref == 'refs/heads/main'`、`github.ref_protected == true` 与批准 SHA；管理员绕过开关不作为放行依据。
+Cloudflare API token 必须只覆盖目标 account，并且权限精确为：
 
-如果当前仓库不支持 Environment secrets、精确 deployment branch rule 或实际 `main` 保护，结论是 `BLOCKED`。单人模式放弃了职责分离：当前 GitHub 管理账号被接管时，第二人审批不再能阻止 dispatch；已接受的替代门禁是 manual-only workflow、受保护 `main`、批准 SHA 输入、固定操作/确认短语、关闭态 preflight、单次供应商尝试、额度与回滚。
+1. `Account API Tokens Read`
+2. `Workers Scripts Edit`
+3. `Cloudflare Pages Edit`
 
-官方依据：
+不接受 all accounts、zone、user、R2 或任何 Access 权限。向导只读取 token verify/detail/catalog、Pages 项目和 Worker inventory；不会创建、更新或删除 Cloudflare 资源。
 
-- [管理 GitHub Environment](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
-- [Deployment protection、reviewer、分支规则与 Environment secrets](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)
-- [Branch protection rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
+迁移旧配置时，先用新窄权限 token 完成上述验证，再撤销旧的 `tiezheng-text-ai-preview-setup` Access setup token。顺序不能颠倒，也不能在验证新 token 之前用旧 token 部署。
 
-## 3. 首次配置向导、Environment secrets 与 variables
+## 3. 首次配置向导
 
-首次配置的唯一入口是在本地干净、已批准且与远端受保护 `main` 精确一致的 checkout 中运行：
+唯一入口：
 
 ```bash
 npm run setup:text-preview
 ```
 
-这是唯一获准的 CLI secret 路径：Cloudflare API token 与 `ARK_API_KEY` 只经真实本地 TTY 隐藏输入，两个邮箱在同一真实 TTY 中可见输入，AES/HMAC 与 Access service-token credential 只在进程内生成或接收。每个值只能通过 `shell:false` 的单个 `gh` 子进程 stdin 写入固定仓库 `nuts-and-bytes/tiezheng` 和固定 Environment `text-ai-preview`；每次只写一个固定名称。聊天、argv、shell history、`--body`、环境变量、文件、workflow input 和日志仍禁止承载任何值；也禁止 shell 拼接、管道或将子进程 stdout/stderr 原样转发。
+向导只在真实本地 TTY 隐藏读取两项：
 
-向导运行前必须证明：
+1. Cloudflare API Token
+2. `ARK_API_KEY`
 
-- GitHub Environment `text-ai-preview` 已存在，reviewer 数为 0，唯一 deployment branch policy 为 `main`；
-- `CLOUDFLARE_ACCOUNT_ID` 已存在且格式正确，向导只读取并在内存中验证，不重写、不输出；
-- 下列 9 个 secret 和 `TEXT_AI_TEAM_DOMAIN` 首次运行前全部不存在。任一已存在就失败关闭；首次运行不覆盖任何已有 secret 或 variable，也不提供 `--force`。
+不得把值放入聊天、剪贴板自动化、argv、shell history、环境变量、文件、workflow input 或日志。向导通过 `shell:false` 的有界 `gh` 子进程 stdin 写入 GitHub，每次只写一个固定 secret 名称。
 
-Environment secrets 名称必须恰好包含以下 9 个：
+### 3.1 精确 inventory
+
+11 个 Environment secret 必须恰好为：
 
 1. `CLOUDFLARE_API_TOKEN`
 2. `ARK_API_KEY`
 3. `PHOTO_AI_CACHE_AES_KEY`
 4. `PHOTO_AI_ACCOUNT_HMAC_KEY`
-5. `TEXT_AI_USER_1_EMAIL`
-6. `TEXT_AI_USER_2_EMAIL`
-7. `TEXT_AI_ADMIN_EMAIL`
-8. `TEXT_AI_CF_ACCESS_CLIENT_ID`
-9. `TEXT_AI_CF_ACCESS_CLIENT_SECRET`
+5. `TEXT_AI_USER_1_ACCESS_CODE_PEPPER`
+6. `TEXT_AI_USER_1_ACCESS_CODE_DIGEST`
+7. `TEXT_AI_USER_2_ACCESS_CODE_PEPPER`
+8. `TEXT_AI_USER_2_ACCESS_CODE_DIGEST`
+9. `TEXT_AI_SESSION_SIGNING_KEY`
+10. `TEXT_AI_RATE_LIMIT_HMAC_KEY`
+11. `TEXT_AI_ADMIN_SIGNING_KEY`
 
-Environment variables 完成后必须恰好包含以下 2 个：
+唯一 Environment variable 是既有的 `CLOUDFLARE_ACCOUNT_ID`。向导不创建或修改 variable。
 
-1. `CLOUDFLARE_ACCOUNT_ID`
-2. `TEXT_AI_TEAM_DOMAIN`
+向导按固定顺序请求两份 24-byte 随机材料和七份 32-byte 随机材料：
 
-不要创建 `TEXT_AI_ALLOWED_EMAIL_COUNT` Environment variable；workflow 固定注入精确值 `2`。
+- 两个 24-byte 值编码为两个独立的 32 字符 URL-safe 访问码；
+- 七个 32-byte 值分别用于缓存 AES、账号 HMAC、两个独立 pepper、会话签名、限流 HMAC 和管理签名；
+- 每个访问码摘要为 `HMAC-SHA-256(该账号 pepper, 该账号访问码)`；
+- 远端只保存 pepper 和 digest，不保存明文访问码。
 
-向导在任何写入前校验用户输入，并在进程内生成随机值；值格式也属于发布门禁：
+### 3.2 执行顺序与输出
 
-- `CLOUDFLARE_ACCOUNT_ID` 必须是 32 位小写十六进制。
-- `TEXT_AI_TEAM_DOMAIN` 只能由 Cloudflare organization `auth_domain` 派生为小写 team slug，不含协议、路径或 `.cloudflareaccess.com` 完整域名。
-- `TEXT_AI_USER_1_EMAIL` 与 `TEXT_AI_USER_2_EMAIL` 必须是已规范化的小写邮箱且互不相同；workflow 不会替操作者做大小写或空白修正。
-- `TEXT_AI_ADMIN_EMAIL` 必须精确等于 `TEXT_AI_USER_1_EMAIL`。
-- `TEXT_AI_CF_ACCESS_CLIENT_ID` 必须全小写并以 `.access` 结尾。
-- `PHOTO_AI_ACCOUNT_HMAC_KEY` 至少 32 个字符且不得包含任何空白。
-- `ARK_API_KEY` 长度为 1–4096，首尾不得有空白，也不得含 CR、LF 或其他控制字符。
-- `PHOTO_AI_CACHE_AES_KEY` 必须是 canonical Base64，解码后恰好 32 字节；首尾不得有空白，也不得含 CR、LF 或其他控制字符。
+1. 只读检查 GitHub。
+2. 隐藏读取两项输入。
+3. 只读检查 Cloudflare token、Pages 和 Worker inventory。
+4. 生成两个访问码与七个独立密钥。
+5. 显示无值预览，等待小写 `y` 确认。
+6. 写入 11 个 GitHub Environment secret，并核对 11+1 名称集合。
+7. 在真实 TTY 中各显示一次 `user-1` 和 `user-2` 访问码，随后立即擦除本地 Buffer。
+8. 派发绑定批准 SHA 的关闭态 `preflight`。
 
-Worker secret 名称只有 `ARK_API_KEY` 与 `PHOTO_AI_CACHE_AES_KEY`。`PHOTO_AI_ACCOUNT_HMAC_KEY` 由受保护控制面写入 Pages Preview 的 secret binding，不属于 Worker secret 文件。Worker secret 名称只能在可信 Cloudflare Dashboard UI 中核对，只看名称，不读取、复制或显示值；`preflight` 不能证明 Worker secret 名称集合，它只检查 Worker 的文字/照片 plain-text 开关。GitHub Environment 的 9 个 secret 只通过向导或可信 GitHub Settings UI 核对名称，不读取值。
+访问码只显示一次。操作者必须在当场分别保存并标明账号；不要截图到工单、复制到聊天或写入 evidence。向导不会再次读取或恢复它们。
 
-确认后，向导只创建固定名称 `tiezheng-text-ai-preview-github-actions` 的固定一年（`8760h`）Cloudflare Access service token，逐项写入 9 个 secret 和新增的 `TEXT_AI_TEAM_DOMAIN` 1 个 variable（即 9+1），只读核对完成后的 9+2 名称集合，然后运行绑定已批准 SHA 的关闭态 `preflight`。它不会部署、不会启用、不会调用模型；绝不运行 `deploy-disabled`、任何 enable operation 或真实餐食估算。
+成功输出只允许：
 
-失败边界固定如下：
+```text
+SETUP COMPLETE
+secrets=11 variables=1 preflight=pass workerTextEnabled=false photoEnabled=false
+```
 
-- 创建 service token 之前失败：零远端写入。
-- 创建 service token 后、但 GitHub 未完整写入时失败：partial-write 补偿会逆序尝试删除本次每个已尝试写入的 variable、再逆序删除本次每个已尝试写入的 secret，最后删除本次创建的精确 service token ID。名称在执行 set 前就记录，因为子进程失败时远端结果可能不明；这些名称已在运行前证明不存在，所以不会删除旧值。补偿不触碰已有 `CLOUDFLARE_ACCOUNT_ID`、其他 service token、Access app、Pages/Worker、生产或账号开关。
-- 任一补偿失败：继续尝试其他补偿，最后只输出 `SETUP BLOCKED cleanup=<固定资源名称>`，不自动重试写入、不运行 preflight、不继续启用。
-- 9+2 名称已完整写入并核对，但关闭态 preflight 失败：保留本次完整凭据和 service token 用于安全诊断，不做删除补偿，只输出 `SETUP BLOCKED preflight`，不部署、不启用。删除这些控制凭据不能恢复 Cloudflare 原运行态，反而会破坏安全关闭所需的控制路径。
+失败规则：
 
-成功时只输出固定状态 `SETUP COMPLETE` 与名称数量/开关布尔结果。首次配置 evidence 只记 commit SHA、固定资源名称或名称集合结论、布尔结果和固定状态；不记录值、远端响应、workflow URL 或自由文本错误。只允许检查 secret/variable 名称集合，不允许读取或输出值。
+- 确认前失败或取消：零 GitHub 写入，所有本地 secret Buffer 归零。
+- GitHub 部分写入、名称核对失败、访问码未能完整显示或关闭态 preflight 失败：逆序删除本次尝试写入的 secret；不删除既有 account variable，不写 Cloudflare。
+- 补偿删除失败：输出固定 `SETUP BLOCKED cleanup=...`，停止并在 GitHub Settings 中只核对名称；不得继续部署。
+- 任何错误输出不得包含输入值、访问码、摘要、远端响应或自由文本底层异常。
 
-## 4. Cloudflare token 与只读 preflight
+## 4. 三段授权 gate
 
-`CLOUDFLARE_API_TOKEN` 必须是目标 Cloudflare account 拥有的 account token，并且所有 allow policy 都只覆盖 Environment variable 指向的那个精确 account；不接受全账号通配、其他 account、user、zone、R2 或混合 scope。
+### Gate A：关闭态 setup
 
-权限名称必须覆盖下表。出现别名时，每行任选一个受支持名称即可。
+只授权运行向导、写入 11 个 GitHub secret、显示两个访问码一次和派发关闭态 preflight。它不授权部署、启用或模型调用。
 
-| 能力 | 接受的官方权限名 |
-| --- | --- |
-| 检查 account token | `Account API Tokens Read` |
-| Worker 读取与部署 | `Workers Scripts Edit` 或 `Workers Scripts Write` |
-| Pages 读取与更新 | `Cloudflare Pages Edit` 或 `Pages Write` |
-| Access 应用与策略 | `Access: Apps and Policies Edit` 或 `Access: Apps and Policies Write` |
-| Zero Trust organization 与 OTP identity provider | `Access: Organizations, Identity Providers, and Groups Read` |
-| Access service token 库存与首次创建/补偿 | `Access: Service Tokens Read` 与 `Access: Service Tokens Write` |
+### Gate B：Preview 部署
 
-`preflight` 先验证 token 为 active，再读取 token detail 与 permission-group catalog；它通过 permission group ID 关联官方名称与 scope，并要求资源键只指向精确 account。之后只读检查：
+必须另行明确授权后，才能派发 `deploy-disabled` 或 `rotate-user-code`。部署必须绑定当前受保护 `main` SHA；生产开关和模型开关保持关闭。
 
-- Pages 项目存在且 `production_branch` 精确为 `main`；
-- Worker 唯一存在，照片开关精确为 false，文字开关是规范布尔值；
-- 唯一 OTP provider 存在；
-- 配置的 Access service token 唯一存在；
-- 所有列表都完整且没有歧义。
+### Gate C：真实模型调用
 
-任一项失败时，`preflight` 使用固定错误退出，不执行 Cloudflare 写入，也不打印远端响应或凭证。
+必须在关闭态部署、双账号登录验证、限流验证和安全扫描通过后，再取得明确的真实调用授权。默认最多只允许 `user-1` 一次真实请求；`user-2` 只验证登录、session、状态与额度隔离。
 
-官方依据：
+任一 gate 的成功都不能自动授权下一段。
 
-- [Cloudflare API token 权限目录](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)
-- [验证 account token](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/methods/verify/)
-- [读取 account token detail](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/methods/get/)
-- [Pages production / preview branch control](https://developers.cloudflare.com/pages/configuration/branch-build-controls/)
-- [Pages Functions bindings](https://developers.cloudflare.com/pages/functions/bindings/)
-- [Cloudflare Access policies](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/)
+## 5. 访问码、Cookie 与限流
 
-## 5. 本地确定性门禁
+- Cookie 名称固定为 `__Host-tiezheng-text-ai-session`。
+- 属性固定为 `HttpOnly; Secure; SameSite=Strict; Path=/`，无 `Domain`。
+- `Max-Age=2592000`，即 30 天 Cookie。
+- JWT 只使用 `HS256`，固定 issuer/audience，subject 只能是 `user-1` 或 `user-2`；不得包含邮箱、访问码、账号键、额度或餐食正文。
+- JWT 的凭据版本由该账号当前 digest 派生；单账号访问码轮换后，该账号旧 Cookie 立即失效，另一账号不受影响。
+- 登录失败采用 10 分钟计数窗口：正常 IP 盲化桶允许 5 次失败，第 6 次进入 15 分钟冷却；匿名桶允许 3 次失败，第 4 次进入 30 分钟冷却。
+- 成功登录清除对应失败状态。原始 IP 只在 Pages 内存中出现，进入 Worker/存储前用独立 HMAC 密钥盲化；日志和 evidence 不记录 IP 或 attempt key。
 
-任何远程操作前，在目标 commit 上运行：
+## 6. 管理 HMAC 与重放边界
+
+GitHub 管理调用固定签名材料为：
+
+```text
+v1 + POST + canonical path + timestamp + operationId + SHA-256(exact body bytes)
+```
+
+- secret 为 `TEXT_AI_ADMIN_SIGNING_KEY`，不得与用户 pepper、session key 或 rate-limit key 复用。
+- Pages 要求同源 `Origin`、`Sec-Fetch-Site: same-origin`、精确 JSON、精确 Content-Length 和三项管理签名 header。
+- timestamp 允许的最大时钟偏差为正负 5 分钟。
+- operation ID 为 32 位小写 hex；请求体内 ID 必须与签名材料一致。
+- Worker 保存 operation ID 与 fingerprint 24 小时：同 ID、同 fingerprint 可幂等返回；同 ID、不同 fingerprint 必须拒绝。
+- 管理目标只能是 `user-1` 或 `user-2`，不能接受邮箱或任意字符串。
+
+## 7. 单账号访问码轮换
+
+只在真实 TTY 运行：
+
+```bash
+npm run rotate:text-preview-code -- --target=user-1
+npm run rotate:text-preview-code -- --target=user-2
+```
+
+命令只生成目标账号的新 24-byte code、32-byte pepper 和 digest，显示该 code 一次，并要求小写 `y` 确认已经保存。随后只覆盖目标账号的 PEPPER 与 DIGEST 两个 GitHub secret，并派发：
+
+- `operation=rotate-user-code`
+- 精确 target
+- `confirmation=ROTATE_ONE_TEXT_ACCESS_CODE`
+- 精确批准 SHA
+
+它不读取、不命名、不改写另一账号 secret，也不修改 Worker 或账号开关。
+
+若两个 secret 已写完但 dispatch 或 Pages deployment 失败，旧 Pages deployment 与旧访问码继续有效。不要生成第二个新 code；使用固定恢复命令：
+
+```bash
+npm run rotate:text-preview-code -- --resume=user-1
+npm run rotate:text-preview-code -- --resume=user-2
+```
+
+`--resume` 不读取、不生成、不显示、不重写任何 secret，只重新派发同一固定 workflow。部分 secret 写入失败时不得使用 resume；重新运行目标账号的普通轮换。
+
+## 8. 全 session key 轮换
+
+`TEXT_AI_SESSION_SIGNING_KEY` 泄露或需要强制退出全部用户时：
+
+1. 先派发并核验 `disable-all`，证明文字 global=false、Worker text=false、photo=false。
+2. 在可信 GitHub Environment UI 中替换为新的独立 32-byte canonical base64url key；不要把值放入 CLI、聊天或文件。
+3. 在单独部署授权下，重新应用 Pages Preview secret bindings 并部署固定 SHA。
+4. 重新运行关闭态 preflight，再分别验证两个账号必须重新登录。
+
+该操作使两个账号全部旧 JWT 失效。它不是单账号访问码轮换，不得用来只处理一个账号。
+
+## 9. 紧急关闭与泄露响应
+
+`disable-all` 固定尝试两步，即使第一步失败也继续第二步：
+
+1. `disable-text-global`
+2. 部署 Worker disabled（文字与照片开关均为 false）
+
+summary 只允许 `failureMask` 与两个固定步骤的 `attempted/failed` 布尔值。任一步失败、超时或结果未知都为 `BLOCKED`；不得声称已安全关闭。
+
+发现任何文字认证或管理 secret 泄露时，先使用仍可信的控制凭证执行并核验 `disable-all`，再轮换对应 secret：
+
+- 单个访问码：轮换对应槽位 code、pepper、digest；旧 code 和该账号旧 JWT 失效。
+- session key：按第 8 节全量轮换；两个账号旧 JWT 全失效。
+- admin signing key：关闭全局文字 AI 后替换 key，重新应用 Pages binding，并完成关闭态 preflight。
+- rate-limit HMAC key：关闭后替换；接受旧限流桶不再可寻址，并重新验证匿名/正常限流。
+- Cloudflare token 或 Ark key：先在可信 provider UI revoke，再写入替换值；`ARK_API_KEY` 可直接产生费用，不能继续使用泄露值。
+- `PHOTO_AI_ACCOUNT_HMAC_KEY`：不要盲目轮换。它决定逻辑槽位到既有状态的映射，必须另开身份迁移与旧状态处置设计。
+- cache AES key：按既有密文缓存迁移/作废流程处理，不得把解密失败当作“无缓存”静默继续。
+
+## 10. 本地验证与敏感信息扫描
+
+完整本地门禁：
 
 ```bash
 npm test
-npm run typecheck
-npm run build
 npm run test:edge
+npm run typecheck
 npm run typecheck:edge
-npm run test:text-preview-control
+npm run build
+npm run verify:text-preview-setup
 npm run verify:text-preview-workflow
-npm run deploy:photo-worker -- --dry-run
 git diff --check
 ```
 
-只接受全部退出码为 0。`deploy:photo-worker` 必须带 `--dry-run`；本步骤不登录 Cloudflare、不触发 workflow、不调用模型。
-
-## 6. 向导后续的部署与启用顺序
-
-第 3 节的向导只完成首次凭据配置和关闭态 preflight。出现任何 `SETUP FAILED` 或 `SETUP BLOCKED` 都立即停止；`SETUP COMPLETE` 也不授权部署或启用。后续仍必须取得独立远端授权，再按本节的手工 dispatch 顺序执行；不得因为向导成功而跳过 SHA、旧 run、精确 run ID 或关闭态门禁。
-
-以下命令只是受保护操作的调用格式。只有 Task 11/12 获得单独远程授权、workflow 已在受保护 `main` 且本次单人操作获得用户明确批准后才能运行。不得依赖当前目录、默认仓库或“最近一次 run”。由当前操作者把本次允许部署的 40 位 commit SHA 写入当前 shell；它不是 secret，但必须与远端 `main` 完全一致：
+文字运行时旧身份形状扫描：
 
 ```bash
-export TEXT_AI_REPO='nuts-and-bytes/tiezheng'
-export TEXT_AI_EXPECTED_SHA='<批准的40位SHA>'
+rg -n -i \
+  'TEXT_AI_TEAM_DOMAIN|TEXT_AI_USER_[12]_EMAIL|TEXT_AI_ADMIN_EMAIL|TEXT_AI_CF_ACCESS|cf-access-client|cloudflareaccess[.]com|/access/' \
+  edge functions workers scripts .github src \
+  --glob '!**/*.test.*'
 ```
 
-开始任何 dispatch 前，必须获取该 workflow 的单次稳定 inventory 快照：查询固定为同一仓库、workflow 和 `workflow_dispatch` event，上限为 100。只有结果长度小于 100，且每条记录仅含正安全整数 `databaseId` 与精确值 `completed` 的 `status` 时才能继续。任何活动状态、未知状态、畸形记录或长度达到 100 都 fail closed；旧活动 run 必须全部取消或等待结束，再重新从零开始核对。下面的 inventory 只用于排除旧活动 run，绝不用于给新 dispatch 绑定“最近一次” run ID；成功时保持静默，evidence 只记 PASS/FAIL，不记录旧 run ID：
+文字运行时、控制脚本和 workflow 应为零命中。`edge/photo-ai/access.ts` 中的 `cloudflareaccess.com` 属于照片认证保留项，必须用精确 allowlist 单独解释，不能全局删除。
+
+明文密钥形状扫描：
 
 ```bash
-assert_no_stale_text_preview_runs() (
-  set -euo pipefail
-  repo='nuts-and-bytes/tiezheng'
-
-  if ! gh run list --workflow text-ai-preview.yml \
-    --event workflow_dispatch --limit 100 \
-    --json databaseId,status --repo "$repo" \
-    | jq -e '
-        type == "array"
-        and length < 100
-        and all(.[];
-          type == "object"
-          and (keys | sort) == ["databaseId","status"]
-          and (.databaseId | type == "number")
-          and .databaseId > 0
-          and .databaseId < 9007199254740992
-          and .databaseId == (.databaseId | floor)
-          and (.status | type == "string")
-          and .status == "completed"
-        )
-      ' >/dev/null
-  then
-    printf '%s\n' 'BLOCKED: older active preview run exists' >&2
-    return 1
-  fi
-)
+rg -n \
+  'ARK_API_KEY\s*[:=]\s*[^*{]|TEXT_AI_(ACCESS_CODE|SESSION_SIGNING|RATE_LIMIT_HMAC|ADMIN_SIGNING).*\s*[:=]\s*[^*{]|eyJ[A-Za-z0-9_-]+[.]eyJ' \
+  edge functions workers scripts .github src dist
 ```
 
-每个 operation 都必须使用下面的同一套精确绑定函数。`gh workflow run` 必须返回当前 dispatch 的精确 URL；函数只从该 URL 提取纯数字 run ID，然后依次等待该 ID，并验证 event、branch、head SHA、状态、结论、workflow 名、唯一 `text-ai-preview` job 及唯一 `Dispatch fixed operation` step。URL 缺失、格式不符、远端 `main` 漂移、等待超时、job/step 被跳过或任一 metadata 不符都立即 `BLOCKED`；严禁回退到 `gh run list` 的 latest run。
+只允许明显 test-only placeholder 或固定 secret 名映射，且必须由 verifier 分类通过；真实值、访问码、JWT、Cookie、IP、账号键、餐食正文和供应商原文均为 `FAIL`。
 
-```bash
-verify_text_preview_run() (
-  set -euo pipefail
-  run_id="$1"
-  expected_sha="$2"
-  repo='nuts-and-bytes/tiezheng'
+## 11. Evidence 与完成定义
 
-  if [[ ! "$run_id" =~ ^[0-9]+$ ]] || [[ ! "$expected_sha" =~ ^[0-9a-f]{40}$ ]]; then
-    printf '%s\n' 'BLOCKED: invalid run binding' >&2
-    return 1
-  fi
+允许记录：commit SHA、run ID、固定资源名称或名称集合结论、固定 `SETUP` / `ROTATION` 状态、布尔结果和测试命令 exit 0。
 
-  watch_exit=0
-  gh run watch "$run_id" --exit-status -R "$repo" || watch_exit=$?
-  if ! run_json="$(gh run view "$run_id" -R "$repo" \
-    --json event,headBranch,headSha,status,conclusion,workflowName,jobs)"; then
-    printf '%s\n' 'BLOCKED: run metadata unavailable' >&2
-    return 1
-  fi
-  if ! jq -e --arg sha "$expected_sha" '
-    .event == "workflow_dispatch"
-    and .headBranch == "main"
-    and .headSha == $sha
-    and .status == "completed"
-    and .conclusion == "success"
-    and .workflowName == "Text AI Preview Control"
-    and (.jobs | type == "array" and length == 1)
-    and .jobs[0].name == "text-ai-preview"
-    and .jobs[0].conclusion == "success"
-    and (.jobs[0].steps | type == "array")
-    and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation")] | length == 1)
-    and ([.jobs[0].steps[] | select(.name == "Dispatch fixed operation" and .conclusion == "success")] | length == 1)
-  ' >/dev/null <<<"$run_json"; then
-    printf '%s\n' 'BLOCKED: run metadata mismatch' >&2
-    return 1
-  fi
-  if [ "$watch_exit" -ne 0 ]; then
-    printf '%s\n' 'BLOCKED: run did not succeed' >&2
-    return 1
-  fi
-  printf 'run_id=%s\nhead_sha=%s\nconclusion=success\n' "$run_id" "$expected_sha"
-)
+禁止记录：任何 secret 值、两个访问码、JWT、Cookie、IP、账号键、Cloudflare account ID、远端响应、workflow URL、模型正文、餐食正文或自由文本底层错误。
 
-run_text_preview_operation() (
-  set -euo pipefail
-  operation="$1"
-  target="$2"
-  confirmation="${3-}"
-  repo='nuts-and-bytes/tiezheng'
-  expected_sha="${TEXT_AI_EXPECTED_SHA-}"
+只有以下全部成立才可把本地实现标为完成：
 
-  if [ "${TEXT_AI_REPO-}" != "$repo" ] || [[ ! "$expected_sha" =~ ^[0-9a-f]{40}$ ]]; then
-    printf '%s\n' 'BLOCKED: unapproved repository or SHA' >&2
-    return 1
-  fi
-  assert_no_stale_text_preview_runs
-  remote_main_sha="$(gh api "repos/$repo/commits/main" --jq '.sha')"
-  if [ "$remote_main_sha" != "$expected_sha" ]; then
-    printf '%s\n' 'BLOCKED: remote main SHA drifted' >&2
-    return 1
-  fi
-
-  dispatch_output="$(gh workflow run text-ai-preview.yml --ref main -R "$repo" \
-    -f operation="$operation" -f target="$target" \
-    -f expected_sha="$expected_sha" -f confirmation="$confirmation")"
-  run_id=''
-  run_url_count=0
-  while IFS= read -r line; do
-    if [[ "$line" =~ ^https://github\.com/nuts-and-bytes/tiezheng/actions/runs/([0-9]+)(/attempts/[0-9]+)?$ ]]; then
-      run_id="${BASH_REMATCH[1]}"
-      run_url_count=$((run_url_count + 1))
-    fi
-  done <<<"$dispatch_output"
-  if [ "$run_url_count" -ne 1 ] || [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
-    printf '%s\n' 'BLOCKED: exact dispatch run URL unavailable' >&2
-    return 1
-  fi
-  printf 'dispatched_run_id=%s\n' "$run_id"
-  verify_text_preview_run "$run_id" "$expected_sha"
-)
-```
-
-单人受保护模式不配置 required reviewer，因此不会出现 pending deployment 审批阶段。操作者必须在 dispatch 前再次核对远端 `main` 精确等于 `TEXT_AI_EXPECTED_SHA`；同一 SHA 作为必填 `expected_sha` input 进入 workflow，SHA 不符时整个 job 被跳过且无法执行 dispatcher。完成后仍必须由 `verify_text_preview_run` 复核 exact head SHA、唯一 job 与唯一 dispatcher step；任何 waiting/pending 状态都视为 Environment 意外漂移并立即 `BLOCKED`。
-
-只允许把函数最后输出的 run ID、SHA 与固定成功结论写入 evidence，不记录 dispatch URL。若 dispatch 已发出但 URL 缺失或格式不符，本次操作立即结束为 `BLOCKED`；不得从 GitHub UI、`gh run list` 或任何“最近一次”结果补绑 run ID，也不得继续后续启用步骤。若该 operation 具有写入性，还必须按下文将其视为结果未知，并立即发起一次可精确绑定的 `disable-all`。
-
-每次等待前一精确 run 成功结束后才能进入下一步，不得并行；workflow 的固定 concurrency group 也不取消正在运行的操作。对 `deploy-disabled`、`enable-admin-preview`、`enable-second-account`、`disable-account`、`delete-account` 或 `disable-all`，任何非成功、超时或结果未知都视为可能已经部分写入。除失败操作本身就是 `disable-all` 外，必须立即精确派发、等待并核验 `disable-all`；若 `disable-all` 失败则修复后重跑。只有关闭 summary 证明 global 与 Worker 两段都成功，且关闭复核证明 global=false、Worker text=false、photo=false，才可称安全关闭。未确认关闭时状态为 `BLOCKED`，禁止直接重试 enable。
-
-### 6.1 `preflight`
-
-```bash
-run_text_preview_operation preflight user-1 ''
-```
-
-首次 `preflight` 只有 `workerTextEnabled=false` 才可继续；如果结果为 true，即使只读 run 自身成功，也必须标记 `BLOCKED`，先完成关闭处置，不得运行 `deploy-disabled`。预期日志只出现安全的 `command/status/workerTextEnabled` 结果，不出现远端对象正文或敏感值。
-
-### 6.2 `deploy-disabled`
-
-```bash
-run_text_preview_operation deploy-disabled user-1 ''
-```
-
-`deploy-disabled` 在任何 Cloudflare 写入前再次从本次 `0600` preflight 文件证明 `workerTextEnabled=false`。该文件必须是当前 runner 用户拥有、单链接的普通文件，字段、顺序、值、权限与读取前后 identity/size/time 都严格稳定；true、缺字段、额外字段、非 `0600` 或读取期间漂移一律在 `configure`、Worker deploy、Pages deploy 之前退出，零远端写入。
-
-它按固定配置执行：
-
-- 创建或校正两个专用 Access Application 及 policy，session duration 均为 `30m`；
-- 用户应用仅允许两个固定用户经 OTP 访问；管理应用分别使用管理员 OTP policy 与精确 service token policy；
-- Pages 只修改 Preview 配置，建立 `PHOTO_AI_GATEWAY` → `tiezheng-photo-ai-gateway` Service Binding；
-- Pages Preview branch 固定为 `text-ai-preview`，`production_branch` 仍为 `main`；
-- 部署 Worker 时管理端点开启，但文字模型通道关闭；照片通道关闭，provider attempts 为 1；
-- 部署 Preview 前端时文字入口开启、照片入口关闭。
-
-预期 disabled smoke：Preview 静态站可达；未登录 API 被 Access 拦截；允许用户登录后文字 session 返回 `service-disabled`；生产入口、照片入口和供应商用量不变。
-
-### 6.3 `enable-admin-preview`
-
-```bash
-run_text_preview_operation enable-admin-preview user-1 ENABLE_ONE_TEXT_PREVIEW_ACCOUNT
-```
-
-只读 `run_full_preflight` 可先执行。workflow 收到精确 target/确认短语后，必须在任何远端写入前先本地验证 Ark key 和 AES key 的第 3 节格式并生成 `0600` secret file；这特别包括早于会产生 replay/cleanup 写入的管理 `status` POST。secret 格式不符时直接退出，既不捕获 status，也不产生任何远端写入。
-
-secret 格式通过后，workflow 才静默捕获 user-1 与 user-2 的管理状态并严格验证：
-
-- Worker 文字开关为 false；
-- 文字 global 为 false；
-- user-1 与 user-2 的 account flag 都为 false。
-
-这些启用前状态只写入权限为 `0600` 的 runner 临时文件，退出时删除，不打印到日志。状态门禁通过后才配置 Access、启用 user-1、启用文字 global，并把 Worker 文字开关部署为 true。任一状态前置条件不符时退出，不尝试“修正后继续”。
-
-从 `enable-admin-preview` dispatch 开始，不能再假定闸门保持关闭。其后任何 workflow、OTP/session、显式 `status`、浏览器请求或第二账号门禁出现非成功、超时或结果未知，都必须立即发起一次精确绑定的 `disable-all` 并完成第 8 节关闭复核。关闭未确认成功就是 `BLOCKED`，不得继续验收或直接重试 enable。
-
-### 6.4 唯一真实请求与第二账号
-
-唯一真实餐食请求只能由 user-1 在 Task 12 的受控浏览器验收中手动点击一次。同一 `requestId` 的一次自动 in-flight 轮询不算第二次供应商调用；它只是在查询同一次已受理操作，仍禁止刷新、生成新 `requestId`、人工重试或换账号重发。请求前后各运行一次显式 `status` 形成差值；失败、超时或结果未知时必须立即运行并完整核验第 8 节的 `disable-all` 与关闭复核。关闭未确认成功就标为 `BLOCKED`。
-
-user-2 只能完成 OTP 登录、session 与 `status` 验证，不得输入或发送餐食内容。启用 user-2：
-
-```bash
-run_text_preview_operation enable-second-account user-2 ''
-```
-
-第二账号启用前，workflow 会静默验证：Worker 文字开关为 true、文字 global 为 true、user-1 已启用、user-2 未启用；目标必须精确为 `user-2`。门禁不符即退出。
-
-## 7. `status` 与账号管理边界
-
-### 7.1 显式 `status`
-
-用户已经授权显式 `status` 将下列 7 个 canonical metadata 字段写入 GitHub Actions 日志：
-
-1. `textGlobalEnabled`
-2. `accountEnabled`
-3. `accountRemaining`
-4. `globalRemaining`
-5. `budgetSpentMicros`
-6. `budgetReservedMicros`
-7. `resetAt`
-
-```bash
-run_text_preview_operation status user-1 ''
-```
-
-目标也可精确改为 `user-2`。`status` 不直接改变 global/account gate、不发供应商请求，也不新增一次模型消费；但管理协调器会保留短期 operation replay 记录并清理到期 lease/counter 状态，因此不要把它描述为无任何内部写入。workflow 会先严格验证响应结构，再只打印上述 7 字段。
-
-这些数值只用于同一验收 run 前后比较。evidence 不复制数值，只把“account/global 各减少一次”“预算只结算一次”“照片不变”等差值判断记为 `PASS` 或 `FAIL`。
-
-### 7.2 `disable-account`
-
-```bash
-run_text_preview_operation disable-account user-2 ''
-```
-
-- 目标只能是 `user-1` 或 `user-2`。
-- 无额外确认短语，但仍必须获得本次单人远程操作授权并通过批准 SHA 门禁；它的直接业务动作把文字与照片通道共用的目标 account flag 设为 false，因此也会取消该账号的照片 AI 资格。它不关闭文字 global、Worker、Access，也不主动清除既有计数或浏览器本地餐食。与其他管理操作相同，协调器会先执行到期 lease/counter 清理并写短期 operation replay，因此可能观察到正常的到期状态结算，但不会发供应商请求。
-- 禁用 user-2 后，在 user-1/global/Worker 都满足门禁时可用 `enable-second-account` 恢复。
-- 禁用 user-1 后没有直接的单步恢复操作；按第 9 节完整恢复顺序重新建立首次启用状态。
-
-### 7.3 `delete-account` 不在标准流程内
-
-标准流程完全禁止 `delete-account`；标准 Preview 发布、回滚与恢复都不得批准、派发或执行该 operation，release checklist 必须证明本次没有发生。它会删除文字与照片共用状态，因此不能作为日常账号管理、发布回滚或计数修复手段。只有另行取得明确的破坏性跨通道授权后，才能进入附录 A；该附录不参与本次标准 GREEN 判定。
-
-## 8. 紧急关闭：`disable-all`
-
-```bash
-run_text_preview_operation disable-all user-1 ''
-```
-
-`disable-all` 不依赖完整 preflight，也不需要 Ark/AES secret。其安全语义固定如下：
-
-1. 总是尝试通过管理端点关闭文字 global。
-2. 无论第 1 步是否成功，总是另行尝试部署 `TEXT_AI_GATEWAY_ENABLED=false`、`PHOTO_AI_GATEWAY_ENABLED=false`、attempts 1 的 Worker。
-3. 只有第 1、2 步都成功，才尝试删除两个专用 Access Application。
-4. 第 1 或第 2 步任一失败时，不尝试删除 Access；现有 Access 继续作为保护层。
-5. 任一步失败都会输出固定的三步 summary 并以非零退出；修复失败原因后重跑 `disable-all`，不得把部分成功当成完成。
-
-固定 summary 只包含 `failureMask` 以及以下三个固定步骤的 `attempted/failed` 布尔值：`disable-text-global`、`deploy-worker-disabled`、`disable-access`。不得把错误响应、标识符或 secret 拼入 summary。
-
-单次 workflow success 仍不能单独作为关闭证据。固定关闭复核为：
-
-1. 首次 `disable-all` 的精确 run 必须成功，summary 中 global/Worker 两步均 attempted 且 failed=false，Access 步骤也成功。
-2. 运行 `deploy-disabled`，只在关闭状态下重建 Access 与管理通路。
-3. 运行 `preflight`，要求 `workerTextEnabled=false`；preflight 成功同时证明 photo=false。
-4. 对 user-1 运行显式 `status`，要求其授权字段中的 `textGlobalEnabled=false`。不把字段值复制到 evidence，只记录布尔判断。
-5. 再次运行并精确核验 `disable-all`，移除为复核临时重建的 Access。
-
-上述任一步失败、超时或结果不明，均不得宣称安全关闭；状态保持 `BLOCKED`，并用可用的可信凭证继续修复和重跑 `disable-all`。成功预期：文字 global 关闭、Worker 文字与照片开关均关闭、两个专用 Access Application 已删除；account flag 和 Pages Preview 静态部署不会被 `disable-all` 删除。若还要撤下 Pages Preview/alias，必须在前三道闸门已确认安全且获得单独远程授权后执行；不属于该 workflow 的自动动作。
-
-## 9. 关闭后恢复
-
-`disable-all` 保留 account flag，因此不能在关闭后直接运行 `enable-admin-preview`。固定恢复顺序为：
-
-1. 修复导致关闭失败的原因，并重跑 `disable-all`，直到三步 summary 成功。
-2. 运行 `deploy-disabled`，以关闭状态重新创建 Access、Service Binding、Pages Preview 与管理端点。
-3. 分别对 `user-1`、`user-2` 运行 `disable-account`，把两个 account flag 明确归零。
-4. 运行显式 `status` 只做门禁确认；evidence 仅记录布尔判断，不复制 metadata 值。
-5. 运行 `enable-admin-preview`，使用精确 target 与确认短语。
-6. 不再发送真实餐食请求；此前的一次真实请求预算不可重置。
-7. 运行 `enable-second-account`，然后 user-2 只做 OTP/session/status。
-8. 第 2、3、5、7 步属于 mutating run；任一非成功、超时或结果未知都必须立即运行并完成第 8 节的 `disable-all` 与关闭复核，禁止直接重试 enable。
-9. 特别是第 5 步开始后，global/Worker 可能已经部分或全部开启；只有新的关闭复核全部成功，才能写“已保持关闭”。回滚未确认成功时只能标记 `BLOCKED`，不得推断当前开关状态。
-
-## 10. Evidence 与隐私扫描
-
-允许写入 checklist/evidence 的内容只有：workflow run ID、commit SHA、固定的 workflow 成功结论、资源存在性或开关的布尔判断，以及计数、预算和隔离差值的 `PASS/FAIL`。本地测试数只在 Task 10 的即时脱敏验证回复中报告，不写入远程 release evidence。
-
-严禁记录或复制：
-
-- Access audience；
-- 邮箱或派生 account key；
-- JWT、OTP、任何 API/Access/AES/HMAC secret；
-- Cloudflare account ID；
-- URL token；
-- IP、Cookie、浏览器认证存储；
-- 餐食正文、模型候选、供应商请求/响应原文。
-
-### 10.1 静态扫描
-
-在目标 SHA 的干净 worktree 根目录运行，不把原始匹配保存为 release evidence：
-
-```bash
-node --input-type=module <<'NODE'
-import { spawnSync } from 'node:child_process';
-
-const sourceRoots = Object.freeze(['src', 'edge', 'functions', 'workers', 'scripts', '.github']);
-const scans = Object.freeze([
-  { category: 'log-or-sensitive-flow', pattern: 'console\\.|ARK_API_KEY|CF-Access-Client-Secret|targetEmail|description' },
-  { category: 'secret-or-cli-writer', pattern: 'PHOTO_AI_CACHE_AES_KEY|process\\.(stdout|stderr)|writeStdout|writeStderr' },
-  { category: 'access-secret-header', pattern: 'cf-access-client-secret', rgArgs: ['-i'] },
-  {
-    category: 'production-ci-text-flag',
-    pattern: 'VITE_ENABLE_TEXT_AI',
-    rgArgs: ['--glob', '!**/text-ai-preview.yml'],
-    roots: ['.github'],
-    forbidden: true,
-  },
-]);
-
-let failed = false;
-for (const scan of scans) {
-  const result = spawnSync('rg', [
-    '--json',
-    '-n',
-    ...(scan.rgArgs ?? []),
-    '--',
-    scan.pattern,
-    ...(scan.roots ?? sourceRoots),
-  ], { encoding: 'utf8', maxBuffer: 50 * 1024 * 1024 });
-  if (result.error || (result.status !== 0 && result.status !== 1)) {
-    process.stdout.write(`${JSON.stringify({ staticSourceScan: 'FAIL', category: scan.category, reason: 'scanner-error' })}\n`);
-    failed = true;
-    continue;
-  }
-
-  const locations = [];
-  for (const line of result.stdout.split('\n')) {
-    if (line.length === 0) continue;
-    const event = JSON.parse(line);
-    if (event.type !== 'match') continue;
-    locations.push(`${event.data.path.text}:${event.data.line_number}`);
-  }
-  process.stdout.write(`${JSON.stringify({ staticSourceScan: 'REVIEW', category: scan.category, locations })}\n`);
-  if (scan.forbidden && locations.length !== 0) failed = true;
-}
-
-process.stdout.write(`${JSON.stringify({ staticSourceScan: failed ? 'FAIL' : 'REVIEW_COMPLETE' })}\n`);
-if (failed) process.exitCode = 1;
-NODE
-```
-
-扫描器只输出安全的 category、文件路径与行号，不回显匹配正文；`scanner-error` 或 `production-ci-text-flag` 有命中时直接失败。其余位置必须在本地编辑器逐条分类，不得把原始行复制到聊天、issue 或 evidence。扫描范围必须完整覆盖 `src`、`edge`、`functions`、`workers`、`scripts`、`.github`；只有零越界命中才为 `PASS`：
-
-- `ARK_API_KEY` 与 `PHOTO_AI_CACHE_AES_KEY` 只允许出现在 Worker env/adapter、受保护 workflow 的 secret 名称映射和测试；真实值绝不允许出现。`*.test.*` 中可保留明显的 test-only placeholder 与用于证明 verifier 会拒绝泄露写法的负向字符串，但这些字符串只能作为测试数据，且相应 verifier 测试必须通过。
-- Access service secret 只允许作为 env 名或请求 header 名；禁止进入 stdout/stderr、日志、错误或响应。
-- `targetEmail` 只允许存在于严格 admin contract、Pages 内存转换与 fixture；禁止进入日志。
-- 餐食正文的 `description` 可存在于产品输入/领域代码与测试，但不得进入管理路由、workflow dispatch payload、控制面或日志输出。workflow YAML input schema 中固定的英文说明元数据（例如 `description: Fixed preview control operation`）及其 verifier fixture 可保留；它们不能来自用户餐食正文，也不能被当作餐食字段传递。
-- `console.*`、stdout/stderr 与 CLI writer 只允许固定字面量或已经授权的 canonical whitelist；不得输出 body、candidate、email、`targetEmail`、`description`、远端响应或 secret。
-- `VITE_ENABLE_TEXT_AI` 只允许存在于受保护的 `text-ai-preview.yml`；任何生产 CI 命中都失败。
-
-### 10.2 精确 run 的 Actions 日志扫描
-
-只扫描已由第 6 节绑定的纯数字 `RUN_ID`。下面的扫描器由 Node 直接等待精确 `gh run view` 完成，再只输出安全类别与 `PASS/FAIL`，不回显命中正文：
-
-```bash
-set -euo pipefail
-if [[ ! "${RUN_ID-}" =~ ^[0-9]+$ ]]; then
-  printf '%s\n' 'BLOCKED: invalid run binding' >&2
-  exit 1
-fi
-node --input-type=module - "$RUN_ID" <<'NODE'
-import { spawnSync } from 'node:child_process';
-import { isIP } from 'node:net';
-
-const MAX_LOG_BYTES = 50 * 1024 * 1024;
-const runId = process.argv[2] ?? '';
-const fail = (category) => {
-  process.stdout.write(`${JSON.stringify({ runtimePrivacyScan: 'FAIL', categories: [category] })}\n`);
-  process.exit(1);
-};
-
-if (!/^[0-9]+$/u.test(runId)) fail('run-binding');
-const fetched = spawnSync('gh', [
-  'run',
-  'view',
-  runId,
-  '--log',
-  '-R',
-  'nuts-and-bytes/tiezheng',
-], { encoding: null, maxBuffer: MAX_LOG_BYTES + 1 });
-if (fetched.error) fail(fetched.error.code === 'ENOBUFS' ? 'log-size' : 'log-fetch');
-if (fetched.status !== 0) fail('log-fetch');
-
-const bytes = Buffer.isBuffer(fetched.stdout) ? fetched.stdout : Buffer.alloc(0);
-if (bytes.byteLength > MAX_LOG_BYTES) fail('log-size');
-let text;
-try {
-  text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-} catch {
-  fail('log-encoding');
-}
-if (text.trim().length === 0) fail('log-empty');
-
-const ipv6Candidates = [...text.matchAll(
-  /(?<![0-9A-Za-z])(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:.]{0,45}(?![0-9A-Za-z])/gu,
-)];
-const hasIpv6 = ipv6Candidates.some((match) => {
-  const candidate = match[0].replace(/^\.+|\.+$/gu, '').split('%', 1)[0];
-  if (isIP(candidate) !== 6) return false;
-  if (candidate !== '::') return true;
-  const start = match.index ?? 0;
-  const before = text.slice(Math.max(0, start - 32), start);
-  const after = text.slice(start + match[0].length, start + match[0].length + 2);
-  return /(?:\b(?:ip|client_ip|remote_ip|address|host)\b\s*[:=]\s*|\[)\s*$/iu.test(before)
-    || /^\s*\]/u.test(after);
-});
-const rules = Object.freeze([
-  ["email", /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu],
-  ["jwt", /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/u],
-  ["cookie", /\b(?:set-cookie|cookie)\s*:/iu],
-  ["ipv4", /\b(?:\d{1,3}\.){3}\d{1,3}\b/u],
-  ["access-audience", /(?:\baccess[-_ ]?audience\b|["']?\baud(?:ience)?\b["']?)\s*[:=]\s*\S+/iu],
-  ["url-token", /[?&](?:access_token|token|jwt|code|key)=[^&\s]+/iu],
-  ["otp-value", /\b(?:otp|one[- ]time(?: password| pin)?)\b[^\n]{0,20}\b\d{4,10}\b/iu],
-  ["identity-value", /"?(?:targetEmail|accountId|accountKey|account_id|account_key)"?\s*[:=]\s*\S+/u],
-  ["meal-or-model-body", /"?(?:description|candidates?|mealText|providerRequest|providerResponse)"?\s*[:=]/iu],
-  ["access-secret-value", /cf-access-client-secret\s*[:=]\s*(?!"?\*{3,})\S+/iu],
-  ["secret-assignment", /\b(?:ARK_API_KEY|PHOTO_AI_CACHE_AES_KEY|PHOTO_AI_ACCOUNT_HMAC_KEY|CLOUDFLARE_API_TOKEN|TEXT_AI_CF_ACCESS_CLIENT_SECRET)\b\s*[:=]\s*(?!"?\*{3,})\S+/u],
-]);
-const categories = rules.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
-if (hasIpv6) categories.push("ipv6");
-process.stdout.write(`${JSON.stringify({ runtimePrivacyScan: categories.length === 0 ? "PASS" : "FAIL", ...(categories.length === 0 ? {} : { categories }) })}\n`);
-if (categories.length !== 0) process.exitCode = 1;
-NODE
-```
-
-`gh` 获取失败只输出 `FAIL/log-fetch`；成功但空白的日志输出 `FAIL/log-empty`；超限或无效 UTF-8 分别输出 `FAIL/log-size`、`FAIL/log-encoding`。只有完整取得非空日志后才可能输出 `PASS`。扫描器 `PASS` 后仍需在可信 UI 内完成同一精确 run/session 的人工核对；不要下载或复制原文：
-
-- 时间范围：用 `gh run view "$RUN_ID" -R 'nuts-and-bytes/tiezheng' --json createdAt,updatedAt` 取得当前 run 窗口，只在本地查看，不写入 evidence。
-- GitHub Actions：只允许测试/资源/secret 名称、preflight 固定字段、已授权显式 `status` whitelist、`disable-all` 固定 summary 与普通构建输出；零敏感值。
-- Cloudflare Worker/Pages：窗口内的 application-controlled message 不得含身份、认证、餐食、candidate 或供应商正文。Cloudflare 托管的 Access audit metadata 可能原生包含身份/IP；只能在受信 Dashboard 内查看，禁止导出或写入 evidence，且不能把它误当作应用可自由记录的 allowlist。
-- Durable Object：只通过授权 `status` 的 canonical whitelist 做计数/预算差值判断，不导出表、key 或原始状态。
-- 浏览器：只检查 Task 12 的精确 session。允许用户明确确认后的一条产品记录留在预期 IndexedDB，以及 Cloudflare 管理的 HttpOnly 认证状态；禁止 console/network/localStorage/sessionStorage/临时候选区出现 JWT、OTP、Cookie 值、原始描述或候选正文。预期产品记录也不得复制到 evidence。
-- 供应商 Dashboard：只核对调用次数/预算差值，不查看或复制 prompt/response 原文。
-
-上述任一范围发现未授权命中即为 `FAIL`。只记录安全类别和 `FAIL`，不得把正文、行号上下文、URL 或 provider payload 复制到 issue、聊天或 evidence。
-
-## 11. 泄露响应
-
-先判断暴露类型；不得对所有 secret 使用同一顺序，也不得继续使用已经泄露的 bearer credential 执行关闭。
-
-### 11.1 Cloudflare token、Ark key 或 Access service credential
-
-1. 立即在可信 provider Dashboard/UI 中 revoke 泄露凭证并生成替换凭证；Cloudflare token 必须恢复第 4 节的精确 account scope。`ARK_API_KEY` 可绕过本系统直接产生供应商消费；Access service credential 可调用管理路由，因此都必须先 revoke。
-2. 只在 GitHub **Settings → Environments → text-ai-preview** UI 更新对应 Environment secret，不通过 CLI、聊天或 shell history传值。
-3. Cloudflare token 或 Ark key 替换后，用替换凭证运行并精确核验 `disable-all` 与关闭复核；禁止使用旧值。
-4. Access service credential 替换后，不得假定新 token 已被旧 policy 接受，也不得把 global 先验写成 false。先用替换后的 Cloudflare token 与新 service credential 精确派发一次 `disable-all`：管理 global 步可能因 policy 尚未绑定而失败，但 Worker disabled 步必须被尝试且成功；该 run 仍是失败/`BLOCKED`，不能称为关闭完成。随后运行只读 `preflight`，要求 Worker text=false、photo=false；此时 global 只能记录为 unknown、被 disabled Worker 隔离。只有这两项成立，才运行 `deploy-disabled` 绑定新的 service token policy；之后立即用新 credential 重新运行 `disable-all` 并完成第 8 节全部关闭复核，最终证明 global=false。首次 `disable-all` 的 Worker 步失败、`preflight` 不能证明双通道关闭或后续任一步失败时都保持 `BLOCKED`，不得先重建或重开。
-5. 任一步无法完成即保持 `BLOCKED`，并在可信 UI 中维持 provider revoke/Worker disabled；不得重开。
-
-### 11.2 HMAC
-
-`PHOTO_AI_ACCOUNT_HMAC_KEY` 决定邮箱到共用 account key 的映射。疑似泄露时先用其他仍可信的控制凭证完成 `disable-all` 与关闭复核，但禁止盲目轮换 HMAC；直接换值会让既有文字/照片状态变成另一身份空间。必须另开身份迁移/旧状态处置设计，明确旧新映射、不可恢复数据和回滚，获得单独批准后才能在 GitHub UI 更新并重开。
-
-### 11.3 AES
-
-`PHOTO_AI_CACHE_AES_KEY` 疑似泄露时先关闭全部闸门。禁止在仍开放时直接换值，因为旧缓存会变成不可解。单独选择并记录一种关闭态处置：等待至少当前 `resultCacheMs`（现为 10 分钟）自然过期并确认 reserved budget 为 0，或使用另行批准的缓存清除/迁移流程；之后才可在 GitHub UI 更新并从 disabled smoke 重新验证。
-
-若命中只是餐食/身份/认证内容进入日志而凭证本身未暴露，立即使用仍可信的凭证执行 `disable-all` 与关闭复核，再修复日志并重跑静态、运行时扫描。所有 incident evidence 仍只记录安全类别、run ID、SHA、布尔判断与 `PASS/FAIL`。
-
-## 12. 远程完成定义
-
-标准双账号 Preview 的绿色结论要求 release checklist 的 A–G 全部为 `PASS`，H 节“标准流程未执行 `delete-account`”保护项为 `PASS`，H 节其余破坏性条件项保持 `NOT_RUN`，并且 I 节最终决策全部为 `PASS`。H 的条件项默认不适用，不属于标准 GREEN 必需项；任一条件项被激活就必须暂停标准结论，转入另行批准的跨通道变更流程。A–G、H 第一项或 I 任一项为 `FAIL`、`BLOCKED` 或 `NOT_RUN` 都不能宣布完成。最终结论必须明确记录 `GREEN_FOR_TWO_ACCOUNT_TEXT_PREVIEW`，并同时写明：生产和照片 AI 未启用。
-
-## 附录 A：另行明确批准的破坏性跨通道删除
-
-本附录默认未授权，不得因为它出现在 runbook 中而执行。新的授权必须精确指定 target slot，并明文接受“文字与照片共用状态不可恢复”。没有这两项时状态始终为 `BLOCKED`。
-
-即使取得单独授权，也必须先全部证明：
-
-- 文字 global=false；
-- Worker text=false 且 photo=false；
-- 照片 global=false；
-- 没有在途 workflow、浏览器请求、供应商请求或 active lease；
-- 目标账号的 `budgetReservedMicros=0`；
-- 目标 slot 与当前批准 SHA 仍精确绑定。
-
-任何一项无法证明都必须保持 `BLOCKED`；不得通过删除来“修复”计数或回滚发布。本手册不提供可直接复制的调用命令。单独变更单必须在执行当次明确写出 `operation=delete-account`、获批的唯一 target slot 与精确确认短语 `DELETE_TEXT_PREVIEW_ACCOUNT_STATE`，大小写或内容不符必须拒绝；然后重新走第 6 节的固定仓库、固定 SHA、精确 run ID、等待和复核流程。
-
-该操作会原子删除目标 account 在所有通道的 active lease、幂等键、文字/照片分钟与日计数、共用 account flag 和缓存状态；已调用供应商的 active lease 会把 reserved 成本保守计入共享 spent。它保留 global gate、其他账号、共享已结算预算和浏览器本地餐食。
-
-与所有写入性 operation 相同，该 run 任何非 success、超时或结果未知都必须立即执行并完整核验第 8 节 `disable-all`；回滚未确认成功即 `BLOCKED`。若删除已成功，只能按第 9 节从 disabled 状态恢复相应账号，不得重做唯一真实请求。
+- 文字用户与管理路径无 Zero Trust、邮箱、OTP、Access app/service token 依赖；
+- setup 精确为两项隐藏输入、11 secrets、1 个既有 variable、双访问码一次显示、零 Cloudflare 写入；
+- 30 天 Cookie、单账号轮换、全 session key 轮换、正常/匿名限流和管理 HMAC 重放边界均有测试；
+- 完整本地验证与静态扫描通过；
+- 远端 setup、部署和模型调用仍分别受独立授权 gate 控制。
