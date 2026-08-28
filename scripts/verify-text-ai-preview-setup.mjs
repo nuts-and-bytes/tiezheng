@@ -23,7 +23,7 @@ const EXPECTED_SHA256 = Object.freeze(new Map([
   ['scripts/text-ai-preview-setup-github.mjs', '7ab5ab98699017ee160853e89f7e7cf1e384b271c2dbe9f42d28f11576dcb608'],
   ['scripts/text-ai-preview-setup.mjs', 'cec3b507f40f0daa870ea766e28430d01dc3a1f7dbdd5509b7f29c9a14ebecc0'],
   ['scripts/text-ai-access-code-rotate.mjs', 'cfe17d0944d23a804c25ead58580d84751a0a8d960a72ff5a8702f78e468d44b'],
-  ['package.json', '00c9c4ae2073f19ea25fe2f93fc575aa056d381fa3d0665c40cbae764391ef1d'],
+  ['package.json', 'b2b5e7f2475d081a9caa6a98749c3440744fe3641d92714edd0de1c8ef7768d1'],
 ]));
 
 const SECRET_NAMES = Object.freeze([

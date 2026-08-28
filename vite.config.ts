@@ -45,8 +45,10 @@ export default defineConfig({
     exclude: [
       ...configDefaults.exclude,
       '**/.worktrees/**',
+      'scripts/**/*.test.mjs',
       'workers/**/*.worker.test.ts',
       'workers/photo-ai-gateway/src/textAdminHandler.test.ts',
+      'workers/photo-ai-gateway/src/textAuthThrottleHandler.test.ts',
       'edge/text-ai/admin.test.ts',
     ],
     setupFiles: './src/test/setup.ts',
