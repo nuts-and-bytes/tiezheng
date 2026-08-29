@@ -12,6 +12,7 @@ const MAX_ARGUMENT_LENGTH = 4_096;
 const DEFAULT_TIMEOUT = 20_000;
 const WATCH_TIMEOUT = 300_000;
 const PREFLIGHT_LOG_RETRY_DELAYS_MS = Object.freeze([250, 500, 1_000, 2_000, 4_000, 8_000]);
+const GITHUB_LOG_TIMESTAMP_PATTERN = /^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\.[0-9]{7}Z$/u;
 const ALLOWED_ENV = Object.freeze(['PATH', 'HOME', 'XDG_CONFIG_HOME', 'LANG', 'LC_ALL']);
 const REPO = SETUP_POLICY.repository;
 const ENVIRONMENT = SETUP_POLICY.environment;
@@ -437,8 +438,10 @@ function validatePreflightLog(value) {
   const reports = [];
   for (const line of value.split('\n')) {
     const columns = line.split('\t');
-    if (columns.length < 3) continue;
-    const payload = columns.at(-1);
+    const logField = columns.at(-1);
+    const separator = logField.indexOf(' ');
+    const timestamp = separator < 0 ? '' : logField.slice(0, separator);
+    const payload = separator < 0 ? logField : logField.slice(separator + 1);
     let report;
     try {
       report = JSON.parse(payload);
@@ -450,13 +453,23 @@ function validatePreflightLog(value) {
       Object.hasOwn(report, 'command')
       || Object.hasOwn(report, 'status')
       || Object.hasOwn(report, 'workerTextEnabled')
-    ) reports.push({ columns, payload, report });
+    ) reports.push({ columns, logField, timestamp, payload, report });
   }
   if (reports.length !== 1) fail();
-  const { columns, payload, report } = reports[0];
+  const {
+    columns,
+    logField,
+    timestamp,
+    payload,
+    report,
+  } = reports[0];
   const keys = Object.keys(report);
   if (
-    columns[1] !== STEP_NAME
+    columns.length !== 3
+    || columns[0] !== JOB_NAME
+    || columns[1] !== STEP_NAME
+    || !GITHUB_LOG_TIMESTAMP_PATTERN.test(timestamp)
+    || logField !== `${timestamp} ${payload}`
     || payload !== REPORT_LINE
     || keys.length !== 3
     || keys[0] !== 'command'

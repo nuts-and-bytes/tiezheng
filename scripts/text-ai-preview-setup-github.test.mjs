@@ -11,6 +11,7 @@ import {
 const FAILURE = 'Text preview setup failed';
 const SHA = 'a'.repeat(40);
 const ACCOUNT_ID = 'b'.repeat(32);
+const READY_REPORT = '{"command":"preflight","status":"ready","workerTextEnabled":false}';
 
 function environmentJson() {
   return JSON.stringify({
@@ -53,6 +54,9 @@ function fakeRunner({
   activeRuns = [],
   delayedLogs = 0,
   malformedLogs = 0,
+  logJob = 'text-ai-preview',
+  logTimestamp = '2026-08-29T15:28:30.6333398Z',
+  extraLogLines = [],
 } = {}) {
   const calls = [];
   let remainingDelayedLogs = delayedLogs;
@@ -90,7 +94,12 @@ function fakeRunner({
       }
       const workerTextEnabled = remainingMalformedLogs > 0;
       if (remainingMalformedLogs > 0) remainingMalformedLogs -= 1;
-      stdout = `2026-01-01\tDispatch fixed operation\t{\"command\":\"preflight\",\"status\":\"ready\",\"workerTextEnabled\":${workerTextEnabled}}\n`;
+      const report = `{\"command\":\"preflight\",\"status\":\"ready\",\"workerTextEnabled\":${workerTextEnabled}}`;
+      stdout = [
+        `${logJob}\tDispatch fixed operation\t${logTimestamp} ${report}`,
+        ...extraLogLines,
+        '',
+      ].join('\n');
     } else throw new Error(`unexpected secret-sentinel: ${joined}`);
     return { code: 0, stdout, stderr: '' };
   };
@@ -160,6 +169,98 @@ test('disabled preflight dispatch is exact and binds the unique successful run/j
     '-f', `expected_sha=${SHA}`,
     '-f', 'confirmation=',
   ]);
+});
+
+test('disabled preflight accepts the current GitHub CLI timestamped log field', async () => {
+  const fixture = fakeRunner({
+    secretNames: SETUP_POLICY.secretNames,
+  });
+
+  await createGitHubSetupClient(fixture.runner, async () => {}).runDisabledPreflight(SHA);
+
+  assert.equal(fixture.calls.filter(({ args }) => args.includes('--log')).length, 1);
+  assert.equal(fixture.calls.filter(({ args }) => args[0] === 'workflow').length, 1);
+});
+
+test('disabled preflight rejects non-canonical GitHub CLI log prefixes', async () => {
+  for (const options of [
+    { logJob: 'other-job' },
+    { logTimestamp: '2026-08-29T15:28:30Z' },
+    { logTimestamp: '2026-08-29T15:28:30.6333398+00:00' },
+  ]) {
+    const fixture = fakeRunner({
+      secretNames: SETUP_POLICY.secretNames,
+      ...options,
+    });
+
+    await assert.rejects(
+      createGitHubSetupClient(fixture.runner, async () => {}).runDisabledPreflight(SHA),
+      (error) => error.message === FAILURE,
+    );
+
+    assert.equal(fixture.calls.filter(({ args }) => args.includes('--log')).length, 7);
+    assert.equal(fixture.calls.filter(({ args }) => args[0] === 'workflow').length, 1);
+  }
+});
+
+test('disabled preflight rejects each non-canonical report candidate beside a canonical one', async (t) => {
+  const timestamp = '2026-08-29T15:28:30.6333398Z';
+  const cases = [
+    ['wrong job', `other-job\tDispatch fixed operation\t${timestamp} ${READY_REPORT}`],
+    ['wrong step', `text-ai-preview\tOther step\t${timestamp} ${READY_REPORT}`],
+    ['wrong timestamp', `text-ai-preview\tDispatch fixed operation\tnot-a-timestamp ${READY_REPORT}`],
+    ['four columns', `text-ai-preview\textra\tDispatch fixed operation\t${timestamp} ${READY_REPORT}`],
+  ];
+
+  for (const [name, line] of cases) {
+    await t.test(name, async () => {
+      const fixture = fakeRunner({
+        secretNames: SETUP_POLICY.secretNames,
+        extraLogLines: [line],
+      });
+
+      await assert.rejects(
+        createGitHubSetupClient(fixture.runner, async () => {}).runDisabledPreflight(SHA),
+        (error) => error.message === FAILURE,
+      );
+
+      assert.equal(fixture.calls.filter(({ args }) => args.includes('--log')).length, 7);
+      assert.equal(fixture.calls.filter(({ args }) => args[0] === 'workflow').length, 1);
+    });
+  }
+});
+
+test('disabled preflight ignores ordinary log lines and JSON without report fields', async () => {
+  const fixture = fakeRunner({
+    secretNames: SETUP_POLICY.secretNames,
+    extraLogLines: [
+      'text-ai-preview\tDispatch fixed operation\t2026-08-29T15:28:30.6333398Z ordinary output',
+      'text-ai-preview\tDispatch fixed operation\t2026-08-29T15:28:30.6333398Z {"message":"ready"}',
+    ],
+  });
+
+  await createGitHubSetupClient(fixture.runner, async () => {}).runDisabledPreflight(SHA);
+
+  assert.equal(fixture.calls.filter(({ args }) => args.includes('--log')).length, 1);
+  assert.equal(fixture.calls.filter(({ args }) => args[0] === 'workflow').length, 1);
+});
+
+test('disabled preflight rejects duplicate canonical report candidates', async () => {
+  const timestamp = '2026-08-29T15:28:30.6333398Z';
+  const fixture = fakeRunner({
+    secretNames: SETUP_POLICY.secretNames,
+    extraLogLines: [
+      `text-ai-preview\tDispatch fixed operation\t${timestamp} ${READY_REPORT}`,
+    ],
+  });
+
+  await assert.rejects(
+    createGitHubSetupClient(fixture.runner, async () => {}).runDisabledPreflight(SHA),
+    (error) => error.message === FAILURE,
+  );
+
+  assert.equal(fixture.calls.filter(({ args }) => args.includes('--log')).length, 7);
+  assert.equal(fixture.calls.filter(({ args }) => args[0] === 'workflow').length, 1);
 });
 
 test('disabled preflight retries a briefly unavailable completed job log', async () => {
