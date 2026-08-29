@@ -20,7 +20,7 @@ const EXPECTED_SHA256 = Object.freeze(new Map([
   ['scripts/text-ai-preview-setup-values.mjs', '29ae8334fe34870933400b72e950327898fe0ef2c03cb07091b92856f91b9057'],
   ['scripts/text-ai-preview-setup-prompt.mjs', 'bd5c91b9ebcfc73ac6e9078ec0d571a1d52189763fdb7d4753ce6fc1c8690f04'],
   ['scripts/text-ai-preview-setup-cloudflare.mjs', '9f555d3bac14621cb2ff5cfb8ea689d42ceb36c18cafc7684609df0805427853'],
-  ['scripts/text-ai-preview-setup-github.mjs', '7ab5ab98699017ee160853e89f7e7cf1e384b271c2dbe9f42d28f11576dcb608'],
+  ['scripts/text-ai-preview-setup-github.mjs', '553bc106e36ce7525c069c929c1ed0ef8eb609b7c6e298aefbcdfda596c3b15d'],
   ['scripts/text-ai-preview-setup.mjs', 'cec3b507f40f0daa870ea766e28430d01dc3a1f7dbdd5509b7f29c9a14ebecc0'],
   ['scripts/text-ai-access-code-rotate.mjs', 'cfe17d0944d23a804c25ead58580d84751a0a8d960a72ff5a8702f78e468d44b'],
   ['package.json', 'b2b5e7f2475d081a9caa6a98749c3440744fe3641d92714edd0de1c8ef7768d1'],

@@ -48,8 +48,15 @@ function runMetadata() {
   });
 }
 
-function fakeRunner({ secretNames = [], activeRuns = [] } = {}) {
+function fakeRunner({
+  secretNames = [],
+  activeRuns = [],
+  delayedLogs = 0,
+  malformedLogs = 0,
+} = {}) {
   const calls = [];
+  let remainingDelayedLogs = delayedLogs;
+  let remainingMalformedLogs = malformedLogs;
   const runner = async (command, args, options = {}) => {
     const joined = `${command} ${args.join(' ')}`;
     calls.push({
@@ -77,7 +84,13 @@ function fakeRunner({ secretNames = [], activeRuns = [] } = {}) {
     else if (joined.startsWith('gh run watch 123 ')) stdout = '';
     else if (joined.includes('gh run view 123') && joined.includes('--json')) stdout = runMetadata();
     else if (joined.includes('gh run view 123') && joined.includes('--log')) {
-      stdout = `2026-01-01\tDispatch fixed operation\t{\"command\":\"preflight\",\"status\":\"ready\",\"workerTextEnabled\":false}\n`;
+      if (remainingDelayedLogs > 0) {
+        remainingDelayedLogs -= 1;
+        throw new Error('job log is not ready');
+      }
+      const workerTextEnabled = remainingMalformedLogs > 0;
+      if (remainingMalformedLogs > 0) remainingMalformedLogs -= 1;
+      stdout = `2026-01-01\tDispatch fixed operation\t{\"command\":\"preflight\",\"status\":\"ready\",\"workerTextEnabled\":${workerTextEnabled}}\n`;
     } else throw new Error(`unexpected secret-sentinel: ${joined}`);
     return { code: 0, stdout, stderr: '' };
   };
@@ -147,6 +160,57 @@ test('disabled preflight dispatch is exact and binds the unique successful run/j
     '-f', `expected_sha=${SHA}`,
     '-f', 'confirmation=',
   ]);
+});
+
+test('disabled preflight retries a briefly unavailable completed job log', async () => {
+  const fixture = fakeRunner({
+    secretNames: SETUP_POLICY.secretNames,
+    delayedLogs: 1,
+  });
+  const delays = [];
+
+  await createGitHubSetupClient(fixture.runner, async (milliseconds) => {
+    delays.push(milliseconds);
+  }).runDisabledPreflight(SHA);
+
+  assert.equal(fixture.calls.filter(({ args }) => args.includes('--log')).length, 2);
+  assert.equal(fixture.calls.filter(({ args }) => args[0] === 'workflow').length, 1);
+  assert.deepEqual(delays, [250]);
+});
+
+test('disabled preflight validates every retry before accepting a completed job log', async () => {
+  const fixture = fakeRunner({
+    secretNames: SETUP_POLICY.secretNames,
+    malformedLogs: 2,
+  });
+  const delays = [];
+
+  await createGitHubSetupClient(fixture.runner, async (milliseconds) => {
+    delays.push(milliseconds);
+  }).runDisabledPreflight(SHA);
+
+  assert.equal(fixture.calls.filter(({ args }) => args.includes('--log')).length, 3);
+  assert.equal(fixture.calls.filter(({ args }) => args[0] === 'workflow').length, 1);
+  assert.deepEqual(delays, [250, 500]);
+});
+
+test('disabled preflight exhausts a fixed retry schedule with one redacted failure', async () => {
+  const fixture = fakeRunner({
+    secretNames: SETUP_POLICY.secretNames,
+    delayedLogs: 7,
+  });
+  const delays = [];
+
+  await assert.rejects(
+    createGitHubSetupClient(fixture.runner, async (milliseconds) => {
+      delays.push(milliseconds);
+    }).runDisabledPreflight(SHA),
+    (error) => error.message === FAILURE && !String(error).includes('job log is not ready'),
+  );
+
+  assert.equal(fixture.calls.filter(({ args }) => args.includes('--log')).length, 7);
+  assert.equal(fixture.calls.filter(({ args }) => args[0] === 'workflow').length, 1);
+  assert.deepEqual(delays, [250, 500, 1_000, 2_000, 4_000, 8_000]);
 });
 
 test('access-code rotation dispatch is exact and never fetches logs or secrets', async () => {

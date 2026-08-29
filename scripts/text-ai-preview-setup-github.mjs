@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { TextDecoder } from 'node:util';
 
 import { SETUP_POLICY } from './text-ai-preview-setup-values.mjs';
@@ -10,6 +11,7 @@ const MAX_ARGUMENTS = 64;
 const MAX_ARGUMENT_LENGTH = 4_096;
 const DEFAULT_TIMEOUT = 20_000;
 const WATCH_TIMEOUT = 300_000;
+const PREFLIGHT_LOG_RETRY_DELAYS_MS = Object.freeze([250, 500, 1_000, 2_000, 4_000, 8_000]);
 const ALLOWED_ENV = Object.freeze(['PATH', 'HOME', 'XDG_CONFIG_HOME', 'LANG', 'LC_ALL']);
 const REPO = SETUP_POLICY.repository;
 const ENVIRONMENT = SETUP_POLICY.environment;
@@ -466,7 +468,27 @@ function validatePreflightLog(value) {
   ) fail();
 }
 
-export function createGitHubSetupClient(runner = runBoundedCommand) {
+async function readValidatedPreflightLog(run, retryDelay, runId, jobId) {
+  const args = [
+    'run', 'view', runId,
+    '--repo', REPO,
+    '--job', jobId,
+    '--log',
+  ];
+  for (let attempt = 0; attempt <= PREFLIGHT_LOG_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (attempt > 0) await retryDelay(PREFLIGHT_LOG_RETRY_DELAYS_MS[attempt - 1]);
+    try {
+      validatePreflightLog(await run('gh', args));
+      return;
+    } catch {
+      // GitHub can mark a run complete before its job log is available.
+    }
+  }
+  fail();
+}
+
+export function createGitHubSetupClient(runner = runBoundedCommand, retryDelay = delay) {
+  if (typeof retryDelay !== 'function') fail();
   const run = createCheckedRunner(runner);
 
   async function inspectRepository(expectedSecretNames) {
@@ -599,13 +621,7 @@ export function createGitHubSetupClient(runner = runBoundedCommand) {
         '--json', 'event,headBranch,headSha,status,conclusion,workflowName,jobs',
       ]);
       const jobId = parseJobId(metadata, expectedSha);
-      const log = await run('gh', [
-        'run', 'view', runId,
-        '--repo', REPO,
-        '--job', jobId,
-        '--log',
-      ]);
-      validatePreflightLog(log);
+      await readValidatedPreflightLog(run, retryDelay, runId, jobId);
     } catch {
       fail();
     }
