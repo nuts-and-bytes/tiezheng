@@ -233,8 +233,9 @@ describe('导出', () => {
     await seed();
     renderPoster();
 
-    await waitFor(() => expect(toBlob).toHaveBeenCalled());
+    await waitReady();
     // 还没点任何东西，blob 已经在手上
+    expect(toBlob).toHaveBeenCalled();
     expect(exportBtn()).toBeEnabled();
   });
 
