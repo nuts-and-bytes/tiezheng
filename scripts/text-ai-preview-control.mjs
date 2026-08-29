@@ -70,6 +70,7 @@ const CLOUDFLARE_DEFAULT_PAGE_SIZE = 20;
 const ACCOUNT_PERMISSION_SCOPE = 'com.cloudflare.api.account';
 const KNOWN_PERMISSION_SCOPES = Object.freeze([
   ACCOUNT_PERMISSION_SCOPE,
+  'com.cloudflare.api.account.flagship.app',
   'com.cloudflare.api.account.zone',
   'com.cloudflare.api.user',
   'com.cloudflare.edge.r2.bucket',
@@ -372,8 +373,11 @@ export function loadTextPreviewConfig(env) {
 function parseTokenVerification(value) {
   const snapshot = snapshotRecord(value);
   const id = snapshot.get('id');
+  const allowedKeys = new Set(['id', 'status', 'expires_on']);
   if (
-    snapshot.size !== 2
+    snapshot.size < 2
+    || snapshot.size > allowedKeys.size
+    || [...snapshot.keys()].some((key) => !allowedKeys.has(key))
     || !safeIdentifier(id)
     || snapshot.get('status') !== 'active'
   ) {

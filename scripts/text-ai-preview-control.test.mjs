@@ -118,6 +118,14 @@ function tokenPermissionFixtures(permissionNames = PERMISSIONS) {
   };
 }
 
+function setupTokenClient(fixtures) {
+  return createFakeClient(new Map([
+    ['GET /tokens/verify', [fixtures.verification]],
+    [`GET /tokens/${TOKEN_ID}`, [fixtures.details]],
+    ['GET /tokens/permission_groups', [fixtures.permissionGroups]],
+  ]));
+}
+
 function workerSettings(text = 'false') {
   return {
     bindings: [
@@ -297,15 +305,68 @@ test('preflight reads only token, Pages project, Worker inventory, and Worker se
 
 test('setup token verification uses the same narrow three-permission contract', async () => {
   const fixtures = tokenPermissionFixtures();
-  const fake = createFakeClient(new Map([
-    ['GET /tokens/verify', [fixtures.verification]],
-    [`GET /tokens/${TOKEN_ID}`, [fixtures.details]],
-    ['GET /tokens/permission_groups', [fixtures.permissionGroups]],
-  ]));
+  const fake = setupTokenClient(fixtures);
   assert.deepEqual(await verifyTextPreviewSetupToken(ACCOUNT_ID, fake.client), {
     accountId: ACCOUNT_ID,
     missingPermissions: [],
   });
+});
+
+test('setup token verification accepts Cloudflare expiry metadata', async () => {
+  const fixtures = tokenPermissionFixtures();
+  fixtures.verification.expires_on = '2027-08-29T00:00:00Z';
+  const fake = setupTokenClient(fixtures);
+
+  assert.deepEqual(await verifyTextPreviewSetupToken(ACCOUNT_ID, fake.client), {
+    accountId: ACCOUNT_ID,
+    missingPermissions: [],
+  });
+});
+
+test('setup token verification accepts unrelated current Cloudflare catalog scopes', async () => {
+  const fixtures = tokenPermissionFixtures();
+  fixtures.permissionGroups.push({
+    id: 'unrelated-permission',
+    name: 'Unrelated Permission',
+    scopes: ['com.cloudflare.api.account.flagship.app'],
+  });
+  const fake = setupTokenClient(fixtures);
+
+  assert.deepEqual(await verifyTextPreviewSetupToken(ACCOUNT_ID, fake.client), {
+    accountId: ACCOUNT_ID,
+    missingPermissions: [],
+  });
+});
+
+test('setup token verification keeps strict identity, resource, field, and scope boundaries', async () => {
+  const cases = [
+    (fixtures) => { fixtures.verification.unexpected = true; },
+    (fixtures) => {
+      fixtures.permissionGroups.push({
+        id: 'future-permission',
+        name: 'Future Permission',
+        scopes: ['com.cloudflare.api.account.future'],
+      });
+    },
+    (fixtures) => {
+      fixtures.permissionGroups[0].scopes = ['com.cloudflare.api.account.flagship.app'];
+    },
+    (fixtures) => { fixtures.details.id = 'other-token-id'; },
+    (fixtures) => { fixtures.verification.status = 'inactive'; },
+    (fixtures) => { fixtures.details.status = 'inactive'; },
+    (fixtures) => {
+      fixtures.details.policies[0].resources = {
+        [`com.cloudflare.api.account.${'b'.repeat(32)}`]: '*',
+      };
+    },
+  ];
+
+  for (const mutate of cases) {
+    const fixtures = tokenPermissionFixtures();
+    mutate(fixtures);
+    const fake = setupTokenClient(fixtures);
+    await expectFixedRejection(() => verifyTextPreviewSetupToken(ACCOUNT_ID, fake.client));
+  }
 });
 
 test('configure patches only nine Preview env vars and the fixed Worker service binding', async () => {
