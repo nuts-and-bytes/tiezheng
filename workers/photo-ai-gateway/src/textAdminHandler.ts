@@ -154,8 +154,19 @@ function runtimeNow(dependencies: TextAdminDependencies): number {
 function hasExactKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const keys = Reflect.ownKeys(value);
-  return keys.length === expected.length
-    && keys.every((key) => typeof key === 'string' && expected.includes(key));
+  const stringKeys = keys.filter((key): key is string => typeof key === 'string');
+  const symbolKeys = keys.filter((key): key is symbol => typeof key === 'symbol');
+  if (symbolKeys.length > 1 || (symbolKeys.length === 1 && symbolKeys[0] !== Symbol.dispose)) {
+    return false;
+  }
+  if (symbolKeys.length === 1) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, Symbol.dispose);
+    if (descriptor === undefined || !('value' in descriptor) || typeof descriptor.value !== 'function') {
+      return false;
+    }
+  }
+  return stringKeys.length === expected.length
+    && stringKeys.every((key) => expected.includes(key));
 }
 
 export async function handleTextAdminRequest(

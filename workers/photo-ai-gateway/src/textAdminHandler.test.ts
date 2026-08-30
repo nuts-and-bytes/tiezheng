@@ -403,6 +403,31 @@ describe('internal text admin RPC mapping and privacy', () => {
     await expectFixedJson(response, 503, { ok: false, code: 'service-disabled' });
   });
 
+  test('accepts only the fixed Cloudflare RPC disposer symbol on a valid result', async () => {
+    const rpcResult = Object.defineProperty(
+      { kind: 'applied', status: STATUS },
+      Symbol.dispose,
+      { value: vi.fn() },
+    );
+    const accepted = coordinatorHarness(rpcResult);
+    await expectFixedJson(
+      await handleTextAdminRequest(adminRequest(), accepted.gatewayEnv, DEPENDENCIES),
+      200,
+      { ok: true, operationId: OPERATION_ID, status: STATUS },
+    );
+
+    const unknownSymbol = Symbol('private-rpc-field');
+    const hostileResult = Object.defineProperty(
+      { kind: 'applied', status: STATUS },
+      unknownSymbol,
+      { value: vi.fn() },
+    );
+    const rejected = coordinatorHarness(hostileResult);
+    const response = await handleTextAdminRequest(adminRequest(), rejected.gatewayEnv, DEPENDENCIES);
+    expect(response.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator-result');
+    await expectFixedJson(response, 503, { ok: false, code: 'service-disabled' });
+  });
+
   test.each([
     ['throwing ownKeys Proxy', new Proxy({}, { ownKeys() { throw new Error('private ownKeys'); } })],
     ['throwing kind getter', Object.defineProperties({}, {
