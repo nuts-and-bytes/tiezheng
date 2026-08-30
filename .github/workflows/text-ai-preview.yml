@@ -233,6 +233,10 @@ jobs:
             node scripts/text-ai-preview-control.mjs invoke-admin --operation=status --target=user-2 > "$TEXT_AI_USER_2_STATUS_FILE"
           }
 
+          report_enable_stage() {
+            printf 'Text preview enable stage: %s\n' "${1-}" >&2 || :
+          }
+
           assert_enable_admin_preconditions() {
             node --input-type=module <<'NODE'
           import { readFile } from 'node:fs/promises';
@@ -520,12 +524,19 @@ jobs:
               if [ "$TEXT_AI_TARGET" != 'user-1' ] || [ "$TEXT_AI_CONFIRMATION" != 'ENABLE_ONE_TEXT_PREVIEW_ACCOUNT' ]; then
                 exit 1
               fi
+              report_enable_stage 'write-worker-secret'
               write_worker_secret_file
+              report_enable_stage 'capture-status'
               capture_status_pair
+              report_enable_stage 'assert-preconditions'
               assert_enable_admin_preconditions
+              report_enable_stage 'configure-pages'
               node scripts/text-ai-preview-control.mjs configure > /dev/null
+              report_enable_stage 'enable-user-1'
               node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1 > /dev/null
+              report_enable_stage 'enable-text-global'
               node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1 > /dev/null
+              report_enable_stage 'deploy-worker-enabled'
               deploy_worker_enabled
               ;;
             status)

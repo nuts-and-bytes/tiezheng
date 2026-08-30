@@ -110,6 +110,31 @@ test('rotate-user-code only reapplies Pages bindings and deploys the fixed SHA',
   ));
 });
 
+test('first-account enable reports only the fixed safe operation stages', () => {
+  const enable = branch(source, 'enable-admin-preview', 'status');
+  const stages = [...enable.matchAll(/^ {14}report_enable_stage '([a-z0-9-]+)'$/gm)]
+    .map((match) => match[1]);
+  const stageCommands = [
+    ['write-worker-secret', 'write_worker_secret_file'],
+    ['capture-status', 'capture_status_pair'],
+    ['assert-preconditions', 'assert_enable_admin_preconditions'],
+    ['configure-pages', 'node scripts/text-ai-preview-control.mjs configure > /dev/null'],
+    ['enable-user-1', 'node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-account --target=user-1 > /dev/null'],
+    ['enable-text-global', 'node scripts/text-ai-preview-control.mjs invoke-admin --operation=enable-text-global --target=user-1 > /dev/null'],
+    ['deploy-worker-enabled', 'deploy_worker_enabled'],
+  ];
+
+  assert.equal(source.includes(
+    "          report_enable_stage() {\n            printf 'Text preview enable stage: %s\\n' \"${1-}\" >&2 || :\n          }\n",
+  ), true);
+  assert.deepEqual(stages, stageCommands.map(([stage]) => stage));
+  for (const [stage, command] of stageCommands) {
+    assert.equal(enable.includes(
+      `              report_enable_stage '${stage}'\n              ${command}\n`,
+    ), true, stage);
+  }
+});
+
 test('disable-all attempts only global disable and disabled Worker deployment', () => {
   const disable = branch(source, 'disable-all', 'delete-account');
   assert.equal(disable.includes('--operation=disable-text-global --target=user-1'), true);

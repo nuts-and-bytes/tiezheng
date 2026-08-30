@@ -7,9 +7,9 @@ const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 const WORKFLOW_PATH = resolve('.github/workflows/text-ai-preview.yml');
 const MAX_WORKFLOW_BYTES = 1_048_576;
 const EXPECTED_DISPATCH_SHA256 =
-  '85e5673daae514897c0d45e5878f705a51d8a07d9e4e4440020fec48acf189e0';
+  'b2fcc4d168744aff79b5067803d852e7415c81ed21ef026afc5469deb4072463';
 const EXPECTED_OPERATION_CASE_SHA256 =
-  '3669a17d4a05977d3cac3a5356db1c21a1eec8e967ab0ecba537f762369f5d3b';
+  'cc6642db0d9ff705401d66cef89c0b2771997b624974d5d120dd7b4142cc1132';
 const OPERATION_CHOICES = Object.freeze([
   'preflight',
   'deploy-disabled',
