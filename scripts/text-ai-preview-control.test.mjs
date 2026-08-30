@@ -303,6 +303,76 @@ test('preflight reads only token, Pages project, Worker inventory, and Worker se
   assert.equal(JSON.stringify(result).includes('access'), false);
 });
 
+test('CLI reports only fixed preflight stages and hides the failing Cloudflare response', async () => {
+  const stderr = [];
+  const fake = createFakeClient(preflightRoutes({ project: { malformed: true } }));
+
+  assert.equal(await runTextPreviewControlCli(['preflight'], validEnv(), {
+    clientFactory: () => fake.client,
+    writeStdout: () => assert.fail('failed preflight must not write stdout'),
+    writeStderr: (value) => stderr.push(value),
+  }), 1);
+
+  assert.deepEqual(stderr, [
+    'Text preview preflight stage: token-capabilities\n',
+    'Text preview preflight stage: read-project\n',
+    'Text preview preflight stage: inspect-project\n',
+    'Text preview control failed\n',
+  ]);
+  assert.equal(JSON.stringify(stderr).includes(SENSITIVE.apiToken), false);
+  assert.equal(JSON.stringify(stderr).includes('malformed'), false);
+});
+
+test('preflight reports the complete fixed stage sequence', async () => {
+  const stages = [];
+  const fake = createFakeClient(preflightRoutes());
+
+  await preflightTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    fake.client,
+    (stage) => stages.push(stage),
+  );
+
+  assert.deepEqual(stages, [
+    'token-capabilities',
+    'read-project',
+    'inspect-project',
+    'read-worker-list',
+    'inspect-worker-list',
+    'read-worker-settings',
+    'inspect-worker-settings',
+    'complete',
+  ]);
+});
+
+test('preflight stage reporting failures never change the result or API calls', async () => {
+  const expectedCalls = [
+    'GET /tokens/verify',
+    `GET /tokens/${TOKEN_ID}`,
+    'GET /tokens/permission_groups',
+    'GET /pages/projects/tiezheng',
+    'GET /workers/scripts',
+    `GET /workers/scripts/${WORKER_NAME}/settings`,
+  ];
+  for (const reporter of [
+    () => { throw new Error(`private stage detail ${SENSITIVE.apiToken}`); },
+    () => Promise.reject(new Error(`private async stage detail ${SENSITIVE.apiToken}`)),
+  ]) {
+    const fake = createFakeClient(preflightRoutes());
+    const result = await preflightTextPreview(
+      loadTextPreviewConfig(validEnv()),
+      fake.client,
+      reporter,
+    );
+    assert.equal(result.workerTextEnabled, false);
+    assert.equal(result.photoAiGatewayEnabled, false);
+    assert.deepEqual(
+      fake.calls.map(({ method, path }) => `${method} ${path}`),
+      expectedCalls,
+    );
+  }
+});
+
 test('setup token verification uses the same narrow three-permission contract', async () => {
   const fixtures = tokenPermissionFixtures();
   const fake = setupTokenClient(fixtures);

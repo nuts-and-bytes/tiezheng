@@ -595,23 +595,43 @@ function parseWorkerSettings(value) {
   });
 }
 
-export async function preflightTextPreview(config, client) {
+export async function preflightTextPreview(config, client, reportStage) {
   try {
     if (!configIsValid(config)) fail();
+    if (reportStage !== undefined && typeof reportStage !== 'function') fail();
+    const markStage = (stage) => {
+      if (reportStage === undefined) return;
+      try {
+        Promise.resolve(reportStage(stage)).catch(() => undefined);
+      } catch {
+        // Diagnostic output must never alter the preflight result.
+      }
+    };
     const get = clientGet(client);
 
+    markStage('token-capabilities');
     const tokenCapabilities = await verifyTokenCapabilities(
       config.accountId,
       client,
       REQUIRED_TOKEN_CAPABILITY_ALIASES,
     );
     if (tokenCapabilities.missingPermissions.length > 0) fail();
-    const project = parsePagesProject(await get('/pages/projects/tiezheng'));
-    parseWorkerList(await get('/workers/scripts'));
+    markStage('read-project');
+    const projectResult = await get('/pages/projects/tiezheng');
+    markStage('inspect-project');
+    const project = parsePagesProject(projectResult);
+    markStage('read-worker-list');
+    const workerList = await get('/workers/scripts');
+    markStage('inspect-worker-list');
+    parseWorkerList(workerList);
+    markStage('read-worker-settings');
+    const workerSettingsResult = await get(`/workers/scripts/${WORKER_NAME}/settings`);
+    markStage('inspect-worker-settings');
     const workerSettings = parseWorkerSettings(
-      await get(`/workers/scripts/${WORKER_NAME}/settings`),
+      workerSettingsResult,
     );
     if (workerSettings.photoAiGatewayEnabled) fail();
+    markStage('complete');
 
     return Object.freeze({
       project,
@@ -1058,7 +1078,9 @@ export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
 
     const client = parsedDependencies.clientFactory(config);
     if (command.command === 'preflight') {
-      const result = await preflightTextPreview(config, client);
+      const result = await preflightTextPreview(config, client, (stage) => {
+        parsedDependencies.writeStderr(`Text preview preflight stage: ${stage}\n`);
+      });
       writeCliLine(parsedDependencies.writeStdout, {
         command: 'preflight',
         status: 'ready',
