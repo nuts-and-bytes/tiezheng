@@ -42,6 +42,7 @@ const PREVIEW_BINDING_CONTAINER_NAMES = Object.freeze([
 ]);
 const PREVIEW_NON_BINDING_NAMES = Object.freeze([
   'always_use_latest_compatibility_date',
+  'build_image_major_version',
   'compatibility_date',
   'compatibility_flags',
   'fail_open',
@@ -1118,6 +1119,10 @@ function canonicalDate(value) {
 
 function inspectPreviewNonBinding(preview, name) {
   const value = preview.get(name);
+  if (name === 'build_image_major_version') {
+    if (!Number.isSafeInteger(value) || value < 1 || value > 100) fail();
+    return value;
+  }
   if (name === 'compatibility_date') {
     if (!canonicalDate(value)) fail();
     return value;

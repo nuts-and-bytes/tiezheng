@@ -478,6 +478,39 @@ test('configure omits a null Preview Wrangler config hash from the Pages PATCH',
   );
 });
 
+test('configure preserves the current Pages build image major version', async () => {
+  const beforePreview = {
+    build_image_major_version: 3,
+    env_vars: {},
+    services: {},
+  };
+  const before = pagesProject(beforePreview);
+  const routes = preflightRoutes({ project: before });
+  addRoute(routes, 'GET /pages/projects/tiezheng', before);
+  let patched;
+  addRoute(routes, 'PATCH /pages/projects/tiezheng', ({ body }) => {
+    assert.equal(
+      Object.hasOwn(body.deployment_configs.preview, 'build_image_major_version'),
+      false,
+    );
+    patched = structuredClone(body);
+    return pagesProject({
+      ...beforePreview,
+      ...body.deployment_configs.preview,
+    });
+  });
+  addRoute(routes, 'GET /pages/projects/tiezheng', () => pagesProject({
+    ...beforePreview,
+    ...patched.deployment_configs.preview,
+  }));
+  const fake = createFakeClient(routes);
+
+  assert.deepEqual(
+    await reconcileTextPreview(loadTextPreviewConfig(validEnv()), fake.client),
+    { configured: true },
+  );
+});
+
 test('configure fails before PATCH on unknown Preview bindings or late project drift', async () => {
   const unsafe = pagesProject({ env_vars: { UNKNOWN: { type: 'plain_text', value: 'x' } }, services: {} });
   const unknownFake = createFakeClient(preflightRoutes({ project: unsafe }));
