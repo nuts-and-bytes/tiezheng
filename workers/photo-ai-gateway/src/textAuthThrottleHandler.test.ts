@@ -100,6 +100,26 @@ describe('private text authentication throttle protocol', () => {
     );
   });
 
+  test.each([
+    [{ kind: 'allowed' }, { kind: 'allowed' }],
+    [
+      { kind: 'blocked', retryAfterMs: 900_000 },
+      { kind: 'blocked', retryAfterMs: 900_000 },
+    ],
+  ])('accepts the fixed Cloudflare RPC disposer on %j', async (result, expected) => {
+    const rpcResult = Object.defineProperty(result, Symbol.dispose, { value: vi.fn() });
+    const { gatewayEnv } = harness(rpcResult);
+    await expectJson(
+      await handleTextAuthThrottleRequest(
+        throttleRequest(),
+        gatewayEnv,
+        NOW_DEPENDENCIES,
+      ),
+      200,
+      expected,
+    );
+  });
+
   test('clears one exact key with a bodyless 204 response', async () => {
     const { clearTextAuthAttempts, consumeTextAuthAttempt, gatewayEnv } = harness();
     const response = await handleTextAuthThrottleRequest(
@@ -150,6 +170,28 @@ describe('private text authentication throttle protocol', () => {
     ['zero retry', () => harness({ kind: 'blocked', retryAfterMs: 0 })],
     ['oversized retry', () => harness({ kind: 'blocked', retryAfterMs: 1_800_001 })],
     ['extra response key', () => harness({ kind: 'allowed', private: true })],
+    ['unknown response symbol', () => harness(Object.defineProperty(
+      { kind: 'allowed' },
+      Symbol('private-rpc-field'),
+      { value: vi.fn() },
+    ))],
+    ['non-function RPC disposer', () => harness(Object.defineProperty(
+      { kind: 'allowed' },
+      Symbol.dispose,
+      { value: 'private' },
+    ))],
+    ['accessor RPC disposer', () => harness(Object.defineProperty(
+      { kind: 'allowed' },
+      Symbol.dispose,
+      { get: () => vi.fn() },
+    ))],
+    ['multiple response symbols', () => harness(Object.defineProperties(
+      { kind: 'allowed' },
+      {
+        [Symbol.dispose]: { value: vi.fn() },
+        [Symbol('private-rpc-field')]: { value: vi.fn() },
+      },
+    ))],
   ])('fails closed for %s without exposing the attempt key', async (_name, makeHarness) => {
     const { gatewayEnv } = makeHarness();
     const response = await handleTextAuthThrottleRequest(

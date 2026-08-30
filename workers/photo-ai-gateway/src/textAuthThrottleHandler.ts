@@ -58,8 +58,19 @@ function unavailable(): Response {
 function hasExactDataKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const keys = Reflect.ownKeys(value);
-  if (keys.length !== expected.length
-    || !keys.every((key) => typeof key === 'string' && expected.includes(key))) return false;
+  const stringKeys = keys.filter((key): key is string => typeof key === 'string');
+  const symbolKeys = keys.filter((key): key is symbol => typeof key === 'symbol');
+  if (symbolKeys.length > 1 || (symbolKeys.length === 1 && symbolKeys[0] !== Symbol.dispose)) {
+    return false;
+  }
+  if (symbolKeys.length === 1) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, Symbol.dispose);
+    if (descriptor === undefined || !('value' in descriptor) || typeof descriptor.value !== 'function') {
+      return false;
+    }
+  }
+  if (stringKeys.length !== expected.length
+    || !stringKeys.every((key) => expected.includes(key))) return false;
   return expected.every((key) => {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     return descriptor !== undefined && 'value' in descriptor;
