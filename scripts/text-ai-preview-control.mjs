@@ -1108,6 +1108,11 @@ function inspectNamedRecord(value, allowedNames) {
   return snapshot;
 }
 
+function inspectOptionalNamedRecord(container, name, allowedNames) {
+  if (!container.has(name) || container.get(name) === null) return new Map();
+  return inspectNamedRecord(container.get(name), allowedNames);
+}
+
 function canonicalDate(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   try {
@@ -1168,13 +1173,17 @@ function inspectPreviewProject(project, reportCheckpoint) {
     if (!PREVIEW_TOP_LEVEL_NAMES.has(key)) fail();
   }
   checkpoint('env-vars');
-  const envVars = preview.has('env_vars')
-    ? inspectNamedRecord(preview.get('env_vars'), EXPECTED_PREVIEW_ENV_NAMES)
-    : new Map();
+  const envVars = inspectOptionalNamedRecord(
+    preview,
+    'env_vars',
+    EXPECTED_PREVIEW_ENV_NAMES,
+  );
   checkpoint('services');
-  const services = preview.has('services')
-    ? inspectNamedRecord(preview.get('services'), EXPECTED_PREVIEW_SERVICE_NAMES)
-    : new Map();
+  const services = inspectOptionalNamedRecord(
+    preview,
+    'services',
+    EXPECTED_PREVIEW_SERVICE_NAMES,
+  );
   checkpoint('env-entries');
   for (const entry of envVars.values()) {
     const snapshot = snapshotRecord(entry);
@@ -1193,7 +1202,8 @@ function inspectPreviewProject(project, reportCheckpoint) {
   checkpoint('binding-containers');
   for (const name of PREVIEW_BINDING_CONTAINER_NAMES) {
     if (name === 'services' || !preview.has(name)) continue;
-    if (snapshotRecord(preview.get(name)).size !== 0) fail();
+    const value = preview.get(name);
+    if (value !== null && snapshotRecord(value).size !== 0) fail();
   }
   checkpoint('wrangler-config-hash');
   const wranglerConfigHash = preview.has('wrangler_config_hash')

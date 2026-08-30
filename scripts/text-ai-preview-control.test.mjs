@@ -511,6 +511,36 @@ test('configure preserves the current Pages build image major version', async ()
   );
 });
 
+test('configure treats null optional Preview maps as empty before PATCH', async () => {
+  const beforePreview = {
+    env_vars: null,
+    services: null,
+    ai_bindings: null,
+    kv_namespaces: null,
+  };
+  const before = pagesProject(beforePreview);
+  const routes = preflightRoutes({ project: before });
+  addRoute(routes, 'GET /pages/projects/tiezheng', before);
+  let patched;
+  addRoute(routes, 'PATCH /pages/projects/tiezheng', ({ body }) => {
+    patched = structuredClone(body);
+    return pagesProject({
+      ...beforePreview,
+      ...body.deployment_configs.preview,
+    });
+  });
+  addRoute(routes, 'GET /pages/projects/tiezheng', () => pagesProject({
+    ...beforePreview,
+    ...patched.deployment_configs.preview,
+  }));
+  const fake = createFakeClient(routes);
+
+  assert.deepEqual(
+    await reconcileTextPreview(loadTextPreviewConfig(validEnv()), fake.client),
+    { configured: true },
+  );
+});
+
 test('configure fails before PATCH on unknown Preview bindings or late project drift', async () => {
   const unsafe = pagesProject({ env_vars: { UNKNOWN: { type: 'plain_text', value: 'x' } }, services: {} });
   const unknownFake = createFakeClient(preflightRoutes({ project: unsafe }));
