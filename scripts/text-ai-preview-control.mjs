@@ -1157,17 +1157,25 @@ function previewBehaviorHash(value) {
   return createHash('sha256').update(stableJson(value)).digest('hex');
 }
 
-function inspectPreviewProject(project) {
+function inspectPreviewProject(project, reportCheckpoint) {
+  const checkpoint = (name) => {
+    if (typeof reportCheckpoint === 'function') reportCheckpoint(name);
+  };
+  checkpoint('record');
   const preview = snapshotRecord(project.deployment_configs.preview);
+  checkpoint('top-level');
   for (const key of preview.keys()) {
     if (!PREVIEW_TOP_LEVEL_NAMES.has(key)) fail();
   }
+  checkpoint('env-vars');
   const envVars = preview.has('env_vars')
     ? inspectNamedRecord(preview.get('env_vars'), EXPECTED_PREVIEW_ENV_NAMES)
     : new Map();
+  checkpoint('services');
   const services = preview.has('services')
     ? inspectNamedRecord(preview.get('services'), EXPECTED_PREVIEW_SERVICE_NAMES)
     : new Map();
+  checkpoint('env-entries');
   for (const entry of envVars.values()) {
     const snapshot = snapshotRecord(entry);
     const type = snapshot.get('type');
@@ -1177,14 +1185,17 @@ function inspectPreviewProject(project) {
       if (typeof value !== 'string' && value !== null) fail();
     }
   }
+  checkpoint('service-entries');
   for (const entry of services.values()) {
     const snapshot = snapshotRecord(entry);
     if (typeof snapshot.get('service') !== 'string' || typeof snapshot.get('environment') !== 'string') fail();
   }
+  checkpoint('binding-containers');
   for (const name of PREVIEW_BINDING_CONTAINER_NAMES) {
     if (name === 'services' || !preview.has(name)) continue;
     if (snapshotRecord(preview.get(name)).size !== 0) fail();
   }
+  checkpoint('wrangler-config-hash');
   const wranglerConfigHash = preview.has('wrangler_config_hash')
     ? preview.get('wrangler_config_hash')
     : undefined;
@@ -1195,6 +1206,7 @@ function inspectPreviewProject(project) {
   ) {
     fail();
   }
+  checkpoint('behavior');
   const behavior = {};
   for (const name of PREVIEW_NON_BINDING_NAMES) {
     if (preview.has(name)) behavior[name] = inspectPreviewNonBinding(preview, name);
@@ -1263,19 +1275,29 @@ function desiredPagesPatch(config, wranglerConfigHash) {
   };
 }
 
-function inspectExpectedPreviewProject(project, desiredPreview) {
-  const actual = inspectPreviewProject(project);
+function inspectExpectedPreviewProject(project, desiredPreview, reportCheckpoint) {
+  const checkpoint = (name) => {
+    if (typeof reportCheckpoint === 'function') reportCheckpoint(name);
+  };
+  const actual = inspectPreviewProject(project, reportCheckpoint);
+  checkpoint('env-vars');
   const desired = snapshotRecord(desiredPreview);
   const desiredEnvVars = snapshotRecord(desired.get('env_vars'));
-  const desiredServices = snapshotRecord(desired.get('services'));
   if (
     actual.envVars.size !== EXPECTED_PREVIEW_ENV_NAMES.size
-    || actual.services.size !== EXPECTED_PREVIEW_SERVICE_NAMES.size
     || desiredEnvVars.size !== EXPECTED_PREVIEW_ENV_NAMES.size
+  ) {
+    fail();
+  }
+  checkpoint('services');
+  const desiredServices = snapshotRecord(desired.get('services'));
+  if (
+    actual.services.size !== EXPECTED_PREVIEW_SERVICE_NAMES.size
     || desiredServices.size !== EXPECTED_PREVIEW_SERVICE_NAMES.size
   ) {
     fail();
   }
+  checkpoint('env-entries');
   for (const name of EXPECTED_PREVIEW_ENV_NAMES) {
     if (!actual.envVars.has(name) || !desiredEnvVars.has(name)) fail();
     const actualEntry = snapshotRecord(actual.envVars.get(name));
@@ -1290,6 +1312,7 @@ function inspectExpectedPreviewProject(project, desiredPreview) {
       fail();
     }
   }
+  checkpoint('service-entries');
   for (const name of EXPECTED_PREVIEW_SERVICE_NAMES) {
     if (!actual.services.has(name) || !desiredServices.has(name)) fail();
     const actualBinding = snapshotRecord(actual.services.get(name));
@@ -1322,14 +1345,20 @@ export async function reconcileTextPreview(config, client, reportStage) {
     markStage('preflight');
     const preflight = await preflightTextPreview(config, client);
     markStage('inspect-initial');
-    const beforePreview = inspectPreviewProject(preflight.project);
+    const beforePreview = inspectPreviewProject(
+      preflight.project,
+      (checkpoint) => markStage(`inspect-initial:${checkpoint}`),
+    );
     const beforeProductionHash = productionHash(preflight.project);
     const pagesPatch = desiredPagesPatch(config, beforePreview.wranglerConfigHash);
     markStage('read-recheck');
     const recheckedResult = await get('/pages/projects/tiezheng');
     markStage('inspect-recheck');
     const recheckedProject = parsePagesProject(recheckedResult);
-    const recheckedPreview = inspectPreviewProject(recheckedProject);
+    const recheckedPreview = inspectPreviewProject(
+      recheckedProject,
+      (checkpoint) => markStage(`inspect-recheck:${checkpoint}`),
+    );
     if (
       recheckedPreview.behaviorHash !== beforePreview.behaviorHash
       || recheckedPreview.wranglerConfigHash !== beforePreview.wranglerConfigHash
@@ -1344,6 +1373,7 @@ export async function reconcileTextPreview(config, client, reportStage) {
     const patchedPreview = inspectExpectedPreviewProject(
       patchResult,
       pagesPatch.deployment_configs.preview,
+      (checkpoint) => markStage(`inspect-patch-response:${checkpoint}`),
     );
     if (
       patchedPreview.behaviorHash !== beforePreview.behaviorHash
@@ -1358,6 +1388,7 @@ export async function reconcileTextPreview(config, client, reportStage) {
     const afterPreview = inspectExpectedPreviewProject(
       afterProject,
       pagesPatch.deployment_configs.preview,
+      (checkpoint) => markStage(`inspect-after:${checkpoint}`),
     );
     if (
       afterPreview.behaviorHash !== beforePreview.behaviorHash

@@ -708,11 +708,27 @@ test('CLI reports only fixed configure stages and hides the underlying failure',
   }), 1);
 
   assert.deepEqual(stdout, []);
+  const checkpoints = [
+    'record',
+    'top-level',
+    'env-vars',
+    'services',
+    'env-entries',
+    'service-entries',
+    'binding-containers',
+    'wrangler-config-hash',
+    'behavior',
+  ];
+  const checkpointLines = (prefix) => checkpoints.map(
+    (checkpoint) => `Text preview configure stage: ${prefix}:${checkpoint}\n`,
+  );
   assert.deepEqual(stderr, [
     'Text preview configure stage: preflight\n',
     'Text preview configure stage: inspect-initial\n',
+    ...checkpointLines('inspect-initial'),
     'Text preview configure stage: read-recheck\n',
     'Text preview configure stage: inspect-recheck\n',
+    ...checkpointLines('inspect-recheck'),
     'Text preview configure stage: patch-request\n',
     'Text preview control failed\n',
   ]);
@@ -741,6 +757,49 @@ test('CLI attributes a malformed PATCH response to response inspection', async (
 
   assert.equal(stderr.at(-2), 'Text preview configure stage: inspect-patch-response\n');
   assert.equal(stderr.at(-1), 'Text preview control failed\n');
+});
+
+test('CLI attributes incomplete PATCH env vars to expected env validation', async () => {
+  const stderr = [];
+  const before = pagesProject();
+  const routes = preflightRoutes({ project: before });
+  addRoute(routes, 'GET /pages/projects/tiezheng', before);
+  addRoute(routes, 'PATCH /pages/projects/tiezheng', pagesProject({
+    env_vars: {},
+    services: {
+      PHOTO_AI_GATEWAY: { service: WORKER_NAME, environment: 'production' },
+    },
+  }));
+  const fake = createFakeClient(routes);
+
+  assert.equal(await runTextPreviewControlCli(['configure'], validEnv(), {
+    clientFactory: () => fake.client,
+    writeStdout: () => assert.fail('failed configure must not write stdout'),
+    writeStderr: (value) => stderr.push(value),
+  }), 1);
+
+  assert.equal(stderr.at(-2), 'Text preview configure stage: inspect-patch-response:env-vars\n');
+  assert.equal(stderr.at(-1), 'Text preview control failed\n');
+});
+
+test('CLI pinpoints invalid initial Preview behavior without exposing its value', async () => {
+  const stderr = [];
+  const unsafe = pagesProject({
+    build_image_major_version: null,
+    env_vars: {},
+    services: {},
+  });
+  const fake = createFakeClient(preflightRoutes({ project: unsafe }));
+
+  assert.equal(await runTextPreviewControlCli(['configure'], validEnv(), {
+    clientFactory: () => fake.client,
+    writeStdout: () => assert.fail('failed configure must not write stdout'),
+    writeStderr: (value) => stderr.push(value),
+  }), 1);
+
+  assert.equal(stderr.at(-2), 'Text preview configure stage: inspect-initial:behavior\n');
+  assert.equal(stderr.at(-1), 'Text preview control failed\n');
+  assert.equal(JSON.stringify(stderr).includes('build_image_major_version'), false);
 });
 
 test('configure stage reporting failures never change reconciliation', async () => {
