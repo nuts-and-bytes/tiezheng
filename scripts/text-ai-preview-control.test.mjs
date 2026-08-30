@@ -653,6 +653,95 @@ test('CLI accepts only preflight, configure, and strict invoke-admin commands', 
   assert.equal(JSON.stringify({ stdout, stderr }).includes(SENSITIVE.adminKey), false);
 });
 
+test('CLI reports only fixed configure stages and hides the underlying failure', async () => {
+  const stdout = [];
+  const stderr = [];
+  const before = pagesProject({
+    wrangler_config_hash: 'wrangler-config-hash',
+    env_vars: {},
+    services: {},
+  });
+  const routes = preflightRoutes({ project: before });
+  addRoute(routes, 'GET /pages/projects/tiezheng', before);
+  addRoute(routes, 'PATCH /pages/projects/tiezheng', () => {
+    throw new Error(`private upstream detail ${SENSITIVE.apiToken}`);
+  });
+  const fake = createFakeClient(routes);
+
+  assert.equal(await runTextPreviewControlCli(['configure'], validEnv(), {
+    clientFactory: () => fake.client,
+    writeStdout: (value) => stdout.push(value),
+    writeStderr: (value) => stderr.push(value),
+  }), 1);
+
+  assert.deepEqual(stdout, []);
+  assert.deepEqual(stderr, [
+    'Text preview configure stage: preflight\n',
+    'Text preview configure stage: inspect-initial\n',
+    'Text preview configure stage: read-recheck\n',
+    'Text preview configure stage: inspect-recheck\n',
+    'Text preview configure stage: patch-request\n',
+    'Text preview control failed\n',
+  ]);
+  const rendered = JSON.stringify(stderr);
+  assert.equal(rendered.includes(SENSITIVE.apiToken), false);
+  assert.equal(rendered.includes('private upstream detail'), false);
+});
+
+test('CLI attributes a malformed PATCH response to response inspection', async () => {
+  const stderr = [];
+  const before = pagesProject({
+    wrangler_config_hash: 'wrangler-config-hash',
+    env_vars: {},
+    services: {},
+  });
+  const routes = preflightRoutes({ project: before });
+  addRoute(routes, 'GET /pages/projects/tiezheng', before);
+  addRoute(routes, 'PATCH /pages/projects/tiezheng', { malformed: true });
+  const fake = createFakeClient(routes);
+
+  assert.equal(await runTextPreviewControlCli(['configure'], validEnv(), {
+    clientFactory: () => fake.client,
+    writeStdout: () => assert.fail('failed configure must not write stdout'),
+    writeStderr: (value) => stderr.push(value),
+  }), 1);
+
+  assert.equal(stderr.at(-2), 'Text preview configure stage: inspect-patch-response\n');
+  assert.equal(stderr.at(-1), 'Text preview control failed\n');
+});
+
+test('configure stage reporting failures never change reconciliation', async () => {
+  const createSuccessfulFake = () => {
+    const before = pagesProject();
+    const routes = preflightRoutes({ project: before });
+    addRoute(routes, 'GET /pages/projects/tiezheng', before);
+    let patched;
+    addRoute(routes, 'PATCH /pages/projects/tiezheng', ({ body }) => {
+      patched = structuredClone(body);
+      return pagesProject(body.deployment_configs.preview);
+    });
+    addRoute(routes, 'GET /pages/projects/tiezheng', () => pagesProject(
+      patched.deployment_configs.preview,
+    ));
+    return createFakeClient(routes);
+  };
+
+  const syncFake = createSuccessfulFake();
+  assert.deepEqual(await reconcileTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    syncFake.client,
+    () => { throw new Error(`private reporter detail ${SENSITIVE.adminKey}`); },
+  ), { configured: true });
+
+  const asyncFake = createSuccessfulFake();
+  assert.deepEqual(await reconcileTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    asyncFake.client,
+    async () => { throw new Error(`private async reporter detail ${SENSITIVE.adminKey}`); },
+  ), { configured: true });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+});
+
 test('runtime control source contains no Zero Trust, email, or Access credential shape', async () => {
   const source = await readFile(resolve('scripts/text-ai-preview-control.mjs'), 'utf8');
   for (const pattern of [

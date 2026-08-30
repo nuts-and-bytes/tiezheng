@@ -1066,7 +1066,9 @@ export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
       return 0;
     }
     if (command.command === 'configure') {
-      await reconcileTextPreview(config, client);
+      await reconcileTextPreview(config, client, (stage) => {
+        parsedDependencies.writeStderr(`Text preview configure stage: ${stage}\n`);
+      });
       writeCliLine(parsedDependencies.writeStdout, { command: 'configure', status: 'configured' });
       return 0;
     }
@@ -1297,17 +1299,31 @@ function inspectExpectedPreviewProject(project, desiredPreview) {
   return actual;
 }
 
-export async function reconcileTextPreview(config, client) {
+export async function reconcileTextPreview(config, client, reportStage) {
   try {
     if (!configIsValid(config)) fail();
+    if (reportStage !== undefined && typeof reportStage !== 'function') fail();
+    const markStage = (stage) => {
+      if (reportStage === undefined) return;
+      try {
+        Promise.resolve(reportStage(stage)).catch(() => undefined);
+      } catch {
+        // Diagnostic output must never alter the reconciliation result.
+      }
+    };
     const get = clientGet(client);
     const patch = clientMethod(client, 'patch');
 
+    markStage('preflight');
     const preflight = await preflightTextPreview(config, client);
+    markStage('inspect-initial');
     const beforePreview = inspectPreviewProject(preflight.project);
     const beforeProductionHash = productionHash(preflight.project);
     const pagesPatch = desiredPagesPatch(config, beforePreview.wranglerConfigHash);
-    const recheckedProject = parsePagesProject(await get('/pages/projects/tiezheng'));
+    markStage('read-recheck');
+    const recheckedResult = await get('/pages/projects/tiezheng');
+    markStage('inspect-recheck');
+    const recheckedProject = parsePagesProject(recheckedResult);
     const recheckedPreview = inspectPreviewProject(recheckedProject);
     if (
       recheckedPreview.behaviorHash !== beforePreview.behaviorHash
@@ -1316,7 +1332,10 @@ export async function reconcileTextPreview(config, client) {
     ) {
       fail();
     }
-    const patchResult = parsePagesProject(await patch('/pages/projects/tiezheng', pagesPatch));
+    markStage('patch-request');
+    const patchResponse = await patch('/pages/projects/tiezheng', pagesPatch);
+    markStage('inspect-patch-response');
+    const patchResult = parsePagesProject(patchResponse);
     const patchedPreview = inspectExpectedPreviewProject(
       patchResult,
       pagesPatch.deployment_configs.preview,
@@ -1327,7 +1346,10 @@ export async function reconcileTextPreview(config, client) {
     ) {
       fail();
     }
-    const afterProject = parsePagesProject(await get('/pages/projects/tiezheng'));
+    markStage('read-after');
+    const afterResult = await get('/pages/projects/tiezheng');
+    markStage('inspect-after');
+    const afterProject = parsePagesProject(afterResult);
     const afterPreview = inspectExpectedPreviewProject(
       afterProject,
       pagesPatch.deployment_configs.preview,
