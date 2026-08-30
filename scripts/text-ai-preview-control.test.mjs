@@ -408,6 +408,76 @@ test('configure patches only nine Preview env vars and the fixed Worker service 
   assert.equal(fake.calls.some(({ method }) => method === 'POST' || method === 'PUT' || method === 'DELETE'), false);
 });
 
+test('configure forwards the current Preview Wrangler config hash for a config-managed project', async () => {
+  const wranglerConfigHash = 'wrangler-config-hash';
+  const beforePreview = {
+    compatibility_date: '2026-07-11',
+    wrangler_config_hash: wranglerConfigHash,
+    env_vars: {},
+    services: {},
+  };
+  const before = pagesProject(beforePreview);
+  const routes = preflightRoutes({ project: before });
+  addRoute(routes, 'GET /pages/projects/tiezheng', before);
+  let patched;
+  addRoute(routes, 'PATCH /pages/projects/tiezheng', ({ body }) => {
+    assert.equal(
+      body.deployment_configs.preview.wrangler_config_hash,
+      wranglerConfigHash,
+    );
+    patched = structuredClone(body);
+    return pagesProject({
+      ...beforePreview,
+      ...body.deployment_configs.preview,
+      wrangler_config_hash: 'next-wrangler-config-hash',
+    });
+  });
+  addRoute(routes, 'GET /pages/projects/tiezheng', () => pagesProject({
+    ...beforePreview,
+    ...patched.deployment_configs.preview,
+    wrangler_config_hash: 'next-wrangler-config-hash',
+  }));
+  const fake = createFakeClient(routes);
+
+  assert.deepEqual(
+    await reconcileTextPreview(loadTextPreviewConfig(validEnv()), fake.client),
+    { configured: true },
+  );
+});
+
+test('configure omits a null Preview Wrangler config hash from the Pages PATCH', async () => {
+  const beforePreview = {
+    wrangler_config_hash: null,
+    env_vars: {},
+    services: {},
+  };
+  const before = pagesProject(beforePreview);
+  const routes = preflightRoutes({ project: before });
+  addRoute(routes, 'GET /pages/projects/tiezheng', before);
+  let patched;
+  addRoute(routes, 'PATCH /pages/projects/tiezheng', ({ body }) => {
+    assert.equal(
+      Object.hasOwn(body.deployment_configs.preview, 'wrangler_config_hash'),
+      false,
+    );
+    patched = structuredClone(body);
+    return pagesProject({
+      ...beforePreview,
+      ...body.deployment_configs.preview,
+    });
+  });
+  addRoute(routes, 'GET /pages/projects/tiezheng', () => pagesProject({
+    ...beforePreview,
+    ...patched.deployment_configs.preview,
+  }));
+  const fake = createFakeClient(routes);
+
+  assert.deepEqual(
+    await reconcileTextPreview(loadTextPreviewConfig(validEnv()), fake.client),
+    { configured: true },
+  );
+});
+
 test('configure fails before PATCH on unknown Preview bindings or late project drift', async () => {
   const unsafe = pagesProject({ env_vars: { UNKNOWN: { type: 'plain_text', value: 'x' } }, services: {} });
   const unknownFake = createFakeClient(preflightRoutes({ project: unsafe }));
@@ -427,6 +497,28 @@ test('configure fails before PATCH on unknown Preview bindings or late project d
     driftFake.client,
   ));
   assert.equal(driftFake.calls.some(({ method }) => method === 'PATCH'), false);
+});
+
+test('configure fails before PATCH when the Preview Wrangler config hash drifts', async () => {
+  const before = pagesProject({
+    wrangler_config_hash: 'before-wrangler-config-hash',
+    env_vars: {},
+    services: {},
+  });
+  const drifted = pagesProject({
+    wrangler_config_hash: 'drifted-wrangler-config-hash',
+    env_vars: {},
+    services: {},
+  });
+  const routes = preflightRoutes({ project: before });
+  addRoute(routes, 'GET /pages/projects/tiezheng', drifted);
+  const fake = createFakeClient(routes);
+
+  await expectFixedRejection(() => reconcileTextPreview(
+    loadTextPreviewConfig(validEnv()),
+    fake.client,
+  ));
+  assert.equal(fake.calls.some(({ method }) => method === 'PATCH'), false);
 });
 
 test('invoke-admin sends canonical slot JSON and only HMAC request headers', async () => {

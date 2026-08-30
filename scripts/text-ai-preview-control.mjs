@@ -1178,10 +1178,13 @@ function inspectPreviewProject(project) {
     if (name === 'services' || !preview.has(name)) continue;
     if (snapshotRecord(preview.get(name)).size !== 0) fail();
   }
+  const wranglerConfigHash = preview.has('wrangler_config_hash')
+    ? preview.get('wrangler_config_hash')
+    : undefined;
   if (
-    preview.has('wrangler_config_hash')
-    && preview.get('wrangler_config_hash') !== null
-    && !safeIdentifier(preview.get('wrangler_config_hash'))
+    wranglerConfigHash !== undefined
+    && wranglerConfigHash !== null
+    && !safeIdentifier(wranglerConfigHash)
   ) {
     fail();
   }
@@ -1193,6 +1196,7 @@ function inspectPreviewProject(project) {
     envVars,
     services,
     behaviorHash: previewBehaviorHash(behavior),
+    wranglerConfigHash,
   });
 }
 
@@ -1202,10 +1206,13 @@ function productionHash(project) {
     .digest('hex');
 }
 
-function desiredPagesPatch(config) {
+function desiredPagesPatch(config, wranglerConfigHash) {
   return {
     deployment_configs: {
       preview: {
+        ...(typeof wranglerConfigHash === 'string'
+          ? { wrangler_config_hash: wranglerConfigHash }
+          : {}),
         env_vars: {
           PHOTO_AI_ALLOWED_ORIGINS: { type: 'plain_text', value: PREVIEW_ORIGIN },
           PHOTO_AI_ACCOUNT_HMAC_KEY: { type: 'secret_text', value: config.accountHmacKey },
@@ -1299,11 +1306,12 @@ export async function reconcileTextPreview(config, client) {
     const preflight = await preflightTextPreview(config, client);
     const beforePreview = inspectPreviewProject(preflight.project);
     const beforeProductionHash = productionHash(preflight.project);
-    const pagesPatch = desiredPagesPatch(config);
+    const pagesPatch = desiredPagesPatch(config, beforePreview.wranglerConfigHash);
     const recheckedProject = parsePagesProject(await get('/pages/projects/tiezheng'));
     const recheckedPreview = inspectPreviewProject(recheckedProject);
     if (
       recheckedPreview.behaviorHash !== beforePreview.behaviorHash
+      || recheckedPreview.wranglerConfigHash !== beforePreview.wranglerConfigHash
       || productionHash(recheckedProject) !== beforeProductionHash
     ) {
       fail();
