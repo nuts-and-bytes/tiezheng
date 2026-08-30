@@ -387,7 +387,9 @@ describe('text admin Pages private proxy', () => {
   test.each([
     ['configuration', 'downstream-configuration'],
     ['runtime', 'downstream-runtime'],
-    ['coordinator', 'downstream-coordinator'],
+    ['coordinator-binding', 'downstream-coordinator-binding'],
+    ['coordinator-rpc', 'downstream-coordinator-rpc'],
+    ['coordinator-result', 'downstream-coordinator-result'],
     [null, 'downstream-service-disabled'],
     ['private-untrusted-value', 'downstream-service-disabled'],
   ])('maps the internal %s diagnostic to fixed private metadata', async (internal, expected) => {

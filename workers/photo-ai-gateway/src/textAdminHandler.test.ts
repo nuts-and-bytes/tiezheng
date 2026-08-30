@@ -331,7 +331,7 @@ describe('internal text admin RPC mapping and privacy', () => {
   ])('fails closed instead of returning an applied RPC with %s', async (_name, status) => {
     const { gatewayEnv } = coordinatorHarness({ kind: 'applied', status });
     const response = await handleTextAdminRequest(adminRequest(), gatewayEnv, DEPENDENCIES);
-    expect(response.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator');
+    expect(response.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator-result');
     await expectFixedJson(response, 503, { ok: false, code: 'service-disabled' });
   });
 
@@ -348,7 +348,7 @@ describe('internal text admin RPC mapping and privacy', () => {
       DEPENDENCIES,
     );
     const namespaceSerialized = await namespaceResponse.clone().text();
-    expect(namespaceResponse.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator');
+    expect(namespaceResponse.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator-binding');
     await expectFixedJson(namespaceResponse, 503, { ok: false, code: 'service-disabled' });
 
     const rpc = coordinatorHarness();
@@ -357,12 +357,63 @@ describe('internal text admin RPC mapping and privacy', () => {
     );
     const rpcResponse = await handleTextAdminRequest(adminRequest(), rpc.gatewayEnv, DEPENDENCIES);
     const rpcSerialized = await rpcResponse.clone().text();
-    expect(rpcResponse.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator');
+    expect(rpcResponse.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator-rpc');
     await expectFixedJson(rpcResponse, 503, { ok: false, code: 'service-disabled' });
 
     expect(consoleSpies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
     expect(namespaceSerialized).not.toContain('alice@example.com');
     expect(rpcSerialized).not.toContain('account-private');
+  });
+
+  test('reads the RPC method once, preserves its receiver, and contains a throwing getter', async () => {
+    const harness = coordinatorHarness();
+    const receiver = {
+      applyTextAdminOperation: vi.fn(function (this: unknown) {
+        expect(this).toBe(receiver);
+        return Promise.resolve({ kind: 'applied', status: STATUS });
+      }),
+    };
+    let reads = 0;
+    Object.defineProperty(receiver, 'applyTextAdminOperation', {
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads > 1) throw new Error('private repeated getter');
+        return vi.fn(function (this: unknown) {
+          expect(this).toBe(receiver);
+          return Promise.resolve({ kind: 'applied', status: STATUS });
+        });
+      },
+    });
+    harness.getByName.mockReturnValue(receiver as never);
+
+    await expectFixedJson(
+      await handleTextAdminRequest(adminRequest(), harness.gatewayEnv, DEPENDENCIES),
+      200,
+      { ok: true, operationId: OPERATION_ID, status: STATUS },
+    );
+    expect(reads).toBe(1);
+
+    const hostile = coordinatorHarness();
+    hostile.getByName.mockReturnValue(Object.defineProperty({}, 'applyTextAdminOperation', {
+      get() { throw new Error('private binding getter'); },
+    }) as never);
+    const response = await handleTextAdminRequest(adminRequest(), hostile.gatewayEnv, DEPENDENCIES);
+    expect(response.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator-binding');
+    await expectFixedJson(response, 503, { ok: false, code: 'service-disabled' });
+  });
+
+  test.each([
+    ['throwing ownKeys Proxy', new Proxy({}, { ownKeys() { throw new Error('private ownKeys'); } })],
+    ['throwing kind getter', Object.defineProperties({}, {
+      kind: { enumerable: true, get() { throw new Error('private kind getter'); } },
+      status: { enumerable: true, value: STATUS },
+    })],
+  ])('contains a hostile coordinator result with %s', async (_name, result) => {
+    const { gatewayEnv } = coordinatorHarness(result);
+    const response = await handleTextAdminRequest(adminRequest(), gatewayEnv, DEPENDENCIES);
+    expect(response.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator-result');
+    await expectFixedJson(response, 503, { ok: false, code: 'service-disabled' });
   });
 
   test.each([

@@ -30,7 +30,9 @@ type PublicAdminDiagnostic =
   | 'binding-missing'
   | 'downstream-configuration'
   | 'downstream-runtime'
-  | 'downstream-coordinator'
+  | 'downstream-coordinator-binding'
+  | 'downstream-coordinator-rpc'
+  | 'downstream-coordinator-result'
   | 'downstream-service-disabled'
   | 'downstream-failed';
 
@@ -260,7 +262,9 @@ function downstreamServiceDiagnostic(response: Response): PublicAdminDiagnostic 
     switch (response.headers.get(INTERNAL_DIAGNOSTIC_HEADER)) {
       case 'configuration': return 'downstream-configuration';
       case 'runtime': return 'downstream-runtime';
-      case 'coordinator': return 'downstream-coordinator';
+      case 'coordinator-binding': return 'downstream-coordinator-binding';
+      case 'coordinator-rpc': return 'downstream-coordinator-rpc';
+      case 'coordinator-result': return 'downstream-coordinator-result';
       default: return 'downstream-service-disabled';
     }
   } catch {

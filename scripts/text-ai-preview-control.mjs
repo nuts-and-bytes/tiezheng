@@ -1071,7 +1071,9 @@ const ADMIN_DIAGNOSTIC_VALUES = new Set([
   'binding-missing',
   'downstream-configuration',
   'downstream-runtime',
-  'downstream-coordinator',
+  'downstream-coordinator-binding',
+  'downstream-coordinator-rpc',
+  'downstream-coordinator-result',
   'downstream-service-disabled',
   'downstream-failed',
 ]);

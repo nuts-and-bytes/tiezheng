@@ -21,7 +21,12 @@ const SECURITY_HEADERS = {
   'x-content-type-options': 'nosniff',
 } as const;
 const INTERNAL_DIAGNOSTIC_HEADER = 'x-tiezheng-internal-admin-diagnostic';
-type InternalAdminDiagnostic = 'configuration' | 'runtime' | 'coordinator';
+type InternalAdminDiagnostic =
+  | 'configuration'
+  | 'runtime'
+  | 'coordinator-binding'
+  | 'coordinator-rpc'
+  | 'coordinator-result';
 const ADMIN_PATH = '/internal/text-admin';
 const ACCOUNT_KEY = /^[0-9a-f]{64}$/;
 const MAX_BODY_BYTES = 2_048;
@@ -195,37 +200,49 @@ export async function handleTextAdminRequest(
     return serviceDisabled('runtime');
   }
 
+  let coordinator: ReturnType<GatewayEnv['PHOTO_AI_COORDINATOR']['getByName']>;
+  let applyTextAdminOperation: ReturnType<GatewayEnv['PHOTO_AI_COORDINATOR']['getByName']>['applyTextAdminOperation'];
   try {
-    const coordinator = env.PHOTO_AI_COORDINATOR.getByName('stage2');
-    if (
-      typeof coordinator !== 'object'
-      || coordinator === null
-      || typeof coordinator.applyTextAdminOperation !== 'function'
-    ) {
-      return serviceDisabled('coordinator');
+    coordinator = env.PHOTO_AI_COORDINATOR.getByName('stage2');
+    if (typeof coordinator !== 'object' || coordinator === null) {
+      return serviceDisabled('coordinator-binding');
     }
-    const result: unknown = await coordinator.applyTextAdminOperation({
+    applyTextAdminOperation = coordinator.applyTextAdminOperation;
+    if (typeof applyTextAdminOperation !== 'function') {
+      return serviceDisabled('coordinator-binding');
+    }
+  } catch {
+    return serviceDisabled('coordinator-binding');
+  }
+
+  let result: unknown;
+  try {
+    result = await Reflect.apply(applyTextAdminOperation, coordinator, [{
       operationId: adminRequest.operationId,
       operation: adminRequest.operation,
       accountKey: adminRequest.accountKey,
       fingerprint,
       now,
-    });
+    }]);
+  } catch {
+    return serviceDisabled('coordinator-rpc');
+  }
 
+  try {
     if (hasExactKeys(result, ['kind']) && result.kind === 'conflict') {
       return jsonResponse({ ok: false, code: 'operation-conflict' }, 409);
     }
     if (!hasExactKeys(result, ['kind', 'status']) || result.kind !== 'applied') {
-      return serviceDisabled('coordinator');
+      return serviceDisabled('coordinator-result');
     }
     const response = parseTextAiAdminResponse({
       ok: true,
       operationId: adminRequest.operationId,
       status: result.status,
     });
-    if (!response.ok) return serviceDisabled('coordinator');
+    if (!response.ok) return serviceDisabled('coordinator-result');
     return jsonResponse(response, 200);
   } catch {
-    return serviceDisabled('coordinator');
+    return serviceDisabled('coordinator-result');
   }
 }

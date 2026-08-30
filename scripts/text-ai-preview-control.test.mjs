@@ -815,7 +815,9 @@ test('CLI classifies every admin response path with fixed stages and never print
       'binding-missing',
       'downstream-configuration',
       'downstream-runtime',
-      'downstream-coordinator',
+      'downstream-coordinator-binding',
+      'downstream-coordinator-rpc',
+      'downstream-coordinator-result',
       'downstream-service-disabled',
       'downstream-failed',
     ].map((diagnostic) => ({
