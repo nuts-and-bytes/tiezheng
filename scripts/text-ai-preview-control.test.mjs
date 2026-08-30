@@ -786,6 +786,189 @@ test('CLI accepts only preflight, configure, and strict invoke-admin commands', 
   assert.equal(JSON.stringify({ stdout, stderr }).includes(SENSITIVE.adminKey), false);
 });
 
+test('CLI classifies every admin response path with fixed stages and never prints private detail', async () => {
+  const privateBody = JSON.stringify({
+    ok: false,
+    code: 'private-upstream-detail',
+    private: SENSITIVE.adminKey,
+  });
+  const cases = [
+    {
+      name: 'success',
+      fetcher: async () => adminResponse(),
+      expectedExit: 0,
+      expectedStages: ['request-dispatched', 'response-200', 'complete'],
+    },
+    {
+      name: 'unauthorized',
+      fetcher: async () => new Response(privateBody, { status: 401 }),
+      expectedExit: 1,
+      expectedStages: ['request-dispatched', 'response-401'],
+    },
+    {
+      name: 'service unavailable',
+      fetcher: async () => new Response(privateBody, { status: 503 }),
+      expectedExit: 1,
+      expectedStages: ['request-dispatched', 'response-503'],
+    },
+    {
+      name: 'other HTTP status',
+      fetcher: async () => new Response(privateBody, { status: 418 }),
+      expectedExit: 1,
+      expectedStages: ['request-dispatched', 'response-other'],
+    },
+    {
+      name: 'invalid response',
+      fetcher: async () => ({ private: SENSITIVE.adminKey }),
+      expectedExit: 1,
+      expectedStages: ['request-dispatched', 'response-invalid'],
+    },
+    {
+      name: 'fetch rejection',
+      fetcher: async () => { throw new Error(`private fetch detail ${SENSITIVE.adminKey}`); },
+      expectedExit: 1,
+      expectedStages: ['request-dispatched'],
+    },
+  ];
+
+  for (const scenario of cases) {
+    const stdout = [];
+    const stderr = [];
+    const exitCode = await runTextPreviewControlCli([
+      'invoke-admin',
+      '--operation=status',
+      '--target=user-1',
+    ], validEnv(), {
+      fetcher: scenario.fetcher,
+      writeStdout: (value) => stdout.push(value),
+      writeStderr: (value) => stderr.push(value),
+      generateOperationId: () => OPERATION_ID,
+      now: () => NOW,
+    });
+
+    assert.equal(exitCode, scenario.expectedExit, scenario.name);
+    assert.deepEqual(
+      stderr,
+      [
+        ...scenario.expectedStages.map((stage) => `Text preview admin stage: ${stage}\n`),
+        ...(scenario.expectedExit === 1 ? ['Text preview control failed\n'] : []),
+      ],
+      scenario.name,
+    );
+    assert.equal(JSON.stringify({ stdout, stderr }).includes(SENSITIVE.adminKey), false);
+    assert.equal(JSON.stringify({ stdout, stderr }).includes('private-upstream-detail'), false);
+    if (scenario.expectedExit === 0) {
+      assert.deepEqual(stdout.map((line) => JSON.parse(line)), [
+        { operation: 'status', ...adminSuccess().status },
+      ]);
+    } else {
+      assert.deepEqual(stdout, []);
+    }
+  }
+});
+
+test('CLI preserves the injected admin fetcher call contract', async () => {
+  let callCount = 0;
+  let receiver = Symbol('not-called');
+  let capturedUrl;
+  let capturedInit;
+  async function fetcher(url, init) {
+    callCount += 1;
+    receiver = this;
+    capturedUrl = url;
+    capturedInit = init;
+    return adminResponse();
+  }
+
+  assert.equal(await runTextPreviewControlCli([
+    'invoke-admin',
+    '--operation=status',
+    '--target=user-1',
+  ], validEnv(), {
+    fetcher,
+    writeStdout: () => undefined,
+    writeStderr: () => undefined,
+    generateOperationId: () => OPERATION_ID,
+    now: () => NOW,
+  }), 0);
+
+  assert.equal(callCount, 1);
+  assert.equal(receiver, undefined);
+  assert.equal(capturedUrl, `${PREVIEW_ORIGIN}/api/nutrition/text-admin/account`);
+  assert.equal(capturedInit?.method, 'POST');
+  assert.equal(typeof capturedInit?.body, 'string');
+  assert.equal(capturedInit?.signal instanceof AbortSignal, true);
+});
+
+test('admin stage reporting failures never alter a successful CLI invoke', async () => {
+  for (const failWriter of [
+    () => { throw new Error(`private stage detail ${SENSITIVE.adminKey}`); },
+    () => Promise.reject(new Error(`private async stage detail ${SENSITIVE.adminKey}`)),
+  ]) {
+    const stdout = [];
+    let stageCalls = 0;
+    assert.equal(await runTextPreviewControlCli([
+      'invoke-admin',
+      '--operation=status',
+      '--target=user-1',
+    ], validEnv(), {
+      fetcher: async () => adminResponse(),
+      writeStdout: (value) => stdout.push(value),
+      writeStderr: () => {
+        stageCalls += 1;
+        return failWriter();
+      },
+      generateOperationId: () => OPERATION_ID,
+      now: () => NOW,
+    }), 0);
+    assert.equal(stageCalls, 3);
+    assert.deepEqual(stdout.map((line) => JSON.parse(line)), [
+      { operation: 'status', ...adminSuccess().status },
+    ]);
+  }
+});
+
+test('CLI failure output safely handles synchronous throws and rejected Promises', async () => {
+  for (const mode of ['throw', 'reject']) {
+    let writerCalls = 0;
+    let rejectionHandlers = 0;
+    const stdout = [];
+    const writeStderr = () => {
+      writerCalls += 1;
+      if (mode === 'throw') {
+        throw new Error(`private sync output detail ${SENSITIVE.adminKey}`);
+      }
+      const rejected = Promise.reject(
+        new Error(`private async output detail ${SENSITIVE.adminKey}`),
+      );
+      Promise.prototype.catch.call(rejected, () => undefined);
+      const originalCatch = rejected.catch.bind(rejected);
+      rejected.catch = (...args) => {
+        rejectionHandlers += 1;
+        return originalCatch(...args);
+      };
+      return rejected;
+    };
+
+    assert.equal(await runTextPreviewControlCli([
+      'invoke-admin',
+      '--operation=status',
+      '--target=user-1',
+    ], validEnv(), {
+      fetcher: async () => new Response('{}', { status: 401 }),
+      writeStdout: (value) => stdout.push(value),
+      writeStderr,
+      generateOperationId: () => OPERATION_ID,
+      now: () => NOW,
+    }), 1, mode);
+
+    await new Promise((resolveTick) => setImmediate(resolveTick));
+    assert.equal(writerCalls, 3, mode);
+    if (mode === 'reject') assert.equal(rejectionHandlers, writerCalls, mode);
+    assert.deepEqual(stdout, [], mode);
+  }
+});
+
 test('CLI reports only fixed configure stages and hides the underlying failure', async () => {
   const stdout = [];
   const stderr = [];

@@ -1055,6 +1055,30 @@ function writeCliLine(writer, value) {
   writer(serialized);
 }
 
+function writeCliStderrSafely(writer, value) {
+  try {
+    Promise.resolve(writer(value)).catch(() => undefined);
+  } catch {
+    // Diagnostic output must never alter the control result.
+  }
+}
+
+function reportCliAdminStage(writer, stage) {
+  writeCliStderrSafely(writer, `Text preview admin stage: ${stage}\n`);
+}
+
+function classifyCliAdminResponse(response) {
+  try {
+    if (!(response instanceof Response)) return 'response-invalid';
+    if (response.status === 200) return 'response-200';
+    if (response.status === 401) return 'response-401';
+    if (response.status === 503) return 'response-503';
+    return 'response-other';
+  } catch {
+    return 'response-invalid';
+  }
+}
+
 export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
   let writeStderr = (value) => process.stderr.write(value);
   try {
@@ -1063,15 +1087,26 @@ export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
     const command = parseCliArguments(argv);
     const config = loadTextPreviewConfig(env);
     if (command.command === 'invoke-admin') {
+      const fetcher = parsedDependencies.fetcher;
+      const diagnosticFetcher = async (url, init) => {
+        reportCliAdminStage(parsedDependencies.writeStderr, 'request-dispatched');
+        const response = await fetcher(url, init);
+        reportCliAdminStage(
+          parsedDependencies.writeStderr,
+          classifyCliAdminResponse(response),
+        );
+        return response;
+      };
       const result = await invokeTextPreviewAdmin(
         config,
         { operation: command.operation, target: command.target },
-        parsedDependencies.fetcher,
+        diagnosticFetcher,
         {
           generateOperationId: parsedDependencies.generateOperationId,
           now: parsedDependencies.now,
         },
       );
+      reportCliAdminStage(parsedDependencies.writeStderr, 'complete');
       writeCliLine(parsedDependencies.writeStdout, result);
       return 0;
     }
@@ -1097,11 +1132,7 @@ export async function runTextPreviewControlCli(argv, env, dependencies = {}) {
     }
     fail();
   } catch {
-    try {
-      writeStderr(`${FAILURE_MESSAGE}\n`);
-    } catch {
-      // Output failures do not expose any captured control-plane detail.
-    }
+    writeCliStderrSafely(writeStderr, `${FAILURE_MESSAGE}\n`);
     return 1;
   }
 }
