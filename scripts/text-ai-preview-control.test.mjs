@@ -806,8 +806,33 @@ test('CLI classifies every admin response path with fixed stages and never print
       expectedStages: ['request-dispatched', 'response-401'],
     },
     {
-      name: 'service unavailable',
+      name: 'service unavailable without a trusted diagnostic',
       fetcher: async () => new Response(privateBody, { status: 503 }),
+      expectedExit: 1,
+      expectedStages: ['request-dispatched', 'response-503'],
+    },
+    ...[
+      'binding-missing',
+      'downstream-configuration',
+      'downstream-runtime',
+      'downstream-coordinator',
+      'downstream-service-disabled',
+      'downstream-failed',
+    ].map((diagnostic) => ({
+      name: `service unavailable: ${diagnostic}`,
+      fetcher: async () => new Response(privateBody, {
+        status: 503,
+        headers: { 'x-tiezheng-admin-diagnostic': diagnostic },
+      }),
+      expectedExit: 1,
+      expectedStages: ['request-dispatched', `response-503-${diagnostic}`],
+    })),
+    {
+      name: 'service unavailable with an untrusted diagnostic',
+      fetcher: async () => new Response(privateBody, {
+        status: 503,
+        headers: { 'x-tiezheng-admin-diagnostic': SENSITIVE.adminKey },
+      }),
       expectedExit: 1,
       expectedStages: ['request-dispatched', 'response-503'],
     },

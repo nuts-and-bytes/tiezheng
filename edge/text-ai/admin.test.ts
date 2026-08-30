@@ -338,6 +338,7 @@ describe('text admin Pages private proxy', () => {
       const response = await proxyTextAdminRequest(routeEnv, USER_1_ACCOUNT_KEY, workerRequest);
 
       expect(response.status).toBe(503);
+      expect(response.headers.get('x-tiezheng-admin-diagnostic')).toBe('binding-missing');
       expect(await response.json()).toEqual({ ok: false, code: 'service-disabled' });
       expectSecure(response);
     },
@@ -384,6 +385,33 @@ describe('text admin Pages private proxy', () => {
   });
 
   test.each([
+    ['configuration', 'downstream-configuration'],
+    ['runtime', 'downstream-runtime'],
+    ['coordinator', 'downstream-coordinator'],
+    [null, 'downstream-service-disabled'],
+    ['private-untrusted-value', 'downstream-service-disabled'],
+  ])('maps the internal %s diagnostic to fixed private metadata', async (internal, expected) => {
+    const headers = new Headers({ 'content-type': 'application/json' });
+    if (internal !== null) headers.set('x-tiezheng-internal-admin-diagnostic', internal);
+    const response = await proxyTextAdminRequest(
+      env(async () => new Response(JSON.stringify({ ok: false, code: 'service-disabled' }), {
+        status: 503,
+        headers,
+      })),
+      USER_1_ACCOUNT_KEY,
+      workerRequest,
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('x-tiezheng-admin-diagnostic')).toBe(expected);
+    expect(await response.json()).toEqual({ ok: false, code: 'service-disabled' });
+    let serializedHeaders = '';
+    response.headers.forEach((value, name) => { serializedHeaders += `${name}:${value}\n`; });
+    expect(serializedHeaders).not.toContain('private-untrusted-value');
+    expectSecure(response);
+  });
+
+  test.each([
     ['throw', () => Promise.reject(new Error('private stack'))],
     ['HTML', () => Promise.resolve(new Response('<p>private user-1</p>', { status: 500 }))],
     ['invalid schema', () => Promise.resolve(json({ ok: true, private: 'user-1' }))],
@@ -401,6 +429,7 @@ describe('text admin Pages private proxy', () => {
     const serialized = await response.text();
 
     expect(response.status).toBe(503);
+    expect(response.headers.get('x-tiezheng-admin-diagnostic')).toBe('downstream-failed');
     expect(JSON.parse(serialized)).toEqual({ ok: false, code: 'service-disabled' });
     expect(serialized).not.toMatch(/user-[12]|private stack/);
     expectSecure(response);

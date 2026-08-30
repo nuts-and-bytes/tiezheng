@@ -141,8 +141,10 @@ describe('internal text admin configuration firewall', () => {
       }
       const request = adminRequest();
 
+      const response = await handleTextAdminRequest(request, gatewayEnv, DEPENDENCIES);
+      expect(response.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('configuration');
       await expectFixedJson(
-        await handleTextAdminRequest(request, gatewayEnv, DEPENDENCIES),
+        response,
         503,
         { ok: false, code: 'service-disabled' },
       );
@@ -329,6 +331,7 @@ describe('internal text admin RPC mapping and privacy', () => {
   ])('fails closed instead of returning an applied RPC with %s', async (_name, status) => {
     const { gatewayEnv } = coordinatorHarness({ kind: 'applied', status });
     const response = await handleTextAdminRequest(adminRequest(), gatewayEnv, DEPENDENCIES);
+    expect(response.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator');
     await expectFixedJson(response, 503, { ok: false, code: 'service-disabled' });
   });
 
@@ -345,6 +348,7 @@ describe('internal text admin RPC mapping and privacy', () => {
       DEPENDENCIES,
     );
     const namespaceSerialized = await namespaceResponse.clone().text();
+    expect(namespaceResponse.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator');
     await expectFixedJson(namespaceResponse, 503, { ok: false, code: 'service-disabled' });
 
     const rpc = coordinatorHarness();
@@ -353,6 +357,7 @@ describe('internal text admin RPC mapping and privacy', () => {
     );
     const rpcResponse = await handleTextAdminRequest(adminRequest(), rpc.gatewayEnv, DEPENDENCIES);
     const rpcSerialized = await rpcResponse.clone().text();
+    expect(rpcResponse.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('coordinator');
     await expectFixedJson(rpcResponse, 503, { ok: false, code: 'service-disabled' });
 
     expect(consoleSpies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
@@ -368,8 +373,10 @@ describe('internal text admin RPC mapping and privacy', () => {
     ['returns an unsafe value', () => Number.MAX_SAFE_INTEGER],
   ])('fails closed without RPC when now() %s', async (_name, now) => {
     const { gatewayEnv, applyTextAdminOperation } = coordinatorHarness();
+    const response = await handleTextAdminRequest(adminRequest(), gatewayEnv, { now });
+    expect(response.headers.get('x-tiezheng-internal-admin-diagnostic')).toBe('runtime');
     await expectFixedJson(
-      await handleTextAdminRequest(adminRequest(), gatewayEnv, { now }),
+      response,
       503,
       { ok: false, code: 'service-disabled' },
     );

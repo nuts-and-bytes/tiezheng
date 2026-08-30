@@ -20,6 +20,8 @@ const SECURITY_HEADERS = {
   'content-type': 'application/json',
   'x-content-type-options': 'nosniff',
 } as const;
+const INTERNAL_DIAGNOSTIC_HEADER = 'x-tiezheng-internal-admin-diagnostic';
+type InternalAdminDiagnostic = 'configuration' | 'runtime' | 'coordinator';
 const ADMIN_PATH = '/internal/text-admin';
 const ACCOUNT_KEY = /^[0-9a-f]{64}$/;
 const MAX_BODY_BYTES = 2_048;
@@ -51,8 +53,14 @@ function invalidRequest(): Response {
   return jsonResponse({ ok: false, code: 'invalid-request' }, 400);
 }
 
-function serviceDisabled(): Response {
-  return jsonResponse({ ok: false, code: 'service-disabled' }, 503);
+function serviceDisabled(diagnostic: InternalAdminDiagnostic): Response {
+  return new Response(JSON.stringify({ ok: false, code: 'service-disabled' }), {
+    status: 503,
+    headers: {
+      ...SECURITY_HEADERS,
+      [INTERNAL_DIAGNOSTIC_HEADER]: diagnostic,
+    },
+  });
 }
 
 function isAdminBindingConfigured(env: GatewayEnv): boolean {
@@ -150,7 +158,7 @@ export async function handleTextAdminRequest(
   env: GatewayEnv,
   dependencies: TextAdminDependencies = TEXT_ADMIN_RUNTIME,
 ): Promise<Response> {
-  if (!isAdminBindingConfigured(env)) return serviceDisabled();
+  if (!isAdminBindingConfigured(env)) return serviceDisabled('configuration');
 
   let accountKey: string;
   try {
@@ -184,7 +192,7 @@ export async function handleTextAdminRequest(
     fingerprint = await operationFingerprint(adminRequest);
     now = runtimeNow(dependencies);
   } catch {
-    return serviceDisabled();
+    return serviceDisabled('runtime');
   }
 
   try {
@@ -194,7 +202,7 @@ export async function handleTextAdminRequest(
       || coordinator === null
       || typeof coordinator.applyTextAdminOperation !== 'function'
     ) {
-      return serviceDisabled();
+      return serviceDisabled('coordinator');
     }
     const result: unknown = await coordinator.applyTextAdminOperation({
       operationId: adminRequest.operationId,
@@ -208,16 +216,16 @@ export async function handleTextAdminRequest(
       return jsonResponse({ ok: false, code: 'operation-conflict' }, 409);
     }
     if (!hasExactKeys(result, ['kind', 'status']) || result.kind !== 'applied') {
-      return serviceDisabled();
+      return serviceDisabled('coordinator');
     }
     const response = parseTextAiAdminResponse({
       ok: true,
       operationId: adminRequest.operationId,
       status: result.status,
     });
-    if (!response.ok) return serviceDisabled();
+    if (!response.ok) return serviceDisabled('coordinator');
     return jsonResponse(response, 200);
   } catch {
-    return serviceDisabled();
+    return serviceDisabled('coordinator');
   }
 }

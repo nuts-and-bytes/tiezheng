@@ -1067,12 +1067,26 @@ function reportCliAdminStage(writer, stage) {
   writeCliStderrSafely(writer, `Text preview admin stage: ${stage}\n`);
 }
 
+const ADMIN_DIAGNOSTIC_VALUES = new Set([
+  'binding-missing',
+  'downstream-configuration',
+  'downstream-runtime',
+  'downstream-coordinator',
+  'downstream-service-disabled',
+  'downstream-failed',
+]);
+
 function classifyCliAdminResponse(response) {
   try {
     if (!(response instanceof Response)) return 'response-invalid';
     if (response.status === 200) return 'response-200';
     if (response.status === 401) return 'response-401';
-    if (response.status === 503) return 'response-503';
+    if (response.status === 503) {
+      const diagnostic = response.headers.get('x-tiezheng-admin-diagnostic');
+      return ADMIN_DIAGNOSTIC_VALUES.has(diagnostic)
+        ? `response-503-${diagnostic}`
+        : 'response-503';
+    }
     return 'response-other';
   } catch {
     return 'response-invalid';

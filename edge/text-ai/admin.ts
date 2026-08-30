@@ -24,6 +24,15 @@ const SECURITY_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'x-content-type-options': 'nosniff',
 } as const;
+const PUBLIC_DIAGNOSTIC_HEADER = 'x-tiezheng-admin-diagnostic';
+const INTERNAL_DIAGNOSTIC_HEADER = 'x-tiezheng-internal-admin-diagnostic';
+type PublicAdminDiagnostic =
+  | 'binding-missing'
+  | 'downstream-configuration'
+  | 'downstream-runtime'
+  | 'downstream-coordinator'
+  | 'downstream-service-disabled'
+  | 'downstream-failed';
 
 interface AdminDeadline {
   signal: AbortSignal;
@@ -222,8 +231,14 @@ function jsonResponse(body: TextAiAdminResponse, status: number): Response {
   return new Response(JSON.stringify(body), { status, headers: SECURITY_HEADERS });
 }
 
-function serviceDisabled(): Response {
-  return jsonResponse({ ok: false, code: 'service-disabled' }, 503);
+function serviceDisabled(diagnostic?: PublicAdminDiagnostic): Response {
+  return new Response(JSON.stringify({ ok: false, code: 'service-disabled' }), {
+    status: 503,
+    headers: {
+      ...SECURITY_HEADERS,
+      ...(diagnostic === undefined ? {} : { [PUBLIC_DIAGNOSTIC_HEADER]: diagnostic }),
+    },
+  });
 }
 
 function authRequired(): Response {
@@ -237,6 +252,19 @@ function validBinding(env: TextAiPagesEnv): env is TextAiPagesEnv & { PHOTO_AI_G
       && typeof env.PHOTO_AI_GATEWAY.fetch === 'function';
   } catch {
     return false;
+  }
+}
+
+function downstreamServiceDiagnostic(response: Response): PublicAdminDiagnostic {
+  try {
+    switch (response.headers.get(INTERNAL_DIAGNOSTIC_HEADER)) {
+      case 'configuration': return 'downstream-configuration';
+      case 'runtime': return 'downstream-runtime';
+      case 'coordinator': return 'downstream-coordinator';
+      default: return 'downstream-service-disabled';
+    }
+  } catch {
+    return 'downstream-service-disabled';
   }
 }
 
@@ -307,7 +335,7 @@ async function proxyWithDeadline(
   body: TextAiAdminWorkerRequest,
   signal: AbortSignal,
 ): Promise<Response> {
-  if (!validBinding(env)) return serviceDisabled();
+  if (!validBinding(env)) return serviceDisabled('binding-missing');
 
   try {
     return await raceWithAbort(async () => {
@@ -341,12 +369,12 @@ async function proxyWithDeadline(
         return jsonResponse(response, 409);
       }
       if (response.code === 'service-disabled' && downstream.status === 503) {
-        return serviceDisabled();
+        return serviceDisabled(downstreamServiceDiagnostic(downstream));
       }
       throw new TypeError('Invalid text admin response');
     }, signal);
   } catch {
-    return serviceDisabled();
+    return serviceDisabled('downstream-failed');
   }
 }
 
