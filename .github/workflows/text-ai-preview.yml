@@ -13,6 +13,7 @@ on:
           - rotate-user-code
           - enable-admin-preview
           - status
+          - deploy-diagnostics
           - enable-second-account
           - disable-account
           - disable-all
@@ -76,7 +77,7 @@ jobs:
         run: npm run verify:text-preview-workflow
       - name: Worker dry-run
         run: |
-          ./node_modules/.bin/wrangler deploy --dry-run --config workers/photo-ai-gateway/wrangler.jsonc --outdir "$RUNNER_TEMP/text-ai-worker-dry-run" --var "TEXT_AI_ADMIN_ENABLED:false" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+          ./node_modules/.bin/wrangler deploy --dry-run --config workers/photo-ai-gateway/wrangler.jsonc --outdir "$RUNNER_TEMP/text-ai-worker-dry-run" --var "TEXT_AI_ADMIN_ENABLED:false" --var "TEXT_AI_DIAGNOSTICS_ENABLED:false" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
       - name: Dispatch fixed operation
         env:
           TEXT_AI_OPERATION: ${{ inputs.operation }}
@@ -237,6 +238,10 @@ jobs:
             printf 'Text preview enable stage: %s\n' "${1-}" >&2 || :
           }
 
+          report_diagnostic_stage() {
+            printf 'Text preview diagnostic stage: %s\n' "${1-}" >&2 || :
+          }
+
           assert_enable_admin_preconditions() {
             node --input-type=module <<'NODE'
           import { readFile } from 'node:fs/promises';
@@ -309,6 +314,58 @@ jobs:
             || userTwo.accountEnabled !== false
           ) {
             throw new Error('first enable precondition failed');
+          }
+          NODE
+          }
+
+          assert_diagnostic_redeploy_preconditions() {
+            assert_status_file "$TEXT_AI_USER_1_STATUS_FILE" > /dev/null
+            assert_status_file "$TEXT_AI_USER_2_STATUS_FILE" > /dev/null
+            node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import { TextDecoder } from 'node:util';
+
+          const readBoundedJson = async (path, label) => {
+            if (typeof path !== 'string' || path.length === 0) {
+              throw new Error(`invalid ${label} path`);
+            }
+            const bytes = await readFile(path);
+            if (bytes.length === 0 || bytes.length > 4096 || bytes.includes(0)) {
+              throw new Error(`invalid ${label} result`);
+            }
+            const raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            if (!raw.endsWith('\n') || raw.includes('\r') || raw.slice(0, -1).includes('\n')) {
+              throw new Error(`invalid ${label} result`);
+            }
+            return JSON.parse(raw);
+          };
+
+          const preflight = await readBoundedJson(
+            process.env.TEXT_AI_PREFLIGHT_FILE,
+            'preflight',
+          );
+          const userOne = await readBoundedJson(
+            process.env.TEXT_AI_USER_1_STATUS_FILE,
+            'user-1 status',
+          );
+          const userTwo = await readBoundedJson(
+            process.env.TEXT_AI_USER_2_STATUS_FILE,
+            'user-2 status',
+          );
+          if (
+            preflight?.command !== 'preflight'
+            || preflight.status !== 'ready'
+            || preflight.workerTextEnabled !== true
+            || userOne?.operation !== 'status'
+            || userOne.textGlobalEnabled !== true
+            || userOne.accountEnabled !== true
+            || userOne.budgetReservedMicros !== 0
+            || userTwo?.operation !== 'status'
+            || userTwo.textGlobalEnabled !== true
+            || userTwo.accountEnabled !== false
+            || userTwo.budgetReservedMicros !== 0
+          ) {
+            throw new Error('diagnostic redeploy precondition failed');
           }
           NODE
           }
@@ -483,11 +540,11 @@ jobs:
           }
 
           deploy_worker_disabled() {
-            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_DIAGNOSTICS_ENABLED:false" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
           }
 
           deploy_worker_enabled() {
-            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:true" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_DIAGNOSTICS_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:true" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
           }
 
           deploy_pages_preview() {
@@ -551,6 +608,19 @@ jobs:
                   ;;
                 *) exit 1 ;;
               esac
+              ;;
+            deploy-diagnostics)
+              if [ "$TEXT_AI_TARGET" != 'user-1' ] || [ "$TEXT_AI_CONFIRMATION" != 'DEPLOY_TEXT_DIAGNOSTICS' ]; then
+                exit 1
+              fi
+              report_diagnostic_stage 'write-worker-secret'
+              write_worker_secret_file
+              report_diagnostic_stage 'capture-status'
+              capture_status_pair
+              report_diagnostic_stage 'assert-preconditions'
+              assert_diagnostic_redeploy_preconditions
+              report_diagnostic_stage 'deploy-worker-enabled'
+              deploy_worker_enabled
               ;;
             enable-second-account)
               if [ "$TEXT_AI_TARGET" != 'user-2' ]; then

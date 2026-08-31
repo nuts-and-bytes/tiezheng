@@ -12,6 +12,7 @@ import {
 import { stableJson } from '../../../src/lib/stableJson';
 import { TextModelAdapterError } from './doubaoTextAdapter';
 import type { DoubaoTextOutput } from './doubaoTextSchema';
+import type { TextDiagnosticRecord } from './textDiagnostics';
 import type { ReserveResult } from './coordinator';
 import type { GatewayEnv } from './env';
 import {
@@ -1627,6 +1628,117 @@ describe('text estimate coordination', () => {
     expect(harness.coordinator.settleFailure).toHaveBeenCalledWith(expect.objectContaining({
       errorCode: 'provider-unavailable',
     }));
+  });
+});
+
+describe('text estimate privacy-safe diagnostics', () => {
+  test('stops a replayed failure trace before adapter or provider stages', async () => {
+    const harness = textHandlerHarness({
+      reserveResult: { kind: 'failed', code: 'provider-timeout' },
+    });
+    (harness.env as GatewayEnv & { TEXT_AI_DIAGNOSTICS_ENABLED: string })
+      .TEXT_AI_DIAGNOSTICS_ENABLED = 'true';
+    const records: TextDiagnosticRecord[] = [];
+    vi.spyOn(console, 'log').mockImplementation((record: unknown) => {
+      records.push(structuredClone(record as TextDiagnosticRecord));
+    });
+
+    const response = await harness.run();
+
+    expect(response.status).toBe(504);
+    expect(records.map(({ stage }) => stage)).toEqual([
+      'request-received',
+      'gateway-ready',
+      'body-parsed',
+      'fingerprint-ready',
+      'reservation-pending',
+      'reservation-failed',
+    ]);
+    expect(records.at(-1)).toMatchObject({
+      code: 'provider-timeout',
+      reservationKind: 'failed',
+    });
+    expect(records.some(({ stage }) => stage === 'provider-started')).toBe(false);
+    expect(JSON.stringify(records)).not.toMatch(
+      /私密|description|account|email|access|api.?key|model.?response/i,
+    );
+  });
+
+  test('marks the provider boundary and successful response without request content', async () => {
+    const harness = textHandlerHarness();
+    (harness.env as GatewayEnv & { TEXT_AI_DIAGNOSTICS_ENABLED: string })
+      .TEXT_AI_DIAGNOSTICS_ENABLED = 'true';
+    const records: TextDiagnosticRecord[] = [];
+    vi.spyOn(console, 'log').mockImplementation((record: unknown) => {
+      records.push(structuredClone(record as TextDiagnosticRecord));
+    });
+
+    const response = await harness.run(workerRequest({
+      ...textAiRequestFixture,
+      description: '私密餐食描述',
+    }));
+
+    expect(response.status).toBe(200);
+    expect(records.map(({ stage }) => stage)).toEqual([
+      'request-received',
+      'gateway-ready',
+      'body-parsed',
+      'fingerprint-ready',
+      'reservation-pending',
+      'reservation-reserved',
+      'adapter-ready',
+      'provider-mark-pending',
+      'provider-marked',
+      'provider-started',
+      'provider-succeeded',
+      'response-succeeded',
+    ]);
+    expect(new Set(records.map(({ traceId }) => traceId)).size).toBe(1);
+    expect(JSON.stringify(records)).not.toMatch(
+      /私密餐食描述|description|account|email|access|api.?key|model.?response/i,
+    );
+  });
+
+  test('finishes a cached success trace without provider stages or request content', async () => {
+    const fingerprint = await expectedFingerprint();
+    const cachedSuccess: TextAiEstimateSuccess = {
+      ok: true,
+      status: 'complete',
+      requestId: textAiRequestFixture.requestId,
+      requestFingerprint: fingerprint,
+      versions: { ...TEXT_AI_VERSIONS },
+      candidates: [{
+        ...textAiCandidateFixture,
+        assumptions: [...textAiCandidateFixture.assumptions],
+      }],
+    };
+    const harness = textHandlerHarness({
+      reserveResult: { kind: 'cached', cache: CACHE },
+      cachedSuccess,
+    });
+    (harness.env as GatewayEnv & { TEXT_AI_DIAGNOSTICS_ENABLED: string })
+      .TEXT_AI_DIAGNOSTICS_ENABLED = 'true';
+    const records: TextDiagnosticRecord[] = [];
+    vi.spyOn(console, 'log').mockImplementation((record: unknown) => {
+      records.push(structuredClone(record as TextDiagnosticRecord));
+    });
+
+    const response = await harness.run();
+
+    expect(response.status).toBe(200);
+    expect(records.map(({ stage }) => stage)).toEqual([
+      'request-received',
+      'gateway-ready',
+      'body-parsed',
+      'fingerprint-ready',
+      'reservation-pending',
+      'reservation-cached',
+      'response-succeeded',
+    ]);
+    expect(records.some(({ stage }) => stage.startsWith('provider-'))).toBe(false);
+    expect(JSON.stringify(records)).not.toMatch(
+      /牛肉面一碗，少油|description|account|email|access|api.?key|model.?response/i,
+    );
   });
 });
 

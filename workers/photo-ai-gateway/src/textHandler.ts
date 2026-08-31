@@ -26,6 +26,7 @@ import {
 } from './doubaoTextAdapter';
 import { parseDoubaoTextEstimate } from './doubaoTextSchema';
 import type { GatewayEnv } from './env';
+import { createTextDiagnosticTrace } from './textDiagnostics';
 import {
   GATEWAY_CHANNEL_POLICY,
   GATEWAY_LIMITS,
@@ -725,9 +726,13 @@ export async function handleTextAiRequest(
   env: GatewayEnv,
   dependencies: TextHandlerDependencies = TEXT_GATEWAY_RUNTIME,
 ): Promise<Response> {
+  const diagnostic = createTextDiagnosticTrace(env.TEXT_AI_DIAGNOSTICS_ENABLED === 'true');
+  diagnostic.emit('request-received');
   if (!isTextAiGatewayConfigured(env, dependencies)) {
+    diagnostic.emit('gateway-disabled', { code: 'service-disabled' });
     return failure('service-disabled', 503);
   }
+  diagnostic.emit('gateway-ready');
 
   let lifecycleStartedAt: number;
   let commitDeadlineAt: number;
@@ -739,6 +744,7 @@ export async function handleTextAiRequest(
     }
   } catch {
     cancelSilently(request.body);
+    diagnostic.emit('lifecycle-invalid', { code: 'service-disabled' });
     return failure('service-disabled', 503);
   }
   const lifecycle = createLifecycleDeadline(
@@ -751,6 +757,7 @@ export async function handleTextAiRequest(
   const accountKey = request.headers.get('x-tiezheng-account-key');
   if (accountKey === null || !ACCOUNT_KEY.test(accountKey)) {
     cancelSilently(request.body);
+    diagnostic.emit('body-invalid', { code: 'invalid-estimate' });
     return failure('invalid-estimate', 502);
   }
 
@@ -761,8 +768,10 @@ export async function handleTextAiRequest(
       lifecycleSignal,
     ));
   } catch {
+    diagnostic.emit('body-invalid', { code: 'invalid-estimate' });
     return failure('invalid-estimate', 502);
   }
+  diagnostic.emit('body-parsed');
 
   let fingerprint: string;
   try {
@@ -771,19 +780,32 @@ export async function handleTextAiRequest(
       lifecycleSignal,
     );
   } catch {
+    diagnostic.emit('fingerprint-failed', {
+      code: lifecycleSignal.aborted ? 'provider-timeout' : 'service-disabled',
+      aborted: lifecycleSignal.aborted,
+    });
     return lifecycleSignal.aborted
       ? failure('provider-timeout', 504)
       : failure('service-disabled', 503);
   }
+  diagnostic.emit('fingerprint-ready');
   let coordinator;
   let reservation: ReserveResult;
   try {
     coordinator = env.PHOTO_AI_COORDINATOR.getByName('stage2');
   } catch {
+    diagnostic.emit('coordinator-unavailable', { code: 'service-disabled' });
     return failure('service-disabled', 503);
   }
-  if (lifecycleSignal.aborted) return failure('provider-timeout', 504);
+  if (lifecycleSignal.aborted) {
+    diagnostic.emit('reservation-failed', {
+      code: 'provider-timeout',
+      aborted: true,
+    });
+    return failure('provider-timeout', 504);
+  }
   let reserveOperation: Promise<unknown>;
+  diagnostic.emit('reservation-pending');
   try {
     reserveOperation = Promise.resolve(coordinator.reserve({
       channel: 'text',
@@ -794,6 +816,7 @@ export async function handleTextAiRequest(
       reserveMicros: dependencies.initialAttemptReserveMicros,
     }) as unknown);
   } catch {
+    diagnostic.emit('reservation-in-flight', { reservationKind: 'in-flight' });
     return inFlight(textRequest.requestId);
   }
   try {
@@ -802,20 +825,38 @@ export async function handleTextAiRequest(
       lifecycleSignal,
     ));
   } catch {
-    if (!lifecycleSignal.aborted) return inFlight(textRequest.requestId);
+    if (!lifecycleSignal.aborted) {
+      diagnostic.emit('reservation-in-flight', { reservationKind: 'in-flight' });
+      return inFlight(textRequest.requestId);
+    }
     const recovered = await immediateOutcome(reserveOperation);
-    if (!recovered.acknowledged) return inFlight(textRequest.requestId);
+    if (!recovered.acknowledged) {
+      diagnostic.emit('reservation-in-flight', {
+        reservationKind: 'in-flight',
+        aborted: true,
+      });
+      return inFlight(textRequest.requestId);
+    }
     try {
       reservation = normalizedReservation(recovered.value);
     } catch {
+      diagnostic.emit('reservation-in-flight', {
+        reservationKind: 'in-flight',
+        aborted: true,
+      });
       return inFlight(textRequest.requestId);
     }
   }
 
   if (reservation.kind === 'in-flight') {
+    diagnostic.emit('reservation-in-flight', { reservationKind: 'in-flight' });
     return inFlight(textRequest.requestId, reservation.retryAfterMs);
   }
   if (reservation.kind === 'rejected') {
+    diagnostic.emit('reservation-rejected', {
+      code: reservation.code,
+      reservationKind: 'rejected',
+    });
     const status = reservation.code === 'idempotency-conflict'
       ? 409
       : reservation.code === 'service-disabled' ? 503 : 429;
@@ -827,9 +868,14 @@ export async function handleTextAiRequest(
     }, status);
   }
   if (reservation.kind === 'failed') {
+    diagnostic.emit('reservation-failed', {
+      code: reservation.code,
+      reservationKind: 'failed',
+    });
     return failure(reservation.code, coordinatorFailureStatus(reservation.code));
   }
   if (reservation.kind === 'cached') {
+    diagnostic.emit('reservation-cached', { reservationKind: 'cached' });
     try {
       const cached = parseTextAiEstimateResponse(await raceLifecycleAbort(
         Promise.resolve().then(() => dependencies.decryptCandidateCache(
@@ -849,6 +895,7 @@ export async function handleTextAiRequest(
         return failure('provider-unavailable', 503);
       }
       if (lifecycleSignal.aborted) return inFlight(textRequest.requestId);
+      diagnostic.emit('response-succeeded');
       return jsonResponse(cached, 200);
     } catch {
       return lifecycleSignal.aborted
@@ -856,7 +903,11 @@ export async function handleTextAiRequest(
         : failure('provider-unavailable', 503);
     }
   }
-  if (reservation.kind !== 'reserved') return inFlight(textRequest.requestId);
+  if (reservation.kind !== 'reserved') {
+    diagnostic.emit('reservation-in-flight', { reservationKind: 'in-flight' });
+    return inFlight(textRequest.requestId);
+  }
+  diagnostic.emit('reservation-reserved', { reservationKind: 'reserved' });
 
   const lease: Omit<LeaseInput<'text'>, 'now'> = {
     channel: 'text',
@@ -940,11 +991,14 @@ export async function handleTextAiRequest(
   try {
     adapter = normalizedAdapter(dependencies.createModelAdapter(env.ARK_API_KEY));
   } catch {
+    diagnostic.emit('adapter-unavailable', { code: 'service-disabled' });
     return abortBeforeInvoke('service-disabled', 503);
   }
+  diagnostic.emit('adapter-ready');
   if (lifecycleSignal.aborted) return abortBeforeInvoke('provider-timeout', 504);
 
   let markOperation: Promise<void>;
+  diagnostic.emit('provider-mark-pending');
   try {
     markOperation = Promise.resolve(coordinator.markInvoked(leaseAtNow()));
   } catch {
@@ -957,6 +1011,7 @@ export async function handleTextAiRequest(
     const recovered = await immediateOutcome(markOperation);
     if (!recovered.acknowledged) return inFlight(textRequest.requestId);
   }
+  diagnostic.emit('provider-marked');
   if (lifecycleSignal.aborted) {
     let operation: Promise<void>;
     try {
@@ -973,19 +1028,30 @@ export async function handleTextAiRequest(
   const providerSignal = lifecycleSignal;
     let retried = false;
     let estimateValue: unknown;
-    if (providerSignal.aborted) return await settleFailure('provider-timeout', null);
+    if (providerSignal.aborted) {
+      diagnostic.emit('provider-failed', { code: 'provider-timeout', aborted: true });
+      return await settleFailure('provider-timeout', null);
+    }
+    diagnostic.emit('provider-started');
     try {
       estimateValue = await raceLifecycleAbort(
         adapter.estimate(textRequest, providerSignal),
         providerSignal,
       );
     } catch (error) {
-      if (providerSignal.aborted) return await settleFailure('provider-timeout', null);
+      if (providerSignal.aborted) {
+        diagnostic.emit('provider-failed', { code: 'provider-timeout', aborted: true });
+        return await settleFailure('provider-timeout', null);
+      }
       const adapterError = normalizedAdapterError(error);
       if (adapterError === null || !adapterError.retryable) {
+        diagnostic.emit('provider-failed', {
+          code: adapterError?.code ?? 'provider-unavailable',
+        });
         return await settleFailure(adapterError?.code ?? 'provider-unavailable', null);
       }
       if (dependencies.maxProviderAttempts === 1) {
+        diagnostic.emit('provider-failed', { code: adapterError.code });
         return await settleFailure(adapterError.code, null);
       }
       try {
@@ -1003,6 +1069,7 @@ export async function handleTextAiRequest(
         return await settleFailure('provider-timeout', dependencies.initialAttemptReserveMicros);
       }
       retried = true;
+      diagnostic.emit('provider-started');
       try {
         estimateValue = await raceLifecycleAbort(
           adapter.estimate(textRequest, providerSignal),
@@ -1013,11 +1080,19 @@ export async function handleTextAiRequest(
         const code = providerSignal.aborted
           ? 'provider-timeout'
           : adapterError?.code ?? 'provider-unavailable';
+        diagnostic.emit('provider-failed', {
+          code,
+          aborted: providerSignal.aborted,
+        });
         return await settleFailure(code, null);
       }
     }
 
-    if (providerSignal.aborted) return await settleFailure('provider-timeout', null);
+    if (providerSignal.aborted) {
+      diagnostic.emit('provider-failed', { code: 'provider-timeout', aborted: true });
+      return await settleFailure('provider-timeout', null);
+    }
+    diagnostic.emit('provider-succeeded');
     let estimate: AdapterEstimate;
     try {
       estimate = normalizedAdapterEstimate(estimateValue);
@@ -1142,6 +1217,7 @@ export async function handleTextAiRequest(
       return inFlight(textRequest.requestId);
     }
     if (providerSignal.aborted) return inFlight(textRequest.requestId);
+    diagnostic.emit('response-succeeded');
     return jsonResponse(success, 200);
   } finally {
     lifecycle.dispose();

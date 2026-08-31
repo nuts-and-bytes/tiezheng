@@ -7,7 +7,9 @@ import test from 'node:test';
 import { verifyTextPreviewWorkflow } from './verify-text-ai-preview-workflow.mjs';
 
 const WORKFLOW_PATH = resolve('.github/workflows/text-ai-preview.yml');
+const WRANGLER_PATH = resolve('workers/photo-ai-gateway/wrangler.jsonc');
 const source = await readFile(WORKFLOW_PATH, 'utf8');
+const wranglerSource = await readFile(WRANGLER_PATH, 'utf8');
 const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 
 function replaceOnce(value, before, after) {
@@ -43,6 +45,13 @@ test('accepts the protected manual workflow and returns only fixed policy facts'
   });
 });
 
+test('persists only custom diagnostic logs and disables automatic invocation metadata', () => {
+  assert.match(wranglerSource, /"observability"\s*:\s*\{/u);
+  assert.match(wranglerSource, /"logs"\s*:\s*\{/u);
+  assert.match(wranglerSource, /"invocation_logs"\s*:\s*false/u);
+  assert.doesNotMatch(wranglerSource, /"invocation_logs"\s*:\s*true/u);
+});
+
 test('locks the exact operation choices including rotate-user-code', () => {
   for (const operation of [
     'preflight',
@@ -50,6 +59,7 @@ test('locks the exact operation choices including rotate-user-code', () => {
     'rotate-user-code',
     'enable-admin-preview',
     'status',
+    'deploy-diagnostics',
     'enable-second-account',
     'disable-account',
     'disable-all',
@@ -159,6 +169,71 @@ test('pins the source commit, fixed Pages branch, disabled photo path, and one p
   ]) {
     assert.equal(source.includes(required), true, required);
   }
+});
+
+test('enables text diagnostics only for the enabled Worker deployment', () => {
+  const disabledStart = source.indexOf('          deploy_worker_disabled() {');
+  const enabledStart = source.indexOf('          deploy_worker_enabled() {');
+  const pagesStart = source.indexOf('          deploy_pages_preview() {');
+  assert.notEqual(disabledStart, -1);
+  assert.notEqual(enabledStart, -1);
+  assert.notEqual(pagesStart, -1);
+  const disabled = source.slice(disabledStart, enabledStart);
+  const enabled = source.slice(enabledStart, pagesStart);
+
+  assert.equal(disabled.includes('TEXT_AI_DIAGNOSTICS_ENABLED:false'), true);
+  assert.equal(disabled.includes('TEXT_AI_DIAGNOSTICS_ENABLED:true'), false);
+  assert.equal(enabled.includes('TEXT_AI_DIAGNOSTICS_ENABLED:true'), true);
+  assert.equal(enabled.includes('TEXT_AI_DIAGNOSTICS_ENABLED:false'), false);
+  expectPolicyFailure(replaceOnce(
+    source,
+    'TEXT_AI_DIAGNOSTICS_ENABLED:true',
+    'TEXT_AI_DIAGNOSTICS_ENABLED:false',
+  ));
+});
+
+test('keeps text diagnostics disabled during the Worker dry-run', () => {
+  const start = source.indexOf('      - name: Worker dry-run\n');
+  const end = source.indexOf('      - name: Dispatch fixed operation\n', start + 1);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const dryRun = source.slice(start, end);
+
+  assert.equal(dryRun.includes('TEXT_AI_DIAGNOSTICS_ENABLED:false'), true);
+  assert.equal(dryRun.includes('TEXT_AI_DIAGNOSTICS_ENABLED:true'), false);
+  expectPolicyFailure(source.replace(
+    dryRun,
+    dryRun.replace('TEXT_AI_DIAGNOSTICS_ENABLED:false', 'TEXT_AI_DIAGNOSTICS_ENABLED:true'),
+  ));
+});
+
+test('deploy-diagnostics only redeploys an already-enabled Worker without admin mutation', () => {
+  const deploy = branch(source, 'deploy-diagnostics', 'enable-second-account');
+  const stages = [...deploy.matchAll(/^ {14}report_diagnostic_stage '([a-z0-9-]+)'$/gm)]
+    .map((match) => match[1]);
+  const stageCommands = [
+    ['write-worker-secret', 'write_worker_secret_file'],
+    ['capture-status', 'capture_status_pair'],
+    ['assert-preconditions', 'assert_diagnostic_redeploy_preconditions'],
+    ['deploy-worker-enabled', 'deploy_worker_enabled'],
+  ];
+
+  assert.equal(deploy.includes("'DEPLOY_TEXT_DIAGNOSTICS'"), true);
+  assert.deepEqual(stages, stageCommands.map(([stage]) => stage));
+  for (const [stage, command] of stageCommands) {
+    assert.equal(deploy.includes(
+      `              report_diagnostic_stage '${stage}'\n              ${command}\n`,
+    ), true, stage);
+  }
+  assert.equal(deploy.includes('invoke-admin'), false);
+  assert.equal(deploy.includes('text-ai-preview-control.mjs configure'), false);
+  assert.equal(deploy.includes('deploy_pages_preview'), false);
+  assert.equal(deploy.includes('/api/nutrition/text/estimate'), false);
+  expectPolicyFailure(replaceOnce(
+    source,
+    "'DEPLOY_TEXT_DIAGNOSTICS'",
+    "'DEPLOY_TEXT_DIAGNOSTICS_ANY_STATE'",
+  ));
 });
 
 test('rejects secret exfiltration, tracing, artifacts, and arbitrary dispatch commands', () => {

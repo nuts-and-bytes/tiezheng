@@ -7,15 +7,16 @@ const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 const WORKFLOW_PATH = resolve('.github/workflows/text-ai-preview.yml');
 const MAX_WORKFLOW_BYTES = 1_048_576;
 const EXPECTED_DISPATCH_SHA256 =
-  'b2fcc4d168744aff79b5067803d852e7415c81ed21ef026afc5469deb4072463';
+  'deb84256c800d1ede646126e5ca8979e26d7cf3a5602cd14766bcbe1145db602';
 const EXPECTED_OPERATION_CASE_SHA256 =
-  'cc6642db0d9ff705401d66cef89c0b2771997b624974d5d120dd7b4142cc1132';
+  'ce301cfb0c26710bc3ed5c6a793aa20738c0b320572ad878ab2ec15f7d8e30c5';
 const OPERATION_CHOICES = Object.freeze([
   'preflight',
   'deploy-disabled',
   'rotate-user-code',
   'enable-admin-preview',
   'status',
+  'deploy-diagnostics',
   'enable-second-account',
   'disable-account',
   'disable-all',
@@ -298,6 +299,8 @@ function verifyFixedRuntime(source) {
     "          VITE_ENABLE_TEXT_AI: 'true'\n",
     "          VITE_ENABLE_PHOTO_AI: 'false'\n",
     '--branch=text-ai-preview --commit-hash="$GITHUB_SHA"',
+    'TEXT_AI_DIAGNOSTICS_ENABLED:false',
+    'TEXT_AI_DIAGNOSTICS_ENABLED:true',
     'TEXT_AI_MAX_PROVIDER_ATTEMPTS:1',
     'PHOTO_AI_GATEWAY_ENABLED:false',
     'TEXT_AI_MODEL:doubao-seed-2-1-pro-260628',
@@ -306,8 +309,17 @@ function verifyFixedRuntime(source) {
     'PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000',
   ];
   for (const item of required) if (!source.includes(item)) fail();
+  const dryRunStart = source.indexOf('      - name: Worker dry-run\n');
+  const dryRunEnd = source.indexOf('      - name: Dispatch fixed operation\n', dryRunStart + 1);
+  const dryRun = dryRunStart === -1 || dryRunEnd === -1
+    ? ''
+    : source.slice(dryRunStart, dryRunEnd);
   if (
-    source.includes('--branch=main')
+    dryRun.length === 0
+    || count(dryRun, '--dry-run') !== 1
+    || count(dryRun, 'TEXT_AI_DIAGNOSTICS_ENABLED:false') !== 1
+    || dryRun.includes('TEXT_AI_DIAGNOSTICS_ENABLED:true')
+    || source.includes('--branch=main')
     || source.includes('/api/nutrition/text/estimate')
     || source.includes('ark.cn')
     || source.includes('volces.com')

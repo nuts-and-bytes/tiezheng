@@ -4,6 +4,16 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-18",
   "workers_dev": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": false,
+      "persist": true
+    }
+  },
   "images": { "binding": "IMAGES" },
   "durable_objects": {
     "bindings": [
@@ -15,6 +25,7 @@
   ],
   "vars": {
     "TEXT_AI_ADMIN_ENABLED": "false",
+    "TEXT_AI_DIAGNOSTICS_ENABLED": "false",
     "TEXT_AI_GATEWAY_ENABLED": "false",
     "TEXT_AI_MAX_PROVIDER_ATTEMPTS": "1",
     "TEXT_AI_MODEL": "doubao-seed-2-1-pro-260628",
