@@ -255,7 +255,10 @@ function isPlainRecordPrototype(prototype: object | null): boolean {
   }
 }
 
-function ownDataSnapshot(value: unknown): OwnDataSnapshot {
+function ownDataSnapshot(
+  value: unknown,
+  allowRpcDisposer = false,
+): OwnDataSnapshot {
   try {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       return invalidRuntimeValue();
@@ -264,7 +267,19 @@ function ownDataSnapshot(value: unknown): OwnDataSnapshot {
 
     const snapshot = new Map<string, unknown>();
     for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== 'string') return invalidRuntimeValue();
+      if (typeof key !== 'string') {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (
+          !allowRpcDisposer
+          || key !== Symbol.dispose
+          || descriptor === undefined
+          || !Object.hasOwn(descriptor, 'value')
+          || typeof descriptor.value !== 'function'
+        ) {
+          return invalidRuntimeValue();
+        }
+        continue;
+      }
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) {
         return invalidRuntimeValue();
@@ -360,7 +375,7 @@ function coordinatorFailureCode(value: unknown): CoordinatorFailureCode {
 }
 
 function normalizedReservation(value: unknown): ReserveResult {
-  const snapshot = ownDataSnapshot(value);
+  const snapshot = ownDataSnapshot(value, true);
   const kind = snapshot.get('kind');
   if (kind === 'reserved') {
     if (snapshot.size !== 2 || !snapshot.has('leaseId')) return invalidRuntimeValue();

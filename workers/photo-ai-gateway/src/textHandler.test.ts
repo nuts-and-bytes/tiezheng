@@ -865,6 +865,38 @@ describe('text estimate coordination', () => {
       const value = Object.defineProperty({}, 'kind', { enumerable: true, get: accessor });
       return { value, accessor };
     }],
+    ['unknown reservation symbol', () => ({
+      value: Object.defineProperty(
+        { kind: 'reserved', leaseId: LEASE_ID },
+        Symbol('private-rpc-field'),
+        { value: vi.fn() },
+      ),
+    })],
+    ['non-function RPC disposer', () => ({
+      value: Object.defineProperty(
+        { kind: 'reserved', leaseId: LEASE_ID },
+        Symbol.dispose,
+        { value: 'private' },
+      ),
+    })],
+    ['accessor RPC disposer', () => {
+      const accessor = vi.fn(() => vi.fn());
+      const value = Object.defineProperty(
+        { kind: 'reserved', leaseId: LEASE_ID },
+        Symbol.dispose,
+        { get: accessor },
+      );
+      return { value, accessor };
+    }],
+    ['multiple reservation symbols', () => ({
+      value: Object.defineProperties(
+        { kind: 'reserved', leaseId: LEASE_ID },
+        {
+          [Symbol.dispose]: { value: vi.fn() },
+          [Symbol('private-rpc-field')]: { value: vi.fn() },
+        },
+      ),
+    })],
   ])('keeps the original request recoverable on %s without trusting coordinator data', async (_label, makeFixture) => {
     const fixture = makeFixture();
     const harness = textHandlerHarness({
@@ -891,6 +923,24 @@ describe('text estimate coordination', () => {
     expect(harness.coordinator.markInvoked).not.toHaveBeenCalled();
     expect(harness.coordinator.settleSuccess).not.toHaveBeenCalled();
     expect(harness.coordinator.settleFailure).not.toHaveBeenCalled();
+  });
+
+  test('accepts the Cloudflare RPC disposer on an otherwise exact reservation', async () => {
+    const reservation = Object.defineProperty(
+      { kind: 'reserved', leaseId: LEASE_ID },
+      Symbol.dispose,
+      { value: vi.fn() },
+    );
+    const harness = textHandlerHarness({
+      reserveResult: reservation as unknown as ReserveResult,
+    });
+
+    const response = await harness.run();
+
+    expect(response.status).toBe(200);
+    expect(harness.adapter.estimate).toHaveBeenCalledTimes(1);
+    expect(harness.coordinator.markInvoked).toHaveBeenCalledTimes(1);
+    expect(harness.coordinator.settleSuccess).toHaveBeenCalledTimes(1);
   });
 
   test('accepts an exact own-data reservation with a cross-realm-like plain prototype', async () => {
