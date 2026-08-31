@@ -53,16 +53,16 @@ describe('parseDoubaoTextEstimate', () => {
     })).toEqual({ status: 'uncertain', candidate: null });
   });
 
-  test('exports a deeply frozen closed union schema with exact complete fields', () => {
+  test('exports a deeply frozen Ark-compatible root object schema with exact complete fields', () => {
     expect(DOUBAO_TEXT_JSON_SCHEMA).toMatchObject({
-      oneOf: [
-        {
-          type: 'object',
-          additionalProperties: false,
-          required: ['status', 'candidate'],
-          properties: {
-            status: { type: 'string', enum: ['complete'] },
-            candidate: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['status', 'candidate'],
+      properties: {
+        status: { type: 'string', enum: ['complete', 'uncertain'] },
+        candidate: {
+          anyOf: [
+            {
               type: 'object',
               additionalProperties: false,
               required: [...CANDIDATE_KEYS],
@@ -86,25 +86,32 @@ describe('parseDoubaoTextEstimate', () => {
                 },
               },
             },
-          },
+            { type: 'null' },
+          ],
         },
-        {
-          type: 'object',
-          additionalProperties: false,
-          required: ['status', 'candidate'],
-          properties: {
-            status: { type: 'string', enum: ['uncertain'] },
-            candidate: { type: 'null' },
-          },
-        },
-      ],
+      },
     });
-    expect(Object.keys(DOUBAO_TEXT_JSON_SCHEMA).sort()).toEqual(['oneOf']);
+    expect(Object.keys(DOUBAO_TEXT_JSON_SCHEMA).sort()).toEqual([
+      'additionalProperties',
+      'properties',
+      'required',
+      'type',
+    ]);
+    const schema = DOUBAO_TEXT_JSON_SCHEMA as unknown as {
+      properties: {
+        candidate: {
+          anyOf: readonly [
+            { properties: Record<string, unknown>; additionalProperties: boolean },
+            { type: string },
+          ];
+        };
+      };
+    };
     expect(Object.isFrozen(DOUBAO_TEXT_JSON_SCHEMA)).toBe(true);
-    expect(Object.isFrozen(DOUBAO_TEXT_JSON_SCHEMA.oneOf)).toBe(true);
-    expect(Object.isFrozen(DOUBAO_TEXT_JSON_SCHEMA.oneOf[0].properties.candidate.properties)).toBe(true);
+    expect(Object.isFrozen(schema.properties.candidate.anyOf)).toBe(true);
+    expect(Object.isFrozen(schema.properties.candidate.anyOf[0].properties)).toBe(true);
     expect(() => {
-      (DOUBAO_TEXT_JSON_SCHEMA.oneOf[0] as { additionalProperties: boolean }).additionalProperties = true;
+      schema.properties.candidate.anyOf[0].additionalProperties = true;
     }).toThrow(TypeError);
   });
 

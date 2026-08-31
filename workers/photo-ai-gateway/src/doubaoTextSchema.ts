@@ -60,26 +60,18 @@ const COMPLETE_CANDIDATE_SCHEMA = {
 } as const;
 
 export const DOUBAO_TEXT_JSON_SCHEMA = deepFreeze({
-  oneOf: [
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['status', 'candidate'],
-      properties: {
-        status: { type: 'string', enum: ['complete'] },
-        candidate: COMPLETE_CANDIDATE_SCHEMA,
-      },
+  type: 'object',
+  additionalProperties: false,
+  required: ['status', 'candidate'],
+  properties: {
+    status: { type: 'string', enum: ['complete', 'uncertain'] },
+    candidate: {
+      anyOf: [
+        COMPLETE_CANDIDATE_SCHEMA,
+        { type: 'null' },
+      ],
     },
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['status', 'candidate'],
-      properties: {
-        status: { type: 'string', enum: ['uncertain'] },
-        candidate: { type: 'null' },
-      },
-    },
-  ],
+  },
 } as const);
 
 type Snapshot = ReadonlyMap<string, unknown>;
