@@ -268,6 +268,7 @@ describe('createDoubaoTextAdapter', () => {
     await expect(promise).rejects.toMatchObject({
       code: 'provider-unavailable',
       retryable,
+      providerHttpStatus: status,
       message: 'Text model request failed',
     });
     await expect(promise).rejects.not.toThrow('provider-secret-body');

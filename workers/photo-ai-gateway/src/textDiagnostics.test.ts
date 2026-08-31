@@ -12,6 +12,7 @@ function harness() {
   const now = vi.fn()
     .mockReturnValueOnce(1_000)
     .mockReturnValueOnce(1_000)
+    .mockReturnValueOnce(1_025)
     .mockReturnValueOnce(1_025);
   const randomUUID = vi.fn(() => TRACE_ID);
   const write = vi.fn((record: TextDiagnosticRecord) => {
@@ -31,6 +32,10 @@ describe('text AI privacy-safe diagnostics', () => {
       reservationKind: 'failed',
       aborted: false,
     });
+    trace.emit('provider-failed', {
+      code: 'provider-unavailable',
+      providerHttpStatus: 401,
+    });
 
     expect(dependencies.records).toEqual([
       {
@@ -47,6 +52,14 @@ describe('text AI privacy-safe diagnostics', () => {
         code: 'provider-timeout',
         reservationKind: 'failed',
         aborted: false,
+      },
+      {
+        event: 'tiezheng.text-ai.lifecycle',
+        traceId: TRACE_ID,
+        stage: 'provider-failed',
+        elapsedMs: 25,
+        code: 'provider-unavailable',
+        providerHttpStatus: 401,
       },
     ]);
     expect(Object.keys(dependencies.records[0] ?? {})).toEqual([

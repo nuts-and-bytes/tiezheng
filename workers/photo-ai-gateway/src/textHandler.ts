@@ -439,7 +439,7 @@ function normalizedAdapter(value: unknown): TextModelAdapter {
 
 function normalizedAdapterError(
   value: unknown,
-): { code: CoordinatorFailureCode; retryable: boolean } | null {
+): { code: CoordinatorFailureCode; retryable: boolean; providerHttpStatus: number | null } | null {
   try {
     if (
       !(value instanceof TextModelAdapterError)
@@ -447,7 +447,14 @@ function normalizedAdapterError(
     ) {
       return null;
     }
-    const allowedKeys = new Set(['stack', 'message', 'name', 'code', 'retryable']);
+    const allowedKeys = new Set([
+      'stack',
+      'message',
+      'name',
+      'code',
+      'retryable',
+      'providerHttpStatus',
+    ]);
     const snapshot = new Map<string, unknown>();
     for (const key of Reflect.ownKeys(value)) {
       if (typeof key !== 'string' || !allowedKeys.has(key)) return null;
@@ -465,6 +472,7 @@ function normalizedAdapterError(
       || !snapshot.has('name')
       || !snapshot.has('code')
       || !snapshot.has('retryable')
+      || !snapshot.has('providerHttpStatus')
       || snapshot.get('name') !== 'TextModelAdapterError'
       || snapshot.get('message') !== 'Text model request failed'
       || typeof snapshot.get('retryable') !== 'boolean'
@@ -475,7 +483,21 @@ function normalizedAdapterError(
     if (code === 'uncertain-food') return null;
     const retryable = snapshot.get('retryable') as boolean;
     if (code === 'invalid-estimate' && retryable) return null;
-    return { code, retryable };
+    const providerHttpStatus = snapshot.get('providerHttpStatus');
+    if (
+      providerHttpStatus !== null
+      && (
+        typeof providerHttpStatus !== 'number'
+        || !Number.isSafeInteger(providerHttpStatus)
+        || Object.is(providerHttpStatus, -0)
+        || providerHttpStatus < 400
+        || providerHttpStatus > 599
+      )
+    ) {
+      return null;
+    }
+    if (code !== 'provider-unavailable' && providerHttpStatus !== null) return null;
+    return { code, retryable, providerHttpStatus };
   } catch {
     return null;
   }
@@ -1062,11 +1084,15 @@ export async function handleTextAiRequest(
       if (adapterError === null || !adapterError.retryable) {
         diagnostic.emit('provider-failed', {
           code: adapterError?.code ?? 'provider-unavailable',
+          providerHttpStatus: adapterError?.providerHttpStatus ?? undefined,
         });
         return await settleFailure(adapterError?.code ?? 'provider-unavailable', null);
       }
       if (dependencies.maxProviderAttempts === 1) {
-        diagnostic.emit('provider-failed', { code: adapterError.code });
+        diagnostic.emit('provider-failed', {
+          code: adapterError.code,
+          providerHttpStatus: adapterError.providerHttpStatus ?? undefined,
+        });
         return await settleFailure(adapterError.code, null);
       }
       try {
@@ -1098,6 +1124,7 @@ export async function handleTextAiRequest(
         diagnostic.emit('provider-failed', {
           code,
           aborted: providerSignal.aborted,
+          providerHttpStatus: adapterError?.providerHttpStatus ?? undefined,
         });
         return await settleFailure(code, null);
       }

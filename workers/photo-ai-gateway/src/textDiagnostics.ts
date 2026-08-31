@@ -36,6 +36,7 @@ export interface TextDiagnosticDetails {
   code?: TextAiErrorCode;
   reservationKind?: TextDiagnosticReservationKind;
   aborted?: boolean;
+  providerHttpStatus?: number;
 }
 
 export interface TextDiagnosticRecord {
@@ -46,6 +47,7 @@ export interface TextDiagnosticRecord {
   code?: TextAiErrorCode;
   reservationKind?: TextDiagnosticReservationKind;
   aborted?: boolean;
+  providerHttpStatus?: number;
 }
 
 export interface TextDiagnosticTrace {
@@ -78,6 +80,19 @@ function safeTimestamp(value: unknown): number | null {
     || !Number.isSafeInteger(value)
     || Object.is(value, -0)
     || value < 0
+  ) {
+    return null;
+  }
+  return value;
+}
+
+function safeProviderHttpStatus(value: unknown): number | null {
+  if (
+    typeof value !== 'number'
+    || !Number.isSafeInteger(value)
+    || Object.is(value, -0)
+    || value < 400
+    || value > 599
   ) {
     return null;
   }
@@ -120,6 +135,8 @@ export function createTextDiagnosticTrace(
           record.reservationKind = details.reservationKind;
         }
         if (details.aborted !== undefined) record.aborted = details.aborted;
+        const providerHttpStatus = safeProviderHttpStatus(details.providerHttpStatus);
+        if (providerHttpStatus !== null) record.providerHttpStatus = providerHttpStatus;
         dependencies.write(Object.freeze(record));
       } catch {
         // Diagnostics must never affect request handling.

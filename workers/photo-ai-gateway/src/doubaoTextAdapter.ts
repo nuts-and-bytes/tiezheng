@@ -35,17 +35,27 @@ export type TextModelAdapterErrorCode =
 export class TextModelAdapterError extends Error {
   readonly code: TextModelAdapterErrorCode;
   readonly retryable: boolean;
+  readonly providerHttpStatus: number | null;
 
-  constructor(code: TextModelAdapterErrorCode, retryable: boolean) {
+  constructor(
+    code: TextModelAdapterErrorCode,
+    retryable: boolean,
+    providerHttpStatus: number | null = null,
+  ) {
     super(ERROR_MESSAGE);
     this.name = 'TextModelAdapterError';
     this.code = code;
     this.retryable = retryable;
+    this.providerHttpStatus = providerHttpStatus;
   }
 }
 
-function fail(code: TextModelAdapterErrorCode, retryable = false): never {
-  throw new TextModelAdapterError(code, retryable);
+function fail(
+  code: TextModelAdapterErrorCode,
+  retryable = false,
+  providerHttpStatus: number | null = null,
+): never {
+  throw new TextModelAdapterError(code, retryable, providerHttpStatus);
 }
 
 function retryableStatus(status: number | null): boolean {
@@ -167,7 +177,7 @@ export function createDoubaoTextAdapter(
         if (error instanceof TextModelAdapterError) throw error;
         if (error instanceof ProviderResponseError) {
           if (error.kind === 'http-status') {
-            return fail('provider-unavailable', retryableStatus(error.status));
+            return fail('provider-unavailable', retryableStatus(error.status), error.status);
           }
           if (error.kind === 'read-failed') return fail('provider-unavailable');
           return fail('invalid-estimate');
