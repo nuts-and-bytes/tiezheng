@@ -52,3 +52,13 @@ export function arkCostMicros(inputTokens: number, outputTokens: number): number
   if (!Number.isSafeInteger(result)) return invalid();
   return result;
 }
+
+export function deepseekTextCostMicros(inputTokens: number, outputTokens: number): number {
+  if (!Number.isSafeInteger(inputTokens) || inputTokens < 0
+    || !Number.isSafeInteger(outputTokens) || outputTokens < 0) return invalid();
+  // DeepSeek lists USD prices; a fixed 10 CNY/USD ceiling keeps the yuan budget conservative.
+  const tenthsOfMicros = BigInt(inputTokens) * 44n + BigInt(outputTokens) * 132n;
+  const result = (tenthsOfMicros + 9n) / 10n;
+  if (result > BigInt(Number.MAX_SAFE_INTEGER)) return invalid();
+  return Number(result);
+}

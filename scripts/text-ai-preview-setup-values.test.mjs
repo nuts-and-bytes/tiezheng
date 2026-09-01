@@ -15,7 +15,7 @@ import {
 const FAILURE = 'Text preview setup failed';
 const SECRET_NAMES = Object.freeze([
   'CLOUDFLARE_API_TOKEN',
-  'ARK_API_KEY',
+  'DEEPSEEK_API_KEY',
   'PHOTO_AI_CACHE_AES_KEY',
   'PHOTO_AI_ACCOUNT_HMAC_KEY',
   'TEXT_AI_USER_1_ACCESS_CODE_PEPPER',
@@ -72,17 +72,17 @@ test('publishes the exact 11-secret and one-existing-variable policy', () => {
 test('accepts exactly the two operator secrets and rejects extra or inherited values', () => {
   assert.deepEqual(parseSetupInputs({
     cloudflareApiToken: 'cloudflare-token',
-    arkApiKey: 'ark-key',
+    deepseekApiKey: 'deepseek-key',
   }), {
     cloudflareApiToken: 'cloudflare-token',
-    arkApiKey: 'ark-key',
+    deepseekApiKey: 'deepseek-key',
   });
   assert.throws(
-    () => parseSetupInputs({ cloudflareApiToken: 'x', arkApiKey: 'y', user1Email: 'nope' }),
+    () => parseSetupInputs({ cloudflareApiToken: 'x', deepseekApiKey: 'y', user1Email: 'nope' }),
     { message: FAILURE },
   );
   const inherited = Object.create({ cloudflareApiToken: 'x' });
-  inherited.arkApiKey = 'y';
+  inherited.deepseekApiKey = 'y';
   assert.throws(() => parseSetupInputs(inherited), { message: FAILURE });
 });
 
@@ -93,7 +93,7 @@ test('generates two codes and seven independent keys with exact randomness and H
   assert.equal(fixture.buffers.every((buffer) => buffer.every((byte) => byte === 0)), true);
 
   const writes = assembleSetupWrites({
-    inputs: { cloudflareApiToken: 'cloudflare-token', arkApiKey: 'ark-key' },
+    inputs: { cloudflareApiToken: 'cloudflare-token', deepseekApiKey: 'deepseek-key' },
     materials,
   });
   assert.deepEqual(writes.secrets.map(({ name }) => name), SECRET_NAMES);
@@ -159,7 +159,7 @@ test('render failure is fixed, never leaks the underlying error, and consumes bo
   );
   assert.throws(
     () => assembleSetupWrites({
-      inputs: { cloudflareApiToken: 'cloudflare-token', arkApiKey: 'ark-key' },
+      inputs: { cloudflareApiToken: 'cloudflare-token', deepseekApiKey: 'deepseek-key' },
       materials,
     }),
     { message: FAILURE },

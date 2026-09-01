@@ -21,6 +21,7 @@ const WORKFLOW_NAME = 'Text AI Preview Control';
 const JOB_NAME = 'text-ai-preview';
 const STEP_NAME = 'Dispatch fixed operation';
 const ACCOUNT_VARIABLE = 'CLOUDFLARE_ACCOUNT_ID';
+const RETIRED_ROTATION_SECRET_NAMES = Object.freeze(['ARK_API_KEY']);
 const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
@@ -300,9 +301,10 @@ function parseNames(value) {
   return seen;
 }
 
-function exactNames(actual, expected) {
-  if (actual.size !== expected.length) fail();
+function exactNames(actual, expected, optional = []) {
+  if (actual.size < expected.length || actual.size > expected.length + optional.length) fail();
   for (const name of expected) if (!actual.has(name)) fail();
+  for (const name of actual) if (!expected.includes(name) && !optional.includes(name)) fail();
 }
 
 function validateEnvironment(value) {
@@ -504,7 +506,7 @@ export function createGitHubSetupClient(runner = runBoundedCommand, retryDelay =
   if (typeof retryDelay !== 'function') fail();
   const run = createCheckedRunner(runner);
 
-  async function inspectRepository(expectedSecretNames) {
+  async function inspectRepository(expectedSecretNames, optionalSecretNames = []) {
     try {
       await run('gh', ['auth', 'status', '--hostname', 'github.com']);
       if (await run('git', ['status', '--porcelain=v1']) !== '') fail();
@@ -530,7 +532,7 @@ export function createGitHubSetupClient(runner = runBoundedCommand, retryDelay =
       const secretNames = parseNames(await run('gh', [
         'secret', 'list', '--repo', REPO, '--env', ENVIRONMENT, '--json', 'name',
       ]));
-      exactNames(secretNames, expectedSecretNames);
+      exactNames(secretNames, expectedSecretNames, optionalSecretNames);
       const variableNames = parseNames(await run('gh', [
         'variable', 'list', '--repo', REPO, '--env', ENVIRONMENT, '--json', 'name',
       ]));
@@ -550,7 +552,7 @@ export function createGitHubSetupClient(runner = runBoundedCommand, retryDelay =
   }
 
   async function inspectRotation() {
-    return inspectRepository(SETUP_POLICY.secretNames);
+    return inspectRepository(SETUP_POLICY.secretNames, RETIRED_ROTATION_SECRET_NAMES);
   }
 
   async function writeValue(allowedNames, name, value, args) {

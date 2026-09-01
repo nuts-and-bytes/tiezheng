@@ -77,7 +77,7 @@ test('locks the exact operation choices including rotate-user-code', () => {
 test('requires the exact new Environment secret inventory and no legacy identity values', () => {
   for (const name of [
     'CLOUDFLARE_API_TOKEN',
-    'ARK_API_KEY',
+    'DEEPSEEK_API_KEY',
     'PHOTO_AI_CACHE_AES_KEY',
     'PHOTO_AI_ACCOUNT_HMAC_KEY',
     'TEXT_AI_USER_1_ACCESS_CODE_PEPPER',

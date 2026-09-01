@@ -1,7 +1,7 @@
 const FAILURE = 'Text preview setup failed';
 const PROMPT_LABELS = new Set([
   'Cloudflare API Token',
-  'ARK_API_KEY',
+  'DEEPSEEK_API_KEY',
   'Continue? [y/N]',
   'Saved user-1 code? [y/N]',
   'Saved user-2 code? [y/N]',
@@ -240,13 +240,13 @@ export async function readTtyLine(options = {}) {
 export async function promptSetupInputs(input, output) {
   const buffers = [];
   try {
-    for (const label of ['Cloudflare API Token', 'ARK_API_KEY']) {
+    for (const label of ['Cloudflare API Token', 'DEEPSEEK_API_KEY']) {
       const hidden = true;
       buffers.push(await readTtyLine({ input, output, label, hidden }));
     }
     const result = Object.freeze({
       cloudflareApiToken: buffers[0].toString('utf8'),
-      arkApiKey: buffers[1].toString('utf8'),
+      deepseekApiKey: buffers[1].toString('utf8'),
     });
     return result;
   } finally {

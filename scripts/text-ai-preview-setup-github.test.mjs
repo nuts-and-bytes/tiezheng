@@ -122,14 +122,25 @@ test('first-run inspection requires a clean pinned main and an empty secret inve
   );
 });
 
-test('rotation inspection requires the exact configured 11+1 inventory', async () => {
+test('rotation inspection accepts the current inventory with only the retired Ark secret optional', async () => {
   const fixture = fakeRunner({ secretNames: SETUP_POLICY.secretNames });
   const client = createGitHubSetupClient(fixture.runner);
   assert.deepEqual(await client.inspectRotation(), { accountId: ACCOUNT_ID, expectedSha: SHA });
 
+  const migrated = fakeRunner({ secretNames: [...SETUP_POLICY.secretNames, 'ARK_API_KEY'] });
+  assert.deepEqual(await createGitHubSetupClient(migrated.runner).inspectRotation(), {
+    accountId: ACCOUNT_ID,
+    expectedSha: SHA,
+  });
+
   const missing = fakeRunner({ secretNames: SETUP_POLICY.secretNames.slice(1) });
   await assert.rejects(
     createGitHubSetupClient(missing.runner).inspectRotation(),
+    { message: FAILURE },
+  );
+  const unknown = fakeRunner({ secretNames: [...SETUP_POLICY.secretNames, 'EXTRA'] });
+  await assert.rejects(
+    createGitHubSetupClient(unknown.runner).inspectRotation(),
     { message: FAILURE },
   );
 });
@@ -138,10 +149,10 @@ test('secret writes use bounded stdin, never arguments, and wipe the caller buff
   const fixture = fakeRunner();
   const client = createGitHubSetupClient(fixture.runner);
   const value = Buffer.from('private-secret-value');
-  await client.setSecret('ARK_API_KEY', value);
+  await client.setSecret('DEEPSEEK_API_KEY', value);
   const call = fixture.calls.at(-1);
   assert.deepEqual(call.args, [
-    'secret', 'set', 'ARK_API_KEY', '--env', 'text-ai-preview', '--repo', 'nuts-and-bytes/tiezheng',
+    'secret', 'set', 'DEEPSEEK_API_KEY', '--env', 'text-ai-preview', '--repo', 'nuts-and-bytes/tiezheng',
   ]);
   assert.equal(call.input, 'private-secret-value');
   assert.equal(call.args.join(' ').includes('private-secret-value'), false);

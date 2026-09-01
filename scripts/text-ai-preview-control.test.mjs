@@ -45,7 +45,7 @@ function key(byte) {
 
 const SENSITIVE = Object.freeze({
   apiToken: 'private-cf-token-value',
-  arkKey: 'private-ark-key-value',
+  deepseekKey: 'private-deepseek-key-value',
   cacheKey: key(6),
   accountHmacKey: '0123456789abcdef0123456789abcdef',
   user1Pepper: key(1),
@@ -61,7 +61,7 @@ function validEnv(overrides = {}) {
   return {
     CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID,
     CLOUDFLARE_API_TOKEN: SENSITIVE.apiToken,
-    ARK_API_KEY: SENSITIVE.arkKey,
+    DEEPSEEK_API_KEY: SENSITIVE.deepseekKey,
     PHOTO_AI_CACHE_AES_KEY: SENSITIVE.cacheKey,
     PHOTO_AI_ACCOUNT_HMAC_KEY: SENSITIVE.accountHmacKey,
     TEXT_AI_USER_1_ACCESS_CODE_PEPPER: SENSITIVE.user1Pepper,
@@ -251,8 +251,8 @@ test('loads only the new secret inventory and never reads legacy Access or email
     'adminSigningKey',
     'allowedOrigin',
     'apiToken',
-    'arkApiKey',
     'cacheAesKey',
+    'deepseekApiKey',
     'rateLimitHmacKey',
     'sessionSigningKey',
     'user1AccessCodeDigest',
@@ -269,7 +269,7 @@ test('rejects missing, non-canonical, reused, inherited, and accessor secret val
     { TEXT_AI_USER_1_ACCESS_CODE_DIGEST: 'A'.repeat(64) },
     { TEXT_AI_USER_2_ACCESS_CODE_DIGEST: SENSITIVE.user1Digest },
     { TEXT_AI_RATE_LIMIT_HMAC_KEY: SENSITIVE.sessionKey },
-    { ARK_API_KEY: '' },
+    { DEEPSEEK_API_KEY: '' },
   ]) {
     expectFixedFailure(() => loadTextPreviewConfig(validEnv(overrides)));
   }

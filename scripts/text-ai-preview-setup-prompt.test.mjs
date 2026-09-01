@@ -62,7 +62,7 @@ function fixedFailure(promise) {
 }
 
 test('both setup inputs are hidden and never echo their bytes', async () => {
-  for (const label of ['Cloudflare API Token', 'ARK_API_KEY']) {
+  for (const label of ['Cloudflare API Token', 'DEEPSEEK_API_KEY']) {
     const input = new FakeTTY();
     const output = fakeOutput();
     const pending = readTtyLine({ input, output, label, hidden: true });
@@ -79,14 +79,14 @@ test('both setup inputs are hidden and never echo their bytes', async () => {
 
 test('promptSetupInputs reads exactly two hidden values and returns a frozen record', async () => {
   const input = new FakeTTY();
-  input.values.push(Buffer.from('cloudflare-token\r'), Buffer.from('ark-key\r'));
+  input.values.push(Buffer.from('cloudflare-token\r'), Buffer.from('deepseek-key\r'));
   const output = fakeOutput();
   const result = await promptSetupInputs(input, output);
-  assert.deepEqual(result, { cloudflareApiToken: 'cloudflare-token', arkApiKey: 'ark-key' });
+  assert.deepEqual(result, { cloudflareApiToken: 'cloudflare-token', deepseekApiKey: 'deepseek-key' });
   assert.equal(Object.isFrozen(result), true);
-  assert.equal(output.text, 'Cloudflare API Token: \nARK_API_KEY: \n');
+  assert.equal(output.text, 'Cloudflare API Token: \nDEEPSEEK_API_KEY: \n');
   assert.equal(output.text.includes('cloudflare-token'), false);
-  assert.equal(output.text.includes('ark-key'), false);
+  assert.equal(output.text.includes('deepseek-key'), false);
 });
 
 test('setup confirmation accepts only lowercase y', async () => {

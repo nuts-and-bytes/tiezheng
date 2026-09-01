@@ -102,12 +102,12 @@ function sparseArray<T>(): T[] {
 describe('fixed text AI contract', () => {
   test('固定文字模型、提示、schema、目录和策略版本', () => {
     expect(TEXT_AI_VERSIONS).toEqual({
-      model: 'doubao-seed-2-1-pro-260628',
+      model: 'deepseek-v4-flash',
       prompt: 'tiezheng-food-text-zh-v1',
       schema: 'tiezheng-text-estimate-v1',
       catalog: 'tiezheng-food-catalog-v2',
       uncertainty: 'tiezheng-text-uncertainty-v1',
-      providerPolicy: 'volcengine-ark-policy-2026-08-18',
+      providerPolicy: 'deepseek-responses-policy-2026-09-01',
     });
     expect(TEXT_AI_LIMITS).toEqual({
       descriptionChars: 500,

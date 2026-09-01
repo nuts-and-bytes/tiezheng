@@ -7,11 +7,11 @@ import {
 } from '../../../src/lib/textAiContract';
 import {
   TextModelAdapterError,
-  createDoubaoTextAdapter,
-} from './doubaoTextAdapter';
+  createDeepSeekTextAdapter,
+} from './deepseekTextAdapter';
 import { DOUBAO_TEXT_JSON_SCHEMA } from './doubaoTextSchema';
 
-const API_KEY = 'test-ark-key';
+const API_KEY = 'test-deepseek-key';
 
 function textRequest(overrides: Record<string, unknown> = {}): TextAiEstimateRequest {
   return parseTextAiEstimateRequest({
@@ -83,7 +83,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('createDoubaoTextAdapter', () => {
+describe('DeepSeek text adapter contract', () => {
   test('uses the fixed official request with no tools, storage, thinking or internal identifiers', async () => {
     let body: Record<string, unknown> | undefined;
     let receivedSignal: AbortSignal | null | undefined;
@@ -94,10 +94,10 @@ describe('createDoubaoTextAdapter', () => {
     });
     const signal = new AbortController().signal;
 
-    const result = await createDoubaoTextAdapter(API_KEY, fetcher).estimate(textRequest(), signal);
+    const result = await createDeepSeekTextAdapter(API_KEY, fetcher).estimate(textRequest(), signal);
 
     expect(fetcher).toHaveBeenCalledWith(
-      'https://ark.cn-beijing.volces.com/api/v3/responses',
+      'https://api.deepseek.com/responses',
       expect.objectContaining({
         method: 'POST',
         redirect: 'error',
@@ -111,14 +111,12 @@ describe('createDoubaoTextAdapter', () => {
     expect(receivedSignal?.aborted).toBe(false);
     expect(body).toMatchObject({
       model: TEXT_AI_VERSIONS.model,
-      store: false,
-      thinking: { type: 'disabled' },
+      reasoning: { effort: 'none' },
       max_output_tokens: 800,
       text: {
         format: {
           type: 'json_schema',
           name: 'tiezheng_text_meal_estimate',
-          strict: true,
           schema: DOUBAO_TEXT_JSON_SCHEMA,
         },
       },
@@ -128,9 +126,8 @@ describe('createDoubaoTextAdapter', () => {
       'instructions',
       'max_output_tokens',
       'model',
-      'store',
+      'reasoning',
       'text',
-      'thinking',
     ]);
     expect(body).not.toHaveProperty('tools');
     expect(body).not.toHaveProperty('tool_choice');
@@ -150,7 +147,7 @@ describe('createDoubaoTextAdapter', () => {
       body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return jsonResponse(providerPayload());
     });
-    await createDoubaoTextAdapter(API_KEY, fetcher).estimate(
+    await createDeepSeekTextAdapter(API_KEY, fetcher).estimate(
       textRequest({ description }),
       new AbortController().signal,
     );
@@ -199,7 +196,7 @@ describe('createDoubaoTextAdapter', () => {
   test('returns a detached strict complete result and nullable usage', async () => {
     const output = { status: 'complete', candidate: completeCandidate() };
     const fetcher = vi.fn<typeof fetch>(async () => jsonResponse(providerPayload(output, null)));
-    const result = await createDoubaoTextAdapter(API_KEY, fetcher).estimate(
+    const result = await createDeepSeekTextAdapter(API_KEY, fetcher).estimate(
       textRequest(),
       new AbortController().signal,
     );
@@ -210,12 +207,12 @@ describe('createDoubaoTextAdapter', () => {
     }
   });
 
-  test('accepts the exact official Ark usage shape while returning the stable two-field ABI', async () => {
+  test('accepts the exact official DeepSeek usage shape while returning the stable two-field ABI', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => jsonResponse(providerPayload(
       { status: 'uncertain', candidate: null },
       officialUsage(),
     )));
-    await expect(createDoubaoTextAdapter(API_KEY, fetcher).estimate(
+    await expect(createDeepSeekTextAdapter(API_KEY, fetcher).estimate(
       textRequest(),
       new AbortController().signal,
     )).resolves.toEqual({
@@ -232,7 +229,7 @@ describe('createDoubaoTextAdapter', () => {
       return new Promise<Response>((resolve) => { resolveResponse = resolve; });
     });
     const request = textRequest();
-    const pending = createDoubaoTextAdapter(API_KEY, fetcher).estimate(
+    const pending = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(
       request,
       new AbortController().signal,
     );
@@ -261,7 +258,7 @@ describe('createDoubaoTextAdapter', () => {
     [504, true],
   ])('maps HTTP %i to a stable unavailable error without provider details', async (status, retryable) => {
     const fetcher = vi.fn<typeof fetch>(async () => new Response('provider-secret-body', { status }));
-    const promise = createDoubaoTextAdapter(API_KEY, fetcher).estimate(
+    const promise = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(
       textRequest(),
       new AbortController().signal,
     );
@@ -285,7 +282,7 @@ describe('createDoubaoTextAdapter', () => {
       }, { once: true });
     }));
     const caller = new AbortController();
-    const pending = createDoubaoTextAdapter(API_KEY, fetcher).estimate(textRequest(), caller.signal);
+    const pending = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(textRequest(), caller.signal);
     const outcome = pending.then(
       () => ({ resolved: true } as const),
       (error: unknown) => error,
@@ -324,7 +321,7 @@ describe('createDoubaoTextAdapter', () => {
       }), { headers: { 'content-type': 'application/json' } });
     });
     const caller = new AbortController();
-    const pending = createDoubaoTextAdapter(API_KEY, fetcher).estimate(textRequest(), caller.signal);
+    const pending = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(textRequest(), caller.signal);
     const outcome = pending.then(
       () => ({ resolved: true } as const),
       (error: unknown) => error,
@@ -354,7 +351,7 @@ describe('createDoubaoTextAdapter', () => {
       return jsonResponse(providerPayload());
     });
     const caller = new AbortController();
-    await createDoubaoTextAdapter(API_KEY, fetcher).estimate(textRequest(), caller.signal);
+    await createDeepSeekTextAdapter(API_KEY, fetcher).estimate(textRequest(), caller.signal);
 
     expect(providerSignal).not.toBe(caller.signal);
     expect(providerSignal?.aborted).toBe(false);
@@ -373,7 +370,7 @@ describe('createDoubaoTextAdapter', () => {
       }, { once: true });
     }));
     const caller = new AbortController();
-    const pending = createDoubaoTextAdapter(API_KEY, fetcher).estimate(textRequest(), caller.signal);
+    const pending = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(textRequest(), caller.signal);
     const outcome = pending.catch((error: unknown) => error);
     caller.abort();
     const error = await outcome;
@@ -398,12 +395,12 @@ describe('createDoubaoTextAdapter', () => {
     }));
     const alreadyAborted = new AbortController();
     alreadyAborted.abort();
-    await expect(createDoubaoTextAdapter(API_KEY, fetcher).estimate(textRequest(), alreadyAborted.signal))
+    await expect(createDeepSeekTextAdapter(API_KEY, fetcher).estimate(textRequest(), alreadyAborted.signal))
       .rejects.toMatchObject({ code: 'provider-timeout', retryable: false });
     expect(fetcher).not.toHaveBeenCalled();
 
     const controller = new AbortController();
-    const pending = createDoubaoTextAdapter(API_KEY, fetcher).estimate(textRequest(), controller.signal);
+    const pending = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(textRequest(), controller.signal);
     controller.abort();
     await expect(pending).rejects.toMatchObject({
       code: 'provider-timeout',
@@ -425,7 +422,7 @@ describe('createDoubaoTextAdapter', () => {
       { headers: { 'content-type': 'application/json' } },
     ));
     const controller = new AbortController();
-    const pending = createDoubaoTextAdapter(API_KEY, fetcher).estimate(textRequest(), controller.signal);
+    const pending = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(textRequest(), controller.signal);
     controller.abort();
     await expect(pending).rejects.toMatchObject({
       code: 'provider-timeout',
@@ -440,7 +437,7 @@ describe('createDoubaoTextAdapter', () => {
     const lock = response.body?.getReader();
     if (lock === undefined) throw new Error('expected response body');
     const fetcher = vi.fn<typeof fetch>(async () => response);
-    const promise = createDoubaoTextAdapter('secret-api-key', fetcher).estimate(
+    const promise = createDeepSeekTextAdapter('secret-api-key', fetcher).estimate(
       textRequest(),
       new AbortController().signal,
     );
@@ -470,7 +467,7 @@ describe('createDoubaoTextAdapter', () => {
     ['invalid model shape', async () => jsonResponse(providerPayload({ status: 'uncertain', candidate: completeCandidate() })), 'invalid-estimate'],
   ])('maps %s without leaking provider input', async (_label, implementation, code) => {
     const fetcher = vi.fn<typeof fetch>(implementation);
-    const promise = createDoubaoTextAdapter(API_KEY, fetcher).estimate(
+    const promise = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(
       textRequest(),
       new AbortController().signal,
     );
@@ -491,7 +488,7 @@ describe('createDoubaoTextAdapter', () => {
     const streamFetcher = vi.fn<typeof fetch>(async () => new Response(failingStream, {
       headers: { 'content-type': 'application/json' },
     }));
-    const readPromise = createDoubaoTextAdapter('secret-api-key', streamFetcher).estimate(
+    const readPromise = createDeepSeekTextAdapter('secret-api-key', streamFetcher).estimate(
       textRequest(), new AbortController().signal,
     );
     await expect(readPromise).rejects.toMatchObject({
@@ -505,7 +502,7 @@ describe('createDoubaoTextAdapter', () => {
     const oversizedFetcher = vi.fn<typeof fetch>(async () => new Response('x'.repeat(256_001), {
       headers: { 'content-type': 'application/json' },
     }));
-    await expect(createDoubaoTextAdapter(API_KEY, oversizedFetcher).estimate(
+    await expect(createDeepSeekTextAdapter(API_KEY, oversizedFetcher).estimate(
       textRequest(), new AbortController().signal,
     )).rejects.toMatchObject({ code: 'invalid-estimate', retryable: false });
   });
@@ -513,9 +510,9 @@ describe('createDoubaoTextAdapter', () => {
   test('fails closed before fetch for blank, padded or CRLF API keys and malformed requests', async () => {
     const fetcher = vi.fn<typeof fetch>();
     for (const key of ['', ' ', ' padded', 'padded ', 'key\r\nX-Evil: yes']) {
-      expect(() => createDoubaoTextAdapter(key, fetcher)).toThrow('Invalid text model configuration');
+      expect(() => createDeepSeekTextAdapter(key, fetcher)).toThrow('Invalid text model configuration');
     }
-    await expect(createDoubaoTextAdapter(API_KEY, fetcher).estimate(
+    await expect(createDeepSeekTextAdapter(API_KEY, fetcher).estimate(
       { ...textRequest(), locale: 'en-US' } as unknown as TextAiEstimateRequest,
       new AbortController().signal,
     )).rejects.toBeInstanceOf(TextModelAdapterError);

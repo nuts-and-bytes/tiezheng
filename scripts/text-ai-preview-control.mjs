@@ -289,7 +289,7 @@ function parseCloudflareCredentials(env) {
 export function loadTextPreviewConfig(env) {
   try {
     const { accountId, apiToken } = parseCloudflareCredentials(env);
-    const arkApiKey = requiredString(env, 'ARK_API_KEY', (value) => isSecret(value));
+    const deepseekApiKey = requiredString(env, 'DEEPSEEK_API_KEY', (value) => isSecret(value));
     const cacheAesKey = requiredString(
       env,
       'PHOTO_AI_CACHE_AES_KEY',
@@ -352,7 +352,7 @@ export function loadTextPreviewConfig(env) {
     const config = Object.freeze({
       accountId,
       apiToken,
-      arkApiKey,
+      deepseekApiKey,
       cacheAesKey,
       accountHmacKey,
       user1AccessCodePepper,

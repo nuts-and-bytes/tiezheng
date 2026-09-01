@@ -13,22 +13,24 @@ export const EXPECTED_FILES = Object.freeze([
   'scripts/text-ai-preview-setup-github.mjs',
   'scripts/text-ai-preview-setup.mjs',
   'scripts/text-ai-access-code-rotate.mjs',
+  'scripts/text-ai-deepseek-key-set.mjs',
   'package.json',
 ]);
 
 const EXPECTED_SHA256 = Object.freeze(new Map([
-  ['scripts/text-ai-preview-setup-values.mjs', '29ae8334fe34870933400b72e950327898fe0ef2c03cb07091b92856f91b9057'],
-  ['scripts/text-ai-preview-setup-prompt.mjs', 'bd5c91b9ebcfc73ac6e9078ec0d571a1d52189763fdb7d4753ce6fc1c8690f04'],
+  ['scripts/text-ai-preview-setup-values.mjs', '7b932c01a8ee36a06550f10bca7def447b5451ef8988f5326d64b617619b992b'],
+  ['scripts/text-ai-preview-setup-prompt.mjs', 'c3f34e1688200191ab9fd39e601f35f417ea7446a5f983c85f7c4c6f561fc835'],
   ['scripts/text-ai-preview-setup-cloudflare.mjs', '9f555d3bac14621cb2ff5cfb8ea689d42ceb36c18cafc7684609df0805427853'],
-  ['scripts/text-ai-preview-setup-github.mjs', '5a4fa7576ac4c5d0071d1ddc08e9d9f661d1a2587f877e693627b11908f31f97'],
+  ['scripts/text-ai-preview-setup-github.mjs', '512745912c15c3941650a7e49b3f5d9f67e1761ea76e1726a50fc2f9665b8d5b'],
   ['scripts/text-ai-preview-setup.mjs', 'cec3b507f40f0daa870ea766e28430d01dc3a1f7dbdd5509b7f29c9a14ebecc0'],
   ['scripts/text-ai-access-code-rotate.mjs', 'cfe17d0944d23a804c25ead58580d84751a0a8d960a72ff5a8702f78e468d44b'],
-  ['package.json', 'b2b5e7f2475d081a9caa6a98749c3440744fe3641d92714edd0de1c8ef7768d1'],
+  ['scripts/text-ai-deepseek-key-set.mjs', '109b810ac7fe5d70f6c3dfdaec5beb7f734447af6eb2eb5876f0b28fcea0c21a'],
+  ['package.json', '88f7ef32a62c49ae56513a16d88123f4958067ae3415cb2ffc12a87e19fe3d22'],
 ]));
 
 const SECRET_NAMES = Object.freeze([
   'CLOUDFLARE_API_TOKEN',
-  'ARK_API_KEY',
+  'DEEPSEEK_API_KEY',
   'PHOTO_AI_CACHE_AES_KEY',
   'PHOTO_AI_ACCOUNT_HMAC_KEY',
   'TEXT_AI_USER_1_ACCESS_CODE_PEPPER',
@@ -156,7 +158,7 @@ function verifyValueContract(sources) {
 function verifyPromptContract(sources) {
   const prompt = sources.get('scripts/text-ai-preview-setup-prompt.mjs');
   if (
-    count(prompt, "['Cloudflare API Token', 'ARK_API_KEY']") !== 1
+    count(prompt, "['Cloudflare API Token', 'DEEPSEEK_API_KEY']") !== 1
     || !prompt.includes('const hidden = true;')
     || prompt.includes('email')
   ) fail();
@@ -214,6 +216,8 @@ function verifyPackageContract(sources) {
   if (
     pkg?.scripts?.['rotate:text-preview-code'] !== 'node scripts/text-ai-access-code-rotate.mjs'
     || pkg?.scripts?.['test:text-access-code-rotate'] !== 'node --test scripts/text-ai-access-code-rotate.test.mjs'
+    || pkg?.scripts?.['set:text-preview-deepseek-key'] !== 'node scripts/text-ai-deepseek-key-set.mjs'
+    || pkg?.scripts?.['test:text-preview-deepseek-key'] !== 'node --test scripts/text-ai-deepseek-key-set.test.mjs'
   ) fail();
 }
 

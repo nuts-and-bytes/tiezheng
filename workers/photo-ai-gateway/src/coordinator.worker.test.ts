@@ -15,6 +15,7 @@ import {
 } from './coordinator';
 import type { GatewayEnv } from './env';
 import {
+  deepseekTextCostMicros,
   GATEWAY_CHANNEL_POLICY,
   TEXT_SUCCESS_COMMIT_WINDOW_MS,
   type AiChannel,
@@ -206,7 +207,7 @@ describe('arkCostMicros', () => {
 describe('private gateway entrypoint', () => {
   test('loads text gateway vars in their fixed default-closed state', () => {
     expect((env as GatewayEnv).TEXT_AI_GATEWAY_ENABLED).toBe('false');
-    expect((env as GatewayEnv).TEXT_AI_MODEL).toBe('doubao-seed-2-1-pro-260628');
+    expect((env as GatewayEnv).TEXT_AI_MODEL).toBe('deepseek-v4-flash');
   });
 
   test('serves the exact coordinator session through the private route', async () => {
@@ -272,6 +273,7 @@ describe('private gateway entrypoint', () => {
       PHOTO_AI_ALLOWED_ORIGINS: 'https://app.example.test',
       PHOTO_AI_MONTHLY_BUDGET_MICROS: String(GATEWAY_LIMITS.monthlyBudgetMicros),
       ARK_API_KEY: 'test-ark-key',
+      DEEPSEEK_API_KEY: 'test-deepseek-key',
       PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
       PHOTO_AI_COORDINATOR: {
         getByName: () => realCoordinator,
@@ -324,7 +326,7 @@ describe('private gateway entrypoint', () => {
     });
     expect(coordinatorStatus).toMatchObject({
       accountRemaining: 9,
-      budgetSpentMicros: arkCostMicros(100, 20),
+      budgetSpentMicros: deepseekTextCostMicros(100, 20),
       budgetReservedMicros: 0,
     });
   });
@@ -336,6 +338,7 @@ describe('private gateway entrypoint', () => {
       ...env,
       TEXT_AI_GATEWAY_ENABLED: 'true',
       ARK_API_KEY: 'test-ark-key',
+      DEEPSEEK_API_KEY: 'test-deepseek-key',
       PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     } as GatewayEnv;
 
@@ -362,6 +365,7 @@ describe('private gateway entrypoint', () => {
       ...env,
       TEXT_AI_GATEWAY_ENABLED: 'true',
       ARK_API_KEY: 'test-ark-key',
+      DEEPSEEK_API_KEY: 'test-deepseek-key',
       PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     } as GatewayEnv;
     const exact = await worker.fetch(new Request(

@@ -4,6 +4,7 @@ import {
   GATEWAY_CHANNEL_POLICY,
   GATEWAY_LIMITS,
   arkCostMicros,
+  deepseekTextCostMicros,
 } from './gatewayPolicy';
 
 describe('photo AI gateway policy', () => {
@@ -53,14 +54,28 @@ describe('photo AI gateway policy', () => {
     )).toBe(1_581_000);
   });
 
+  test('charges DeepSeek V4 Flash peak cache-miss USD pricing under a 10 CNY/USD ceiling', () => {
+    expect(deepseekTextCostMicros(100, 20)).toBe(704);
+    expect(deepseekTextCostMicros(0, 1)).toBe(14);
+    expect(deepseekTextCostMicros(1, 0)).toBe(5);
+  });
+
   test.each([
     [-1, 0],
     [0, -1],
     [0.5, 0],
     [0, Number.NaN],
     [Number.POSITIVE_INFINITY, 0],
-    [Number.MAX_SAFE_INTEGER, 0],
-  ])('rejects unsafe token counts or an unsafe result', (inputTokens, outputTokens) => {
+  ])('rejects invalid token counts', (inputTokens, outputTokens) => {
     expect(() => arkCostMicros(inputTokens, outputTokens)).toThrow('Invalid coordinator input');
+    expect(() => deepseekTextCostMicros(inputTokens, outputTokens))
+      .toThrow('Invalid coordinator input');
+  });
+
+  test('rejects provider-specific unsafe cost results', () => {
+    expect(() => arkCostMicros(Number.MAX_SAFE_INTEGER, 0))
+      .toThrow('Invalid coordinator input');
+    expect(() => deepseekTextCostMicros(0, Number.MAX_SAFE_INTEGER))
+      .toThrow('Invalid coordinator input');
   });
 });

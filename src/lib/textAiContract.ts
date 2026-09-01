@@ -4,12 +4,12 @@ import type {
 } from './nutritionTypes';
 
 export const TEXT_AI_VERSIONS = Object.freeze({
-  model: 'doubao-seed-2-1-pro-260628',
+  model: 'deepseek-v4-flash',
   prompt: 'tiezheng-food-text-zh-v1',
   schema: 'tiezheng-text-estimate-v1',
   catalog: 'tiezheng-food-catalog-v2',
   uncertainty: 'tiezheng-text-uncertainty-v1',
-  providerPolicy: 'volcengine-ark-policy-2026-08-18',
+  providerPolicy: 'deepseek-responses-policy-2026-09-01',
 } as const);
 
 export const TEXT_AI_LIMITS = Object.freeze({

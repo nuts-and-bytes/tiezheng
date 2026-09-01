@@ -87,7 +87,7 @@ function configuredEnv(coordinator = coordinatorStub()): GatewayEnv {
     TEXT_AI_ADMIN_ENABLED: 'false',
     TEXT_AI_GATEWAY_ENABLED: 'false',
     TEXT_AI_MAX_PROVIDER_ATTEMPTS: '1',
-    TEXT_AI_MODEL: 'doubao-seed-2-1-pro-260628',
+    TEXT_AI_MODEL: 'deepseek-v4-flash',
     PHOTO_AI_GATEWAY_ENABLED: 'true',
     PHOTO_AI_MODEL: 'doubao-seed-2-1-pro-260628',
     PHOTO_AI_ALLOWED_ORIGINS: 'https://photo-ai-stage2.tiezheng.pages.dev',

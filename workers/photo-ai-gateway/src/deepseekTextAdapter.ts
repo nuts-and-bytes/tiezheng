@@ -15,7 +15,7 @@ import {
   type DoubaoTextOutput,
 } from './doubaoTextSchema';
 
-const ENDPOINT = 'https://ark.cn-beijing.volces.com/api/v3/responses';
+const ENDPOINT = 'https://api.deepseek.com/responses';
 const PROVIDER_TIMEOUT_MS = 12_000;
 const MAX_PROVIDER_BYTES = 256_000;
 const ERROR_MESSAGE = 'Text model request failed';
@@ -74,8 +74,7 @@ const SYSTEM_PROMPT = [
 function requestBody(request: TextAiEstimateRequest): Record<string, unknown> {
   return {
     model: TEXT_AI_VERSIONS.model,
-    store: false,
-    thinking: { type: 'disabled' },
+    reasoning: { effort: 'none' },
     max_output_tokens: 800,
     instructions: SYSTEM_PROMPT,
     input: [{
@@ -95,7 +94,6 @@ function requestBody(request: TextAiEstimateRequest): Record<string, unknown> {
       format: {
         type: 'json_schema',
         name: 'tiezheng_text_meal_estimate',
-        strict: true,
         schema: DOUBAO_TEXT_JSON_SCHEMA,
       },
     },
@@ -112,7 +110,7 @@ function validApiKey(apiKey: unknown): apiKey is string {
   );
 }
 
-export function createDoubaoTextAdapter(
+export function createDeepSeekTextAdapter(
   apiKey: string,
   fetcher: typeof fetch = fetch,
 ): TextModelAdapter {

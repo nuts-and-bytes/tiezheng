@@ -11,5 +11,6 @@ export interface GatewayEnv {
   PHOTO_AI_ALLOWED_ORIGINS: string;
   PHOTO_AI_MONTHLY_BUDGET_MICROS: string;
   ARK_API_KEY: string;
+  DEEPSEEK_API_KEY?: string;
   PHOTO_AI_CACHE_AES_KEY: string;
 }

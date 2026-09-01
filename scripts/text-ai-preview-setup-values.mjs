@@ -3,7 +3,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 const FAILURE = 'Text preview setup failed';
 const SECRET_NAMES = Object.freeze([
   'CLOUDFLARE_API_TOKEN',
-  'ARK_API_KEY',
+  'DEEPSEEK_API_KEY',
   'PHOTO_AI_CACHE_AES_KEY',
   'PHOTO_AI_ACCOUNT_HMAC_KEY',
   'TEXT_AI_USER_1_ACCESS_CODE_PEPPER',
@@ -25,7 +25,7 @@ const MATERIAL_NAMES = Object.freeze([
   'rateLimitHmacKey',
   'adminSigningKey',
 ]);
-const INPUT_NAMES = Object.freeze(['cloudflareApiToken', 'arkApiKey']);
+const INPUT_NAMES = Object.freeze(['cloudflareApiToken', 'deepseekApiKey']);
 const RANDOM_LENGTHS = Object.freeze([24, 24, 32, 32, 32, 32, 32, 32, 32]);
 const ACCESS_CODE = /^[A-Za-z0-9_-]{32}$/u;
 const BASE64URL_32 = /^[A-Za-z0-9_-]{43}$/u;
@@ -97,10 +97,10 @@ function validSecret(value) {
 
 export function parseSetupInputs(value) {
   const input = exactDataRecord(value, INPUT_NAMES);
-  if (!validSecret(input.cloudflareApiToken) || !validSecret(input.arkApiKey)) fail();
+  if (!validSecret(input.cloudflareApiToken) || !validSecret(input.deepseekApiKey)) fail();
   return Object.freeze({
     cloudflareApiToken: input.cloudflareApiToken,
-    arkApiKey: input.arkApiKey,
+    deepseekApiKey: input.deepseekApiKey,
   });
 }
 
@@ -224,7 +224,7 @@ export function assembleSetupWrites(value) {
     const materials = materialRecord(record.materials);
     const values = new Map([
       ['CLOUDFLARE_API_TOKEN', inputs.cloudflareApiToken],
-      ['ARK_API_KEY', inputs.arkApiKey],
+      ['DEEPSEEK_API_KEY', inputs.deepseekApiKey],
       ['PHOTO_AI_CACHE_AES_KEY', materials.cacheAesKey],
       ['PHOTO_AI_ACCOUNT_HMAC_KEY', materials.accountHmacKey],
       ['TEXT_AI_USER_1_ACCESS_CODE_PEPPER', materials.user1AccessCodePepper],

@@ -10,7 +10,7 @@ import {
   textAiRequestFixture,
 } from '../../../src/test/textAiFixtures';
 import { stableJson } from '../../../src/lib/stableJson';
-import { TextModelAdapterError } from './doubaoTextAdapter';
+import { TextModelAdapterError } from './deepseekTextAdapter';
 import type { DoubaoTextOutput } from './doubaoTextSchema';
 import type { TextDiagnosticRecord } from './textDiagnostics';
 import type { ReserveResult } from './coordinator';
@@ -19,7 +19,7 @@ import {
   GATEWAY_CHANNEL_POLICY,
   GATEWAY_LIMITS,
   TEXT_SUCCESS_COMMIT_WINDOW_MS,
-  arkCostMicros,
+  deepseekTextCostMicros,
 } from './gatewayPolicy';
 import {
   TEXT_GATEWAY_RUNTIME,
@@ -73,6 +73,7 @@ function configuredEnv(overrides: Partial<GatewayEnv> = {}): GatewayEnv {
     PHOTO_AI_ALLOWED_ORIGINS: 'https://app.example.test',
     PHOTO_AI_MONTHLY_BUDGET_MICROS: '50000000',
     ARK_API_KEY: 'test-ark-key',
+    DEEPSEEK_API_KEY: 'test-deepseek-key',
     PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     PHOTO_AI_COORDINATOR: {
       getByName: vi.fn(),
@@ -269,8 +270,8 @@ describe('text gateway configuration and JSON firewall', () => {
     ['missing model', (env: GatewayEnv) => { delete (env as unknown as Record<string, unknown>).TEXT_AI_MODEL; }, {}],
     ['model alias', (env: GatewayEnv) => { env.TEXT_AI_MODEL = 'doubao-seed-2-1-pro'; }, {}],
     ['non-canonical monthly budget', (env: GatewayEnv) => { env.PHOTO_AI_MONTHLY_BUDGET_MICROS = '050000000'; }, {}],
-    ['blank API key', (env: GatewayEnv) => { env.ARK_API_KEY = '   '; }, {}],
-    ['newline API key', (env: GatewayEnv) => { env.ARK_API_KEY = 'key\nleak'; }, {}],
+    ['blank API key', (env: GatewayEnv) => { env.DEEPSEEK_API_KEY = '   '; }, {}],
+    ['newline API key', (env: GatewayEnv) => { env.DEEPSEEK_API_KEY = 'key\nleak'; }, {}],
     ['invalid cache key', (env: GatewayEnv) => { env.PHOTO_AI_CACHE_AES_KEY = 'not-a-key'; }, {}],
     ['missing coordinator', (env: GatewayEnv) => { delete (env as unknown as Record<string, unknown>).PHOTO_AI_COORDINATOR; }, {}],
     ['wrong authoritative budget', undefined, { monthlyBudgetMicros: GATEWAY_LIMITS.monthlyBudgetMicros - 1 }],
@@ -806,7 +807,7 @@ describe('text estimate coordination', () => {
       fingerprint,
       leaseId: LEASE_ID,
       cache: CACHE,
-      actualCostMicros: arkCostMicros(100, 20),
+      actualCostMicros: deepseekTextCostMicros(100, 20),
     }));
   });
 
@@ -1156,7 +1157,8 @@ describe('text estimate coordination', () => {
     expect(harness.coordinator.settleSuccess).toHaveBeenCalledTimes(1);
     expect(harness.coordinator.settleSuccess).toHaveBeenCalledWith(expect.objectContaining({
       actualCostMicros:
-        GATEWAY_CHANNEL_POLICY.text.initialAttemptReserveMicros + arkCostMicros(100, 20),
+        GATEWAY_CHANNEL_POLICY.text.initialAttemptReserveMicros
+          + deepseekTextCostMicros(100, 20),
     }));
     expect(harness.coordinator.settleFailure).not.toHaveBeenCalled();
     expect(harness.encryptCandidateCache).toHaveBeenCalledTimes(1);
@@ -1658,7 +1660,7 @@ describe('text estimate coordination', () => {
 
     expect(harness.coordinator.settleSuccess).toHaveBeenCalledTimes(1);
     expect(harness.coordinator.settleSuccess).toHaveBeenCalledWith(expect.objectContaining({
-      actualCostMicros: arkCostMicros(100, 20),
+      actualCostMicros: deepseekTextCostMicros(100, 20),
     }));
     expect(harness.coordinator.settleFailure).not.toHaveBeenCalled();
   });
@@ -1918,14 +1920,14 @@ describe('text estimate failure cleanup', () => {
     const privateDescription = '私密餐食描述';
     const privateRequest = { ...textAiRequestFixture, description: privateDescription };
     const harness = textHandlerHarness();
-    harness.env.ARK_API_KEY = 'private-ark-key';
+    harness.env.DEEPSEEK_API_KEY = 'private-deepseek-key';
     harness.encryptCandidateCache.mockRejectedValue(new Error('private crypto details'));
 
     const response = await harness.run(workerRequest(privateRequest));
     const serialized = await response.text();
 
     expect(response.status).toBe(502);
-    expect(serialized).not.toMatch(/私密餐食描述|private-ark-key|crypto details/);
+    expect(serialized).not.toMatch(/私密餐食描述|private-deepseek-key|crypto details/);
     expect(harness.coordinator.settleFailure).toHaveBeenCalledTimes(1);
     expect(harness.coordinator.settleFailure).toHaveBeenCalledWith(expect.objectContaining({
       channel: 'text',

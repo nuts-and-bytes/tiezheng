@@ -75,7 +75,7 @@ function harness({
     github,
     async promptInputs() {
       events.push('prompt');
-      return { cloudflareApiToken: 'cloudflare-token', arkApiKey: 'ark-key' };
+      return { cloudflareApiToken: 'cloudflare-token', deepseekApiKey: 'deepseek-key' };
     },
     async confirm() {
       events.push('confirm');

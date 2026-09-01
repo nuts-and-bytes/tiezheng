@@ -20,10 +20,10 @@ import {
   isValidCacheEncryptionKey,
 } from './cryptoCache';
 import {
-  createDoubaoTextAdapter,
+  createDeepSeekTextAdapter,
   TextModelAdapterError,
   type TextModelAdapter,
-} from './doubaoTextAdapter';
+} from './deepseekTextAdapter';
 import { parseDoubaoTextEstimate } from './doubaoTextSchema';
 import type { GatewayEnv } from './env';
 import { createTextDiagnosticTrace } from './textDiagnostics';
@@ -31,7 +31,7 @@ import {
   GATEWAY_CHANNEL_POLICY,
   GATEWAY_LIMITS,
   TEXT_SUCCESS_COMMIT_WINDOW_MS,
-  arkCostMicros,
+  deepseekTextCostMicros,
 } from './gatewayPolicy';
 
 export interface TextHandlerDependencies {
@@ -48,7 +48,7 @@ export interface TextHandlerDependencies {
 }
 
 export const TEXT_GATEWAY_RUNTIME: TextHandlerDependencies = Object.freeze({
-  createModelAdapter: createDoubaoTextAdapter,
+  createModelAdapter: createDeepSeekTextAdapter,
   parseDoubaoTextEstimate,
   encryptCandidateCache,
   decryptCandidateCache,
@@ -744,11 +744,11 @@ export function isTextAiGatewayConfigured(
         === GATEWAY_CHANNEL_POLICY.text.retryAttemptReserveMicros
       && runtime.resultCacheMs === GATEWAY_LIMITS.resultCacheMs
       && env.TEXT_AI_MAX_PROVIDER_ATTEMPTS === String(runtime.maxProviderAttempts)
-      && typeof env.ARK_API_KEY === 'string'
-      && env.ARK_API_KEY.length >= 1
-      && env.ARK_API_KEY.length <= 4096
-      && env.ARK_API_KEY.trim() === env.ARK_API_KEY
-      && !/[\r\n]/.test(env.ARK_API_KEY)
+      && typeof env.DEEPSEEK_API_KEY === 'string'
+      && env.DEEPSEEK_API_KEY.length >= 1
+      && env.DEEPSEEK_API_KEY.length <= 4096
+      && env.DEEPSEEK_API_KEY.trim() === env.DEEPSEEK_API_KEY
+      && !/[\r\n]/.test(env.DEEPSEEK_API_KEY)
       && isValidCacheEncryptionKey(env.PHOTO_AI_CACHE_AES_KEY)
       && typeof env.PHOTO_AI_COORDINATOR === 'object'
       && env.PHOTO_AI_COORDINATOR !== null
@@ -1026,7 +1026,9 @@ export async function handleTextAiRequest(
 
   let adapter: TextModelAdapter;
   try {
-    adapter = normalizedAdapter(dependencies.createModelAdapter(env.ARK_API_KEY));
+    const apiKey = env.DEEPSEEK_API_KEY;
+    if (typeof apiKey !== 'string') throw new TypeError('Invalid text model configuration');
+    adapter = normalizedAdapter(dependencies.createModelAdapter(apiKey));
   } catch {
     diagnostic.emit('adapter-unavailable', { code: 'service-disabled' });
     return abortBeforeInvoke('service-disabled', 503);
@@ -1146,7 +1148,7 @@ export async function handleTextAiRequest(
     let knownAttemptCost: number | null = null;
     if (estimate.usage !== null) {
       try {
-        knownAttemptCost = arkCostMicros(
+        knownAttemptCost = deepseekTextCostMicros(
           estimate.usage.inputTokens,
           estimate.usage.outputTokens,
         );
