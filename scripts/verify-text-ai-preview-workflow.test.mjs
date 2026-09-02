@@ -77,6 +77,7 @@ test('locks the exact operation choices including rotate-user-code', () => {
 test('requires the exact new Environment secret inventory and no legacy identity values', () => {
   for (const name of [
     'CLOUDFLARE_API_TOKEN',
+    'CLOUDFLARE_AI_GATEWAY_TOKEN',
     'DEEPSEEK_API_KEY',
     'PHOTO_AI_CACHE_AES_KEY',
     'PHOTO_AI_ACCOUNT_HMAC_KEY',
@@ -190,6 +191,34 @@ test('enables text diagnostics only for the enabled Worker deployment', () => {
     'TEXT_AI_DIAGNOSTICS_ENABLED:true',
     'TEXT_AI_DIAGNOSTICS_ENABLED:false',
   ));
+});
+
+test('injects the authenticated AI Gateway route only into the enabled Worker', () => {
+  const secretStart = source.indexOf('          write_worker_secret_file() {');
+  const disabledStart = source.indexOf('          deploy_worker_disabled() {');
+  const enabledStart = source.indexOf('          deploy_worker_enabled() {');
+  const pagesStart = source.indexOf('          deploy_pages_preview() {');
+  assert.notEqual(secretStart, -1);
+  assert.notEqual(disabledStart, -1);
+  assert.notEqual(enabledStart, -1);
+  assert.notEqual(pagesStart, -1);
+
+  const secretWriter = source.slice(secretStart, disabledStart);
+  const disabled = source.slice(disabledStart, enabledStart);
+  const enabled = source.slice(enabledStart, pagesStart);
+
+  assert.equal(
+    source.includes('CLOUDFLARE_AI_GATEWAY_TOKEN: ${{ secrets.CLOUDFLARE_AI_GATEWAY_TOKEN }}'),
+    true,
+  );
+  assert.equal(secretWriter.includes('process.env.CLOUDFLARE_AI_GATEWAY_TOKEN'), true);
+  assert.equal(secretWriter.includes('CLOUDFLARE_AI_GATEWAY_TOKEN: aiGatewayToken'), true);
+  assert.equal(enabled.includes('--secrets-file "$TEXT_AI_SECRET_FILE"'), true);
+  assert.equal(enabled.includes('CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID'), true);
+  assert.equal(enabled.includes('CLOUDFLARE_AI_GATEWAY_ID:tiezheng-text-ai'), true);
+  assert.equal(disabled.includes('CLOUDFLARE_AI_GATEWAY_TOKEN'), false);
+  assert.equal(disabled.includes('CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID'), false);
+  assert.equal(disabled.includes('CLOUDFLARE_AI_GATEWAY_ID'), false);
 });
 
 test('keeps text diagnostics disabled during the Worker dry-run', () => {

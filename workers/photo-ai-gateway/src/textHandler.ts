@@ -21,6 +21,8 @@ import {
 } from './cryptoCache';
 import {
   createDeepSeekTextAdapter,
+  isDeepSeekAiGatewayRoute,
+  type DeepSeekAiGatewayRoute,
   TextModelAdapterError,
   type TextModelAdapter,
   type TextProviderFailureKind,
@@ -36,7 +38,7 @@ import {
 } from './gatewayPolicy';
 
 export interface TextHandlerDependencies {
-  createModelAdapter(apiKey: string): TextModelAdapter;
+  createModelAdapter(apiKey: string, gateway: DeepSeekAiGatewayRoute): TextModelAdapter;
   parseDoubaoTextEstimate: typeof parseDoubaoTextEstimate;
   encryptCandidateCache: typeof encryptCandidateCache;
   decryptCandidateCache: typeof decryptCandidateCache;
@@ -49,7 +51,9 @@ export interface TextHandlerDependencies {
 }
 
 export const TEXT_GATEWAY_RUNTIME: TextHandlerDependencies = Object.freeze({
-  createModelAdapter: createDeepSeekTextAdapter,
+  createModelAdapter: (apiKey: string, gateway: DeepSeekAiGatewayRoute) => (
+    createDeepSeekTextAdapter(apiKey, fetch, gateway)
+  ),
   parseDoubaoTextEstimate,
   encryptCandidateCache,
   decryptCandidateCache,
@@ -775,6 +779,11 @@ export function isTextAiGatewayConfigured(
       && env.DEEPSEEK_API_KEY.length <= 4096
       && env.DEEPSEEK_API_KEY.trim() === env.DEEPSEEK_API_KEY
       && !/[\r\n]/.test(env.DEEPSEEK_API_KEY)
+      && isDeepSeekAiGatewayRoute({
+        accountId: env.CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID,
+        gatewayId: env.CLOUDFLARE_AI_GATEWAY_ID,
+        token: env.CLOUDFLARE_AI_GATEWAY_TOKEN,
+      })
       && isValidCacheEncryptionKey(env.PHOTO_AI_CACHE_AES_KEY)
       && typeof env.PHOTO_AI_COORDINATOR === 'object'
       && env.PHOTO_AI_COORDINATOR !== null
@@ -1054,7 +1063,15 @@ export async function handleTextAiRequest(
   try {
     const apiKey = env.DEEPSEEK_API_KEY;
     if (typeof apiKey !== 'string') throw new TypeError('Invalid text model configuration');
-    adapter = normalizedAdapter(dependencies.createModelAdapter(apiKey));
+    const gateway = Object.freeze({
+      accountId: env.CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID,
+      gatewayId: env.CLOUDFLARE_AI_GATEWAY_ID,
+      token: env.CLOUDFLARE_AI_GATEWAY_TOKEN,
+    });
+    if (!isDeepSeekAiGatewayRoute(gateway)) {
+      throw new TypeError('Invalid text model configuration');
+    }
+    adapter = normalizedAdapter(dependencies.createModelAdapter(apiKey, gateway));
   } catch {
     diagnostic.emit('adapter-unavailable', { code: 'service-disabled' });
     return abortBeforeInvoke('service-disabled', 503);

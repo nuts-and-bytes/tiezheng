@@ -36,6 +36,11 @@ const ACCOUNT_A = 'a'.repeat(64);
 const ACCOUNT_B = 'b'.repeat(64);
 const ACCOUNT_C = 'c'.repeat(64);
 const BASE_NOW = Date.UTC(2026, 7, 18, 4, 0, 0);
+const TEXT_AI_GATEWAY_ENV = {
+  CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+  CLOUDFLARE_AI_GATEWAY_ID: 'tiezheng-text-ai',
+  CLOUDFLARE_AI_GATEWAY_TOKEN: 'test-cloudflare-ai-gateway-token',
+} as const;
 
 const SUCCESS_SETTLEMENT_FIELDS = {
   accountKey: ACCOUNT_A,
@@ -274,6 +279,7 @@ describe('private gateway entrypoint', () => {
       PHOTO_AI_MONTHLY_BUDGET_MICROS: String(GATEWAY_LIMITS.monthlyBudgetMicros),
       ARK_API_KEY: 'test-ark-key',
       DEEPSEEK_API_KEY: 'test-deepseek-key',
+      ...TEXT_AI_GATEWAY_ENV,
       PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
       PHOTO_AI_COORDINATOR: {
         getByName: () => realCoordinator,
@@ -339,6 +345,7 @@ describe('private gateway entrypoint', () => {
       TEXT_AI_GATEWAY_ENABLED: 'true',
       ARK_API_KEY: 'test-ark-key',
       DEEPSEEK_API_KEY: 'test-deepseek-key',
+      ...TEXT_AI_GATEWAY_ENV,
       PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     } as GatewayEnv;
 
@@ -366,6 +373,7 @@ describe('private gateway entrypoint', () => {
       TEXT_AI_GATEWAY_ENABLED: 'true',
       ARK_API_KEY: 'test-ark-key',
       DEEPSEEK_API_KEY: 'test-deepseek-key',
+      ...TEXT_AI_GATEWAY_ENV,
       PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     } as GatewayEnv;
     const exact = await worker.fetch(new Request(

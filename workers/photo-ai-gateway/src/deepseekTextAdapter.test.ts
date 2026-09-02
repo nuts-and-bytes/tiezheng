@@ -7,11 +7,24 @@ import {
 } from '../../../src/lib/textAiContract';
 import {
   TextModelAdapterError,
-  createDeepSeekTextAdapter,
+  createDeepSeekTextAdapter as createDeepSeekTextAdapterWithGateway,
+  type TextModelAdapter,
 } from './deepseekTextAdapter';
 import { DOUBAO_TEXT_JSON_SCHEMA } from './doubaoTextSchema';
 
 const API_KEY = 'test-deepseek-key';
+const AI_GATEWAY = Object.freeze({
+  accountId: '0123456789abcdef0123456789abcdef',
+  gatewayId: 'tiezheng-text-ai',
+  token: 'test-cloudflare-ai-gateway-token',
+});
+
+function createDeepSeekTextAdapter(
+  apiKey: string,
+  fetcher: typeof fetch,
+): TextModelAdapter {
+  return createDeepSeekTextAdapterWithGateway(apiKey, fetcher, AI_GATEWAY);
+}
 
 function textRequest(overrides: Record<string, unknown> = {}): TextAiEstimateRequest {
   return parseTextAiEstimateRequest({
@@ -97,12 +110,13 @@ describe('DeepSeek text adapter contract', () => {
     const result = await createDeepSeekTextAdapter(API_KEY, fetcher).estimate(textRequest(), signal);
 
     expect(fetcher).toHaveBeenCalledWith(
-      'https://api.deepseek.com/responses',
+      'https://gateway.ai.cloudflare.com/v1/0123456789abcdef0123456789abcdef/tiezheng-text-ai/deepseek/responses',
       expect.objectContaining({
         method: 'POST',
         redirect: 'error',
         headers: {
           authorization: `Bearer ${API_KEY}`,
+          'cf-aig-authorization': `Bearer ${AI_GATEWAY.token}`,
           'content-type': 'application/json',
         },
       }),

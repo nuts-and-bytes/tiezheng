@@ -7,7 +7,7 @@ const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 const WORKFLOW_PATH = resolve('.github/workflows/text-ai-preview.yml');
 const MAX_WORKFLOW_BYTES = 1_048_576;
 const EXPECTED_DISPATCH_SHA256 =
-  '75b3a0bcfd0df60720ffd7009ae22254a7cf37efca122dc536a0bae615dcf1b2';
+  'c8cad1d3cbf34070804847ea6d17d950e05bb37a273a3d70057ba0daaca0eafc';
 const EXPECTED_OPERATION_CASE_SHA256 =
   '37ee7a423cd62eeec12d0e92709e2a017dab8abcc92f04cbc0b0f4519b5c1b14';
 const OPERATION_CHOICES = Object.freeze([
@@ -38,6 +38,7 @@ const STEP_NAMES = Object.freeze([
 ]);
 const SECRET_NAMES = Object.freeze([
   'CLOUDFLARE_API_TOKEN',
+  'CLOUDFLARE_AI_GATEWAY_TOKEN',
   'DEEPSEEK_API_KEY',
   'PHOTO_AI_CACHE_AES_KEY',
   'PHOTO_AI_ACCOUNT_HMAC_KEY',
@@ -304,6 +305,8 @@ function verifyFixedRuntime(source) {
     'TEXT_AI_MAX_PROVIDER_ATTEMPTS:1',
     'PHOTO_AI_GATEWAY_ENABLED:false',
     'TEXT_AI_MODEL:deepseek-v4-flash',
+    'CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID',
+    'CLOUDFLARE_AI_GATEWAY_ID:tiezheng-text-ai',
     'PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628',
     'PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev',
     'PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000',

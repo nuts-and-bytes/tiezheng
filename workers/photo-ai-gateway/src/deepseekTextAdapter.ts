@@ -15,10 +15,15 @@ import {
   type DoubaoTextOutput,
 } from './doubaoTextSchema';
 
-const ENDPOINT = 'https://api.deepseek.com/responses';
 const PROVIDER_TIMEOUT_MS = 12_000;
 const MAX_PROVIDER_BYTES = 256_000;
 const ERROR_MESSAGE = 'Text model request failed';
+
+export interface DeepSeekAiGatewayRoute {
+  readonly accountId: string;
+  readonly gatewayId: string;
+  readonly token: string;
+}
 
 export interface TextModelAdapter {
   estimate(
@@ -141,14 +146,31 @@ function validApiKey(apiKey: unknown): apiKey is string {
   );
 }
 
+export function isDeepSeekAiGatewayRoute(value: unknown): value is DeepSeekAiGatewayRoute {
+  try {
+    if (typeof value !== 'object' || value === null) return false;
+    const route = value as Partial<DeepSeekAiGatewayRoute>;
+    return typeof route.accountId === 'string'
+      && /^[a-f0-9]{32}$/.test(route.accountId)
+      && typeof route.gatewayId === 'string'
+      && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(route.gatewayId)
+      && validApiKey(route.token);
+  } catch {
+    return false;
+  }
+}
+
 export function createDeepSeekTextAdapter(
   apiKey: string,
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch,
+  gateway: DeepSeekAiGatewayRoute,
 ): TextModelAdapter {
-  if (!validApiKey(apiKey)) {
+  if (!validApiKey(apiKey) || typeof fetcher !== 'function' || !isDeepSeekAiGatewayRoute(gateway)) {
     throw new TypeError('Invalid text model configuration');
   }
   const authorization = `Bearer ${apiKey}`;
+  const gatewayAuthorization = `Bearer ${gateway.token}`;
+  const endpoint = `https://gateway.ai.cloudflare.com/v1/${gateway.accountId}/${gateway.gatewayId}/deepseek/responses`;
 
   return {
     async estimate(inputRequest, signal) {
@@ -175,11 +197,12 @@ export function createDeepSeekTextAdapter(
       }, PROVIDER_TIMEOUT_MS);
 
       try {
-        const response = await fetcher(ENDPOINT, {
+        const response = await fetcher(endpoint, {
           method: 'POST',
           redirect: 'error',
           headers: {
             authorization,
+            'cf-aig-authorization': gatewayAuthorization,
             'content-type': 'application/json',
           },
           body: JSON.stringify(requestBody(request)),

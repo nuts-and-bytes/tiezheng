@@ -29,6 +29,11 @@ import {
 } from './textHandler';
 
 const ACCOUNT_KEY = 'a'.repeat(64);
+const AI_GATEWAY_ROUTE = Object.freeze({
+  accountId: '0123456789abcdef0123456789abcdef',
+  gatewayId: 'tiezheng-text-ai',
+  token: 'test-cloudflare-ai-gateway-token',
+});
 const NOW = Date.parse('2026-08-21T12:00:00.000Z');
 const LEASE_ID = '11111111-1111-4111-8111-111111111111';
 const CACHE = {
@@ -74,6 +79,11 @@ function configuredEnv(overrides: Partial<GatewayEnv> = {}): GatewayEnv {
     PHOTO_AI_MONTHLY_BUDGET_MICROS: '50000000',
     ARK_API_KEY: 'test-ark-key',
     DEEPSEEK_API_KEY: 'test-deepseek-key',
+    ...({
+      CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID: AI_GATEWAY_ROUTE.accountId,
+      CLOUDFLARE_AI_GATEWAY_ID: AI_GATEWAY_ROUTE.gatewayId,
+      CLOUDFLARE_AI_GATEWAY_TOKEN: AI_GATEWAY_ROUTE.token,
+    } as unknown as Partial<GatewayEnv>),
     PHOTO_AI_CACHE_AES_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     PHOTO_AI_COORDINATOR: {
       getByName: vi.fn(),
@@ -272,6 +282,10 @@ describe('text gateway configuration and JSON firewall', () => {
     ['non-canonical monthly budget', (env: GatewayEnv) => { env.PHOTO_AI_MONTHLY_BUDGET_MICROS = '050000000'; }, {}],
     ['blank API key', (env: GatewayEnv) => { env.DEEPSEEK_API_KEY = '   '; }, {}],
     ['newline API key', (env: GatewayEnv) => { env.DEEPSEEK_API_KEY = 'key\nleak'; }, {}],
+    ['missing AI Gateway account', (env: GatewayEnv) => { delete (env as unknown as Record<string, unknown>).CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID; }, {}],
+    ['invalid AI Gateway account', (env: GatewayEnv) => { (env as unknown as Record<string, unknown>).CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID = 'not-an-account'; }, {}],
+    ['invalid AI Gateway name', (env: GatewayEnv) => { (env as unknown as Record<string, unknown>).CLOUDFLARE_AI_GATEWAY_ID = '../other'; }, {}],
+    ['blank AI Gateway token', (env: GatewayEnv) => { (env as unknown as Record<string, unknown>).CLOUDFLARE_AI_GATEWAY_TOKEN = '   '; }, {}],
     ['invalid cache key', (env: GatewayEnv) => { env.PHOTO_AI_CACHE_AES_KEY = 'not-a-key'; }, {}],
     ['missing coordinator', (env: GatewayEnv) => { delete (env as unknown as Record<string, unknown>).PHOTO_AI_COORDINATOR; }, {}],
     ['wrong authoritative budget', undefined, { monthlyBudgetMicros: GATEWAY_LIMITS.monthlyBudgetMicros - 1 }],
@@ -786,6 +800,10 @@ describe('text estimate coordination', () => {
       candidates: [{ id: 'text-candidate-1' }],
     });
     expect(JSON.stringify(result)).not.toContain(textAiRequestFixture.description);
+    expect(harness.createModelAdapter).toHaveBeenCalledWith(
+      'test-deepseek-key',
+      AI_GATEWAY_ROUTE,
+    );
     expect(harness.coordinator.reserve).toHaveBeenCalledWith({
       channel: 'text',
       accountKey: ACCOUNT_KEY,

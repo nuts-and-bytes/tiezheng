@@ -89,6 +89,7 @@ jobs:
           TEXT_AI_USER_2_STATUS_FILE: ${{ runner.temp }}/text-ai-preview-user-2-status-${{ github.run_id }}-${{ github.run_attempt }}.json
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_AI_GATEWAY_TOKEN: ${{ secrets.CLOUDFLARE_AI_GATEWAY_TOKEN }}
           TEXT_AI_USER_1_ACCESS_CODE_PEPPER: ${{ secrets.TEXT_AI_USER_1_ACCESS_CODE_PEPPER }}
           TEXT_AI_USER_1_ACCESS_CODE_DIGEST: ${{ secrets.TEXT_AI_USER_1_ACCESS_CODE_DIGEST }}
           TEXT_AI_USER_2_ACCESS_CODE_PEPPER: ${{ secrets.TEXT_AI_USER_2_ACCESS_CODE_PEPPER }}
@@ -513,6 +514,16 @@ jobs:
           ) {
             throw new Error('invalid worker secret');
           }
+          const aiGatewayToken = process.env.CLOUDFLARE_AI_GATEWAY_TOKEN;
+          if (
+            typeof aiGatewayToken !== 'string'
+            || aiGatewayToken.length === 0
+            || aiGatewayToken.length > 4096
+            || aiGatewayToken.trim() !== aiGatewayToken
+            || /\p{Cc}/u.test(aiGatewayToken)
+          ) {
+            throw new Error('invalid worker secret');
+          }
           const aesKey = process.env.PHOTO_AI_CACHE_AES_KEY;
           if (
             typeof aesKey !== 'string'
@@ -532,6 +543,7 @@ jobs:
           }
           const secretFile = Object.freeze({
             DEEPSEEK_API_KEY: deepseekKey,
+            CLOUDFLARE_AI_GATEWAY_TOKEN: aiGatewayToken,
             PHOTO_AI_CACHE_AES_KEY: aesKey,
           });
           await writeFile(path, `${JSON.stringify(secretFile)}\n`, { flag: 'wx', mode: 0o600 });
@@ -544,7 +556,7 @@ jobs:
           }
 
           deploy_worker_enabled() {
-            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_DIAGNOSTICS_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:true" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:deepseek-v4-flash" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID" --var "CLOUDFLARE_AI_GATEWAY_ID:tiezheng-text-ai" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_DIAGNOSTICS_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:true" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:deepseek-v4-flash" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
           }
 
           deploy_pages_preview() {
