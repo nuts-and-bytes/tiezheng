@@ -7,9 +7,9 @@ const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 const WORKFLOW_PATH = resolve('.github/workflows/text-ai-preview.yml');
 const MAX_WORKFLOW_BYTES = 1_048_576;
 const EXPECTED_DISPATCH_SHA256 =
-  '3669a359be89c2dfd0298811986d731f4cb894b3baf4d1207e37aef9f13020b3';
+  '355acdad3549e82a2eee6795a10b4413b9d5ca2f39bc9e2374d3b556337056b1';
 const EXPECTED_OPERATION_CASE_SHA256 =
-  'ce301cfb0c26710bc3ed5c6a793aa20738c0b320572ad878ab2ec15f7d8e30c5';
+  '6d3907e97f14b9f92407e1e52a2cff8f18695a79bb49af101b532b6140f90339';
 const OPERATION_CHOICES = Object.freeze([
   'preflight',
   'deploy-disabled',
@@ -17,6 +17,7 @@ const OPERATION_CHOICES = Object.freeze([
   'enable-admin-preview',
   'status',
   'deploy-diagnostics',
+  'probe-connectivity',
   'enable-second-account',
   'disable-account',
   'disable-all',
@@ -57,6 +58,7 @@ const EXPECTED_DISPATCH_ENV = Object.freeze(new Map([
   ['TEXT_AI_PREFLIGHT_FILE', '${{ runner.temp }}/text-ai-preview-preflight-${{ github.run_id }}-${{ github.run_attempt }}.json'],
   ['TEXT_AI_USER_1_STATUS_FILE', '${{ runner.temp }}/text-ai-preview-user-1-status-${{ github.run_id }}-${{ github.run_attempt }}.json'],
   ['TEXT_AI_USER_2_STATUS_FILE', '${{ runner.temp }}/text-ai-preview-user-2-status-${{ github.run_id }}-${{ github.run_attempt }}.json'],
+  ['TEXT_AI_CONNECTIVITY_PROBE_FILE', '${{ runner.temp }}/text-ai-preview-connectivity-${{ github.run_id }}-${{ github.run_attempt }}.json'],
   ['CLOUDFLARE_ACCOUNT_ID', '${{ vars.CLOUDFLARE_ACCOUNT_ID }}'],
   ...SECRET_NAMES.map((name) => [name, `\${{ secrets.${name} }}`]),
 ]));
@@ -242,7 +244,7 @@ function verifyDispatch(source) {
     sha256(dispatch) !== EXPECTED_DISPATCH_SHA256
     || sha256(operationCase) !== EXPECTED_OPERATION_CASE_SHA256
     || !dispatch.startsWith('set -euo pipefail\numask 077\n')
-    || count(dispatch, 'trap cleanup_preview_temp_files EXIT') !== 1
+    || count(dispatch, 'trap cleanup_preview_dispatch EXIT') !== 1
     || count(dispatch, '# REAL_TEXT_AI_REQUEST_BUDGET: 1') !== 1
     || count(dispatch, '# NO_REAL_MEAL_REQUEST_IN_WORKFLOW') !== 1
   ) {
@@ -276,6 +278,24 @@ function verifyDispatch(source) {
   ) {
     fail();
   }
+  const probeStart = operationCase.indexOf('probe-connectivity)');
+  const probeEnd = operationCase.indexOf('enable-second-account)', probeStart);
+  const probe = operationCase.slice(probeStart, probeEnd);
+  if (
+    probeStart === -1
+    || probeEnd === -1
+    || count(probe, 'PROBE_DEEPSEEK_CONNECTIVITY_NO_MODEL') !== 1
+    || count(probe, 'deploy_worker_connectivity_probe') !== 1
+    || count(probe, 'invoke-admin --operation=probe-deepseek-connectivity --target=user-1') !== 1
+    || count(probe, 'assert_connectivity_probe_file') !== 1
+    || count(probe, 'deploy_worker_enabled') !== 1
+    || probe.includes('/api/nutrition/text/estimate')
+    || probe.includes('/responses')
+    || probe.includes('enable-account')
+    || probe.includes('enable-text-global')
+  ) {
+    fail();
+  }
   for (const forbidden of [
     'set -x',
     'set -eux',
@@ -301,6 +321,8 @@ function verifyFixedRuntime(source) {
     '--branch=text-ai-preview --commit-hash="$GITHUB_SHA"',
     'TEXT_AI_DIAGNOSTICS_ENABLED:false',
     'TEXT_AI_DIAGNOSTICS_ENABLED:true',
+    'TEXT_AI_CONNECTIVITY_PROBE_ENABLED:false',
+    'TEXT_AI_CONNECTIVITY_PROBE_ENABLED:true',
     'TEXT_AI_MAX_PROVIDER_ATTEMPTS:1',
     'PHOTO_AI_GATEWAY_ENABLED:false',
     'TEXT_AI_MODEL:deepseek-v4-flash',
@@ -318,7 +340,10 @@ function verifyFixedRuntime(source) {
     dryRun.length === 0
     || count(dryRun, '--dry-run') !== 1
     || count(dryRun, 'TEXT_AI_DIAGNOSTICS_ENABLED:false') !== 1
+    || count(dryRun, 'TEXT_AI_CONNECTIVITY_PROBE_ENABLED:false') !== 1
+    || dryRun.includes('TEXT_AI_CONNECTIVITY_PROBE_ENABLED:true')
     || dryRun.includes('TEXT_AI_DIAGNOSTICS_ENABLED:true')
+    || count(source, 'TEXT_AI_CONNECTIVITY_PROBE_ENABLED:true') !== 1
     || source.includes('--branch=main')
     || source.includes('/api/nutrition/text/estimate')
     || source.includes('ark.cn')

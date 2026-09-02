@@ -10,6 +10,7 @@ import {
   type TextAiAdminStatus,
   type TextAiAdminTarget,
   type TextAiAdminWorkerRequest,
+  type TextAiConnectivityResult,
 } from './textAiAdminContract';
 
 const INVALID_CONTRACT = 'Invalid text admin contract';
@@ -19,6 +20,7 @@ const RESET_AT = '2026-08-25T00:00:00.000Z';
 
 const OPERATIONS = [
   'status',
+  'probe-deepseek-connectivity',
   'enable-text-global',
   'disable-text-global',
   'enable-account',
@@ -32,6 +34,16 @@ const FAILURE_CODES = [
   'operation-conflict',
   'service-disabled',
 ] as const;
+
+const CONNECTIVITY_RESULTS = [
+  'http-2xx',
+  'http-3xx',
+  'http-4xx',
+  'http-5xx',
+  'http-other',
+  'timeout',
+  'fetch-rejected',
+] as const satisfies readonly TextAiConnectivityResult[];
 
 function adminRequest(
   operation: TextAiAdminOperation = 'status',
@@ -67,12 +79,18 @@ function adminStatus(): TextAiAdminStatus {
   };
 }
 
-function successResponse(): Extract<TextAiAdminResponse, { ok: true }> {
+function successResponse(): Extract<TextAiAdminResponse, { status: TextAiAdminStatus }> {
   return {
     ok: true,
     operationId: OPERATION_ID,
     status: adminStatus(),
   };
+}
+
+function connectivityResponse(
+  connectivity: TextAiConnectivityResult = 'http-2xx',
+): TextAiAdminResponse {
+  return { ok: true, operationId: OPERATION_ID, connectivity };
 }
 
 function expectInvalid(
@@ -108,6 +126,7 @@ describe('fixed text AI admin contract', () => {
     expect(TEXT_AI_ADMIN_SCHEMA_VERSION).toBe(1);
     expectTypeOf<TextAiAdminOperation>().toEqualTypeOf<
       | 'status'
+      | 'probe-deepseek-connectivity'
       | 'enable-text-global'
       | 'disable-text-global'
       | 'enable-account'
@@ -138,6 +157,7 @@ describe('fixed text AI admin contract', () => {
     }>();
     expectTypeOf<TextAiAdminResponse>().toEqualTypeOf<
       | { ok: true; operationId: string; status: TextAiAdminStatus }
+      | { ok: true; operationId: string; connectivity: TextAiConnectivityResult }
       | {
         ok: false;
         code:
@@ -267,12 +287,30 @@ describe('parseTextAiAdminResponse', () => {
     expect(parsed).toEqual(input);
     expect(parsed).not.toBe(input);
     expect(parsed.ok).toBe(true);
-    if (!parsed.ok) throw new Error('expected success response');
+    if (!parsed.ok || !('status' in parsed)) throw new Error('expected status response');
     expect(parsed.status).not.toBe(input.status);
     input.status.accountRemaining = 0;
     expect(parsed.status.accountRemaining).toBe(10);
     expect(JSON.stringify(parsed)).not.toContain('@');
   });
+
+  test.each(CONNECTIVITY_RESULTS)(
+    'accepts only the redacted connectivity result %s',
+    (connectivity) => {
+      const input = connectivityResponse(connectivity);
+      expect(parseTextAiAdminResponse(input)).toEqual(input);
+    },
+  );
+
+  test.each(['', 'http-200', 'dns-error', 'private detail', null])(
+    'rejects invalid connectivity detail %#',
+    (connectivity) => {
+      expectInvalid(parseTextAiAdminResponse, {
+        ...connectivityResponse(),
+        connectivity,
+      });
+    },
+  );
 
   test.each(FAILURE_CODES)('accepts only the fixed failure code %s', (code) => {
     const input = { ok: false as const, code };

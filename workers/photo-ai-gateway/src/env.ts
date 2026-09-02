@@ -5,6 +5,7 @@ export interface GatewayEnv {
   PHOTO_AI_MODEL: string;
   TEXT_AI_ADMIN_ENABLED: string;
   TEXT_AI_DIAGNOSTICS_ENABLED?: string;
+  TEXT_AI_CONNECTIVITY_PROBE_ENABLED?: string;
   TEXT_AI_GATEWAY_ENABLED: string;
   TEXT_AI_MAX_PROVIDER_ATTEMPTS: string;
   TEXT_AI_MODEL: string;

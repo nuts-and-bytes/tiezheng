@@ -371,6 +371,29 @@ describe('text admin Pages private proxy', () => {
     expectSecure(response);
   });
 
+  test('forwards only the redacted DeepSeek connectivity category', async () => {
+    const probeRequest: TextAiAdminWorkerRequest = {
+      ...workerRequest,
+      operation: 'probe-deepseek-connectivity',
+    };
+    const probeResponse = {
+      ok: true as const,
+      operationId: OPERATION_ID,
+      connectivity: 'http-2xx' as const,
+    };
+    const gatewayFetch = vi.fn(async () => json(probeResponse));
+
+    const response = await proxyTextAdminRequest(
+      env(gatewayFetch),
+      USER_1_ACCOUNT_KEY,
+      probeRequest,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(probeResponse);
+    expectSecure(response);
+  });
+
   test('preserves only a strict operation conflict as 409', async () => {
     const gatewayFetch = vi.fn(async () => json({ ok: false, code: 'operation-conflict' }, 409));
     const response = await proxyTextAdminRequest(
