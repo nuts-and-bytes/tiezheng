@@ -23,6 +23,7 @@ import {
   createDeepSeekTextAdapter,
   TextModelAdapterError,
   type TextModelAdapter,
+  type TextProviderFailureKind,
 } from './deepseekTextAdapter';
 import { parseDoubaoTextEstimate } from './doubaoTextSchema';
 import type { GatewayEnv } from './env';
@@ -439,7 +440,12 @@ function normalizedAdapter(value: unknown): TextModelAdapter {
 
 function normalizedAdapterError(
   value: unknown,
-): { code: CoordinatorFailureCode; retryable: boolean; providerHttpStatus: number | null } | null {
+): {
+  code: CoordinatorFailureCode;
+  retryable: boolean;
+  providerHttpStatus: number | null;
+  providerFailureKind: TextProviderFailureKind | null;
+} | null {
   try {
     if (
       !(value instanceof TextModelAdapterError)
@@ -454,6 +460,7 @@ function normalizedAdapterError(
       'code',
       'retryable',
       'providerHttpStatus',
+      'providerFailureKind',
     ]);
     const snapshot = new Map<string, unknown>();
     for (const key of Reflect.ownKeys(value)) {
@@ -473,6 +480,7 @@ function normalizedAdapterError(
       || !snapshot.has('code')
       || !snapshot.has('retryable')
       || !snapshot.has('providerHttpStatus')
+      || !snapshot.has('providerFailureKind')
       || snapshot.get('name') !== 'TextModelAdapterError'
       || snapshot.get('message') !== 'Text model request failed'
       || typeof snapshot.get('retryable') !== 'boolean'
@@ -497,7 +505,25 @@ function normalizedAdapterError(
       return null;
     }
     if (code !== 'provider-unavailable' && providerHttpStatus !== null) return null;
-    return { code, retryable, providerHttpStatus };
+    const providerFailureKind = snapshot.get('providerFailureKind');
+    if (
+      providerFailureKind !== null
+      && providerFailureKind !== 'network-connection-lost'
+      && providerFailureKind !== 'fetch-rejected'
+      && providerFailureKind !== 'response-read-failed'
+      && providerFailureKind !== 'http-status'
+    ) {
+      return null;
+    }
+    if (code !== 'provider-unavailable' && providerFailureKind !== null) return null;
+    if (providerHttpStatus !== null && providerFailureKind !== 'http-status') return null;
+    if (providerFailureKind === 'http-status' && providerHttpStatus === null) return null;
+    return {
+      code,
+      retryable,
+      providerHttpStatus,
+      providerFailureKind: providerFailureKind as TextProviderFailureKind | null,
+    };
   } catch {
     return null;
   }
@@ -1087,6 +1113,7 @@ export async function handleTextAiRequest(
         diagnostic.emit('provider-failed', {
           code: adapterError?.code ?? 'provider-unavailable',
           providerHttpStatus: adapterError?.providerHttpStatus ?? undefined,
+          providerFailureKind: adapterError?.providerFailureKind ?? undefined,
         });
         return await settleFailure(adapterError?.code ?? 'provider-unavailable', null);
       }
@@ -1094,6 +1121,7 @@ export async function handleTextAiRequest(
         diagnostic.emit('provider-failed', {
           code: adapterError.code,
           providerHttpStatus: adapterError.providerHttpStatus ?? undefined,
+          providerFailureKind: adapterError.providerFailureKind ?? undefined,
         });
         return await settleFailure(adapterError.code, null);
       }
@@ -1127,6 +1155,7 @@ export async function handleTextAiRequest(
           code,
           aborted: providerSignal.aborted,
           providerHttpStatus: adapterError?.providerHttpStatus ?? undefined,
+          providerFailureKind: adapterError?.providerFailureKind ?? undefined,
         });
         return await settleFailure(code, null);
       }

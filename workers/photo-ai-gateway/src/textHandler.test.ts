@@ -1753,7 +1753,12 @@ describe('text estimate privacy-safe diagnostics', () => {
 
   test('records only the provider HTTP status when the adapter rejects the request', async () => {
     const harness = textHandlerHarness({
-      modelResults: [new TextModelAdapterError('provider-unavailable', false, 401)],
+      modelResults: [new TextModelAdapterError(
+        'provider-unavailable',
+        false,
+        401,
+        'http-status',
+      )],
     });
     (harness.env as GatewayEnv & { TEXT_AI_DIAGNOSTICS_ENABLED: string })
       .TEXT_AI_DIAGNOSTICS_ENABLED = 'true';
@@ -1772,6 +1777,39 @@ describe('text estimate privacy-safe diagnostics', () => {
       stage: 'provider-failed',
       code: 'provider-unavailable',
       providerHttpStatus: 401,
+      providerFailureKind: 'http-status',
+    });
+    expect(JSON.stringify(records)).not.toMatch(
+      /私密餐食描述|description|account|email|access|api.?key|model.?response/i,
+    );
+  });
+
+  test('records only a bounded provider connection category for a fetch failure', async () => {
+    const harness = textHandlerHarness({
+      modelResults: [new TextModelAdapterError(
+        'provider-unavailable',
+        false,
+        null,
+        'network-connection-lost',
+      )],
+    });
+    (harness.env as GatewayEnv & { TEXT_AI_DIAGNOSTICS_ENABLED: string })
+      .TEXT_AI_DIAGNOSTICS_ENABLED = 'true';
+    const records: TextDiagnosticRecord[] = [];
+    vi.spyOn(console, 'log').mockImplementation((record: unknown) => {
+      records.push(structuredClone(record as TextDiagnosticRecord));
+    });
+
+    const response = await harness.run(workerRequest({
+      ...textAiRequestFixture,
+      description: '私密餐食描述',
+    }));
+
+    expect(response.status).toBe(503);
+    expect(records.at(-1)).toMatchObject({
+      stage: 'provider-failed',
+      code: 'provider-unavailable',
+      providerFailureKind: 'network-connection-lost',
     });
     expect(JSON.stringify(records)).not.toMatch(
       /私密餐食描述|description|account|email|access|api.?key|model.?response/i,

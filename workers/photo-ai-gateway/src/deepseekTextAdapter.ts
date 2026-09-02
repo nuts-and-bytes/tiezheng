@@ -32,21 +32,32 @@ export type TextModelAdapterErrorCode =
   | 'provider-unavailable'
   | 'invalid-estimate';
 
+export type TextProviderFailureKind =
+  | 'network-connection-lost'
+  | 'fetch-rejected'
+  | 'response-read-failed'
+  | 'http-status';
+
 export class TextModelAdapterError extends Error {
   readonly code: TextModelAdapterErrorCode;
   readonly retryable: boolean;
   readonly providerHttpStatus: number | null;
+  readonly providerFailureKind: TextProviderFailureKind | null;
 
   constructor(
     code: TextModelAdapterErrorCode,
     retryable: boolean,
     providerHttpStatus: number | null = null,
+    providerFailureKind: TextProviderFailureKind | null = providerHttpStatus === null
+      ? null
+      : 'http-status',
   ) {
     super(ERROR_MESSAGE);
     this.name = 'TextModelAdapterError';
     this.code = code;
     this.retryable = retryable;
     this.providerHttpStatus = providerHttpStatus;
+    this.providerFailureKind = providerFailureKind;
   }
 }
 
@@ -54,8 +65,28 @@ function fail(
   code: TextModelAdapterErrorCode,
   retryable = false,
   providerHttpStatus: number | null = null,
+  providerFailureKind: TextProviderFailureKind | null = providerHttpStatus === null
+    ? null
+    : 'http-status',
 ): never {
-  throw new TextModelAdapterError(code, retryable, providerHttpStatus);
+  throw new TextModelAdapterError(code, retryable, providerHttpStatus, providerFailureKind);
+}
+
+function fetchFailureKind(error: unknown): TextProviderFailureKind {
+  try {
+    if (!(error instanceof Error)) return 'fetch-rejected';
+    const descriptor = Object.getOwnPropertyDescriptor(error, 'message');
+    if (
+      descriptor !== undefined
+      && Object.hasOwn(descriptor, 'value')
+      && descriptor.value === 'Network connection lost.'
+    ) {
+      return 'network-connection-lost';
+    }
+  } catch {
+    // Unknown provider failures stay in one fixed fallback category.
+  }
+  return 'fetch-rejected';
 }
 
 function retryableStatus(status: number | null): boolean {
@@ -175,12 +206,19 @@ export function createDeepSeekTextAdapter(
         if (error instanceof TextModelAdapterError) throw error;
         if (error instanceof ProviderResponseError) {
           if (error.kind === 'http-status') {
-            return fail('provider-unavailable', retryableStatus(error.status), error.status);
+            return fail(
+              'provider-unavailable',
+              retryableStatus(error.status),
+              error.status,
+              'http-status',
+            );
           }
-          if (error.kind === 'read-failed') return fail('provider-unavailable');
+          if (error.kind === 'read-failed') {
+            return fail('provider-unavailable', false, null, 'response-read-failed');
+          }
           return fail('invalid-estimate');
         }
-        return fail('provider-unavailable');
+        return fail('provider-unavailable', false, null, fetchFailureKind(error));
       } finally {
         clearTimeout(timer);
         signal.removeEventListener('abort', abortFromCaller);

@@ -479,6 +479,24 @@ describe('DeepSeek text adapter contract', () => {
     await expect(promise).rejects.not.toThrow('secret');
   });
 
+  test.each([
+    [new TypeError('Network connection lost.'), 'network-connection-lost'],
+    [new Error('secret-fetch-url-and-key'), 'fetch-rejected'],
+  ])('classifies a rejected fetch without retaining its message', async (error, providerFailureKind) => {
+    const fetcher = vi.fn<typeof fetch>(async () => { throw error; });
+    const promise = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(
+      textRequest(),
+      new AbortController().signal,
+    );
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'provider-unavailable',
+      providerFailureKind,
+      message: 'Text model request failed',
+    });
+    await expect(promise).rejects.not.toThrow(error.message);
+  });
+
   test('maps body read failure to unavailable and malformed/oversized bodies to invalid-estimate', async () => {
     const failingStream = new ReadableStream<Uint8Array>({
       start(controller) {

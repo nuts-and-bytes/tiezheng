@@ -35,6 +35,7 @@ describe('text AI privacy-safe diagnostics', () => {
     trace.emit('provider-failed', {
       code: 'provider-unavailable',
       providerHttpStatus: 401,
+      providerFailureKind: 'http-status',
     });
 
     expect(dependencies.records).toEqual([
@@ -60,6 +61,7 @@ describe('text AI privacy-safe diagnostics', () => {
         elapsedMs: 25,
         code: 'provider-unavailable',
         providerHttpStatus: 401,
+        providerFailureKind: 'http-status',
       },
     ]);
     expect(Object.keys(dependencies.records[0] ?? {})).toEqual([
@@ -71,6 +73,25 @@ describe('text AI privacy-safe diagnostics', () => {
     expect(JSON.stringify(dependencies.records)).not.toMatch(
       /description|account|email|access|api.?key|model.?response/i,
     );
+  });
+
+  test('drops an unrecognized provider failure category', () => {
+    const dependencies = harness();
+    const trace = createTextDiagnosticTrace(true, dependencies);
+
+    trace.emit('provider-failed', {
+      code: 'provider-unavailable',
+      providerFailureKind: 'secret-fetch-url-and-key',
+    } as never);
+
+    expect(dependencies.records).toEqual([{
+      event: 'tiezheng.text-ai.lifecycle',
+      traceId: TRACE_ID,
+      stage: 'provider-failed',
+      elapsedMs: 0,
+      code: 'provider-unavailable',
+    }]);
+    expect(JSON.stringify(dependencies.records)).not.toContain('secret-fetch-url-and-key');
   });
 
   test('disabled diagnostics do not touch clocks, randomness, or output', () => {

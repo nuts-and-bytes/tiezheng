@@ -1,4 +1,5 @@
 import type { TextAiErrorCode } from '../../../src/lib/textAiContract';
+import type { TextProviderFailureKind } from './deepseekTextAdapter';
 
 export type TextDiagnosticStage =
   | 'request-received'
@@ -37,6 +38,7 @@ export interface TextDiagnosticDetails {
   reservationKind?: TextDiagnosticReservationKind;
   aborted?: boolean;
   providerHttpStatus?: number;
+  providerFailureKind?: TextProviderFailureKind;
 }
 
 export interface TextDiagnosticRecord {
@@ -48,6 +50,7 @@ export interface TextDiagnosticRecord {
   reservationKind?: TextDiagnosticReservationKind;
   aborted?: boolean;
   providerHttpStatus?: number;
+  providerFailureKind?: TextProviderFailureKind;
 }
 
 export interface TextDiagnosticTrace {
@@ -99,6 +102,18 @@ function safeProviderHttpStatus(value: unknown): number | null {
   return value;
 }
 
+function safeProviderFailureKind(value: unknown): TextProviderFailureKind | null {
+  switch (value) {
+    case 'network-connection-lost':
+    case 'fetch-rejected':
+    case 'response-read-failed':
+    case 'http-status':
+      return value;
+    default:
+      return null;
+  }
+}
+
 export function createTextDiagnosticTrace(
   enabled: boolean,
   dependencies: TextDiagnosticDependencies = TEXT_DIAGNOSTIC_RUNTIME,
@@ -137,6 +152,8 @@ export function createTextDiagnosticTrace(
         if (details.aborted !== undefined) record.aborted = details.aborted;
         const providerHttpStatus = safeProviderHttpStatus(details.providerHttpStatus);
         if (providerHttpStatus !== null) record.providerHttpStatus = providerHttpStatus;
+        const providerFailureKind = safeProviderFailureKind(details.providerFailureKind);
+        if (providerFailureKind !== null) record.providerFailureKind = providerFailureKind;
         dependencies.write(Object.freeze(record));
       } catch {
         // Diagnostics must never affect request handling.
