@@ -2,7 +2,6 @@ import {
   parseTextAiAdminResponse,
   parseTextAiAdminWorkerRequest,
   type TextAiAdminResponse,
-  type TextAiConnectivityResult,
   type TextAiAdminWorkerRequest,
 } from '../../../src/lib/textAiAdminContract';
 import { stableJson } from '../../../src/lib/stableJson';
@@ -10,16 +9,10 @@ import type { GatewayEnv } from './env';
 
 export interface TextAdminDependencies {
   now(): number;
-  fetcher?: typeof fetch;
-  setTimeout?: (callback: () => void, delay: number) => unknown;
-  clearTimeout?: (timer: unknown) => void;
 }
 
 export const TEXT_ADMIN_RUNTIME: TextAdminDependencies = Object.freeze({
   now: Date.now,
-  fetcher: fetch,
-  setTimeout: (callback: () => void, delay: number) => setTimeout(callback, delay),
-  clearTimeout: (timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>),
 });
 
 const SECURITY_HEADERS = {
@@ -35,8 +28,6 @@ type InternalAdminDiagnostic =
   | 'coordinator-rpc'
   | 'coordinator-result';
 const ADMIN_PATH = '/internal/text-admin';
-const DEEPSEEK_MODELS_ENDPOINT = 'https://api.deepseek.com/models';
-const CONNECTIVITY_PROBE_TIMEOUT_MS = 8_000;
 const ACCOUNT_KEY = /^[0-9a-f]{64}$/;
 const MAX_BODY_BYTES = 2_048;
 const MAX_DATE_MS = 8_640_000_000_000_000;
@@ -75,94 +66,6 @@ function serviceDisabled(diagnostic: InternalAdminDiagnostic): Response {
       [INTERNAL_DIAGNOSTIC_HEADER]: diagnostic,
     },
   });
-}
-
-function validDeepSeekApiKey(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.length > 0
-    && value.length <= 4_096
-    && value.trim() === value
-    && !/[\r\n]/u.test(value);
-}
-
-function httpConnectivity(status: number): TextAiConnectivityResult {
-  if (status >= 200 && status <= 299) return 'http-2xx';
-  if (status >= 300 && status <= 399) return 'http-3xx';
-  if (status >= 400 && status <= 499) return 'http-4xx';
-  if (status >= 500 && status <= 599) return 'http-5xx';
-  return 'http-other';
-}
-
-async function cancelProviderBody(response: Response): Promise<void> {
-  try {
-    await response.body?.cancel();
-  } catch {
-    // The probe never reads provider content; cancellation is best-effort.
-  }
-}
-
-async function handleDeepSeekConnectivityProbe(
-  operationId: string,
-  env: GatewayEnv,
-  dependencies: TextAdminDependencies,
-): Promise<Response> {
-  if (
-    env.TEXT_AI_CONNECTIVITY_PROBE_ENABLED !== 'true'
-    || !validDeepSeekApiKey(env.DEEPSEEK_API_KEY)
-  ) {
-    return serviceDisabled('configuration');
-  }
-  const fetcher = dependencies.fetcher ?? fetch;
-  const setDeadline = dependencies.setTimeout ?? ((callback, delay) => setTimeout(callback, delay));
-  const clearDeadline = dependencies.clearTimeout
-    ?? ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
-  if (
-    typeof fetcher !== 'function'
-    || typeof setDeadline !== 'function'
-    || typeof clearDeadline !== 'function'
-  ) {
-    return serviceDisabled('runtime');
-  }
-
-  const controller = new AbortController();
-  let timedOut = false;
-  let timer: unknown;
-  let timerScheduled = false;
-  try {
-    timer = setDeadline(() => {
-      timedOut = true;
-      controller.abort();
-    }, CONNECTIVITY_PROBE_TIMEOUT_MS);
-    timerScheduled = true;
-    const response = await fetcher(DEEPSEEK_MODELS_ENDPOINT, {
-      method: 'GET',
-      redirect: 'manual',
-      headers: { authorization: `Bearer ${env.DEEPSEEK_API_KEY}` },
-      signal: controller.signal,
-    });
-    if (!(response instanceof Response)) return serviceDisabled('runtime');
-    if (timedOut) {
-      await cancelProviderBody(response);
-      return jsonResponse({ ok: true, operationId, connectivity: 'timeout' }, 200);
-    }
-    const connectivity = httpConnectivity(response.status);
-    await cancelProviderBody(response);
-    return jsonResponse({ ok: true, operationId, connectivity }, 200);
-  } catch {
-    return jsonResponse({
-      ok: true,
-      operationId,
-      connectivity: timedOut ? 'timeout' : 'fetch-rejected',
-    }, 200);
-  } finally {
-    if (timerScheduled) {
-      try {
-        clearDeadline(timer);
-      } catch {
-        // Timer cleanup cannot alter the fixed, redacted probe result.
-      }
-    }
-  }
 }
 
 function isAdminBindingConfigured(env: GatewayEnv): boolean {
@@ -298,9 +201,6 @@ export async function handleTextAdminRequest(
     return invalidRequest();
   }
   if (adminRequest.accountKey !== accountKey) return invalidRequest();
-  if (adminRequest.operation === 'probe-deepseek-connectivity') {
-    return handleDeepSeekConnectivityProbe(adminRequest.operationId, env, dependencies);
-  }
 
   let fingerprint: string;
   let now: number;

@@ -60,7 +60,6 @@ test('locks the exact operation choices including rotate-user-code', () => {
     'enable-admin-preview',
     'status',
     'deploy-diagnostics',
-    'probe-connectivity',
     'enable-second-account',
     'disable-account',
     'disable-all',
@@ -175,22 +174,21 @@ test('pins the source commit, fixed Pages branch, disabled photo path, and one p
 test('enables text diagnostics only for the enabled Worker deployment', () => {
   const disabledStart = source.indexOf('          deploy_worker_disabled() {');
   const enabledStart = source.indexOf('          deploy_worker_enabled() {');
-  const probeStart = source.indexOf('          deploy_worker_connectivity_probe() {');
   const pagesStart = source.indexOf('          deploy_pages_preview() {');
   assert.notEqual(disabledStart, -1);
   assert.notEqual(enabledStart, -1);
-  assert.notEqual(probeStart, -1);
   assert.notEqual(pagesStart, -1);
   const disabled = source.slice(disabledStart, enabledStart);
-  const enabled = source.slice(enabledStart, probeStart);
+  const enabled = source.slice(enabledStart, pagesStart);
 
   assert.equal(disabled.includes('TEXT_AI_DIAGNOSTICS_ENABLED:false'), true);
   assert.equal(disabled.includes('TEXT_AI_DIAGNOSTICS_ENABLED:true'), false);
   assert.equal(enabled.includes('TEXT_AI_DIAGNOSTICS_ENABLED:true'), true);
   assert.equal(enabled.includes('TEXT_AI_DIAGNOSTICS_ENABLED:false'), false);
-  expectPolicyFailure(source.replace(
-    enabled,
-    enabled.replace('TEXT_AI_DIAGNOSTICS_ENABLED:true', 'TEXT_AI_DIAGNOSTICS_ENABLED:false'),
+  expectPolicyFailure(replaceOnce(
+    source,
+    'TEXT_AI_DIAGNOSTICS_ENABLED:true',
+    'TEXT_AI_DIAGNOSTICS_ENABLED:false',
   ));
 });
 
@@ -210,7 +208,7 @@ test('keeps text diagnostics disabled during the Worker dry-run', () => {
 });
 
 test('deploy-diagnostics only redeploys an already-enabled Worker without admin mutation', () => {
-  const deploy = branch(source, 'deploy-diagnostics', 'probe-connectivity');
+  const deploy = branch(source, 'deploy-diagnostics', 'enable-second-account');
   const stages = [...deploy.matchAll(/^ {14}report_diagnostic_stage '([a-z0-9-]+)'$/gm)]
     .map((match) => match[1]);
   const stageCommands = [
@@ -236,39 +234,6 @@ test('deploy-diagnostics only redeploys an already-enabled Worker without admin 
     "'DEPLOY_TEXT_DIAGNOSTICS'",
     "'DEPLOY_TEXT_DIAGNOSTICS_ANY_STATE'",
   ));
-});
-
-test('probe-connectivity performs one non-model probe and restores the ordinary Worker', () => {
-  const probe = branch(source, 'probe-connectivity', 'enable-second-account');
-  assert.equal(probe.includes("'PROBE_DEEPSEEK_CONNECTIVITY_NO_MODEL'"), true);
-  assert.equal(probe.includes('deploy_worker_connectivity_probe'), true);
-  assert.equal(probe.includes(
-    'invoke-admin --operation=probe-deepseek-connectivity --target=user-1',
-  ), true);
-  assert.equal(probe.includes('assert_connectivity_probe_file'), true);
-  assert.equal(probe.includes('deploy_worker_enabled'), true);
-  assert.equal(probe.includes('/api/nutrition/text/estimate'), false);
-  assert.equal(probe.includes('/responses'), false);
-  assert.equal(probe.includes('enable-account'), false);
-  assert.equal(probe.includes('enable-text-global'), false);
-});
-
-test('connectivity probe switch is true only in the temporary Worker deployment', () => {
-  const probeStart = source.indexOf('          deploy_worker_connectivity_probe() {');
-  const pagesStart = source.indexOf('          deploy_pages_preview() {');
-  assert.notEqual(probeStart, -1);
-  assert.notEqual(pagesStart, -1);
-  const probeDeployment = source.slice(probeStart, pagesStart);
-  assert.equal(probeDeployment.includes('TEXT_AI_CONNECTIVITY_PROBE_ENABLED:true'), true);
-  assert.equal(probeDeployment.includes('TEXT_AI_CONNECTIVITY_PROBE_ENABLED:false'), false);
-  assert.equal(
-    source.slice(0, probeStart).includes('TEXT_AI_CONNECTIVITY_PROBE_ENABLED:true'),
-    false,
-  );
-  assert.equal(
-    source.slice(pagesStart).includes('TEXT_AI_CONNECTIVITY_PROBE_ENABLED:true'),
-    false,
-  );
 });
 
 test('rejects secret exfiltration, tracing, artifacts, and arbitrary dispatch commands', () => {

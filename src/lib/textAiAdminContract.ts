@@ -2,7 +2,6 @@ export const TEXT_AI_ADMIN_SCHEMA_VERSION = 1 as const;
 
 export type TextAiAdminOperation =
   | 'status'
-  | 'probe-deepseek-connectivity'
   | 'enable-text-global'
   | 'disable-text-global'
   | 'enable-account'
@@ -35,18 +34,8 @@ export interface TextAiAdminStatus {
   resetAt: string;
 }
 
-export type TextAiConnectivityResult =
-  | 'http-2xx'
-  | 'http-3xx'
-  | 'http-4xx'
-  | 'http-5xx'
-  | 'http-other'
-  | 'timeout'
-  | 'fetch-rejected';
-
 export type TextAiAdminResponse =
   | { ok: true; operationId: string; status: TextAiAdminStatus }
-  | { ok: true; operationId: string; connectivity: TextAiConnectivityResult }
   | {
     ok: false;
     code:
@@ -111,24 +100,11 @@ function hasExactKeys(
 function isOperation(value: unknown): value is TextAiAdminOperation {
   return (
     value === 'status' ||
-    value === 'probe-deepseek-connectivity' ||
     value === 'enable-text-global' ||
     value === 'disable-text-global' ||
     value === 'enable-account' ||
     value === 'disable-account' ||
     value === 'delete-account'
-  );
-}
-
-function isConnectivityResult(value: unknown): value is TextAiConnectivityResult {
-  return (
-    value === 'http-2xx' ||
-    value === 'http-3xx' ||
-    value === 'http-4xx' ||
-    value === 'http-5xx' ||
-    value === 'http-other' ||
-    value === 'timeout' ||
-    value === 'fetch-rejected'
   );
 }
 
@@ -311,16 +287,11 @@ export function parseTextAiAdminResponse(
   }
 
   if (ok === true) {
-    const operationId = snapshot.get('operationId');
-    if (!isOperationId(operationId)) return invalidContract();
-    if (hasExactKeys(snapshot, ['ok', 'operationId', 'connectivity'])) {
-      const connectivity = snapshot.get('connectivity');
-      if (!isConnectivityResult(connectivity)) return invalidContract();
-      return { ok: true, operationId, connectivity };
-    }
     if (!hasExactKeys(snapshot, ['ok', 'operationId', 'status'])) {
       return invalidContract();
     }
+    const operationId = snapshot.get('operationId');
+    if (!isOperationId(operationId)) return invalidContract();
     return {
       ok: true,
       operationId,

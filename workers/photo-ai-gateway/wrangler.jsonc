@@ -26,7 +26,6 @@
   "vars": {
     "TEXT_AI_ADMIN_ENABLED": "false",
     "TEXT_AI_DIAGNOSTICS_ENABLED": "false",
-    "TEXT_AI_CONNECTIVITY_PROBE_ENABLED": "false",
     "TEXT_AI_GATEWAY_ENABLED": "false",
     "TEXT_AI_MAX_PROVIDER_ATTEMPTS": "1",
     "TEXT_AI_MODEL": "deepseek-v4-flash",

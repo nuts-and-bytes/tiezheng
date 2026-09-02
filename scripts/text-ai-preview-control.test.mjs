@@ -206,10 +206,6 @@ function adminSuccess(operationId = OPERATION_ID) {
   };
 }
 
-function connectivitySuccess(connectivity = 'http-2xx', operationId = OPERATION_ID) {
-  return { ok: true, operationId, connectivity };
-}
-
 function adminResponse(value = adminSuccess()) {
   return new Response(JSON.stringify(value), {
     status: 200,
@@ -699,33 +695,6 @@ test('invoke-admin sends canonical slot JSON and only HMAC request headers', asy
   assert.deepEqual(result, { operation: 'status', ...adminSuccess().status });
   assert.equal(JSON.stringify(captured).includes('cf-access'), false);
   assert.equal(JSON.stringify(captured).includes('targetEmail'), false);
-});
-
-test('invoke-admin returns only the fixed DeepSeek connectivity category', async () => {
-  const config = loadTextPreviewConfig(validEnv());
-  const result = await invokeTextPreviewAdmin(
-    config,
-    { operation: 'probe-deepseek-connectivity', target: 'user-1' },
-    async () => adminResponse(connectivitySuccess('http-2xx')),
-    { generateOperationId: () => OPERATION_ID, now: () => NOW },
-  );
-
-  assert.deepEqual(result, {
-    operation: 'probe-deepseek-connectivity',
-    connectivity: 'http-2xx',
-  });
-  for (const invalid of [
-    connectivitySuccess(SENSITIVE.adminKey),
-    { ...connectivitySuccess(), private: SENSITIVE.deepseekKey },
-    connectivitySuccess('http-2xx', '2'.repeat(32)),
-  ]) {
-    await expectFixedRejection(() => invokeTextPreviewAdmin(
-      config,
-      { operation: 'probe-deepseek-connectivity', target: 'user-1' },
-      async () => adminResponse(invalid),
-      { generateOperationId: () => OPERATION_ID, now: () => NOW },
-    ));
-  }
 });
 
 test('invoke-admin rejects invalid options and hides signing/fetch/response details', async () => {

@@ -58,7 +58,6 @@ const PREVIEW_TOP_LEVEL_NAMES = new Set([
 ]);
 const ADMIN_OPERATIONS = new Set([
   'status',
-  'probe-deepseek-connectivity',
   'enable-text-global',
   'disable-text-global',
   'enable-account',
@@ -744,35 +743,6 @@ export function parseRedactedAdminResponse(value, expectedOperationId) {
   }
 }
 
-function parseRedactedConnectivityResponse(value, expectedOperationId) {
-  try {
-    if (typeof expectedOperationId !== 'string' || !OPERATION_ID_PATTERN.test(expectedOperationId)) fail();
-    const response = snapshotRecord(value);
-    if (
-      response.size !== 3
-      || response.get('ok') !== true
-      || response.get('operationId') !== expectedOperationId
-    ) {
-      fail();
-    }
-    const connectivity = response.get('connectivity');
-    if (!new Set([
-      'http-2xx',
-      'http-3xx',
-      'http-4xx',
-      'http-5xx',
-      'http-other',
-      'timeout',
-      'fetch-rejected',
-    ]).has(connectivity)) {
-      fail();
-    }
-    return Object.freeze({ connectivity });
-  } catch {
-    fail();
-  }
-}
-
 function cancelBodySilently(body) {
   try {
     const cancelled = body?.cancel();
@@ -995,11 +965,11 @@ export async function invokeTextPreviewAdmin(
       }
     }).catch(() => undefined);
     const response = await waitForAdminDeadline(fetchPromise, controller.signal);
-    const responseBody = await readBoundedAdminJson(response, controller.signal);
-    const result = parsed.operation === 'probe-deepseek-connectivity'
-      ? parseRedactedConnectivityResponse(responseBody, operationId)
-      : parseRedactedAdminResponse(responseBody, operationId);
-    return Object.freeze({ operation: parsed.operation, ...result });
+    const status = parseRedactedAdminResponse(
+      await readBoundedAdminJson(response, controller.signal),
+      operationId,
+    );
+    return Object.freeze({ operation: parsed.operation, ...status });
   } catch {
     fail();
   } finally {

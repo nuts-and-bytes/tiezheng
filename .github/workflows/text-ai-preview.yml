@@ -14,7 +14,6 @@ on:
           - enable-admin-preview
           - status
           - deploy-diagnostics
-          - probe-connectivity
           - enable-second-account
           - disable-account
           - disable-all
@@ -78,7 +77,7 @@ jobs:
         run: npm run verify:text-preview-workflow
       - name: Worker dry-run
         run: |
-          ./node_modules/.bin/wrangler deploy --dry-run --config workers/photo-ai-gateway/wrangler.jsonc --outdir "$RUNNER_TEMP/text-ai-worker-dry-run" --var "TEXT_AI_ADMIN_ENABLED:false" --var "TEXT_AI_DIAGNOSTICS_ENABLED:false" --var "TEXT_AI_CONNECTIVITY_PROBE_ENABLED:false" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:deepseek-v4-flash" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+          ./node_modules/.bin/wrangler deploy --dry-run --config workers/photo-ai-gateway/wrangler.jsonc --outdir "$RUNNER_TEMP/text-ai-worker-dry-run" --var "TEXT_AI_ADMIN_ENABLED:false" --var "TEXT_AI_DIAGNOSTICS_ENABLED:false" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:deepseek-v4-flash" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
       - name: Dispatch fixed operation
         env:
           TEXT_AI_OPERATION: ${{ inputs.operation }}
@@ -88,7 +87,6 @@ jobs:
           TEXT_AI_PREFLIGHT_FILE: ${{ runner.temp }}/text-ai-preview-preflight-${{ github.run_id }}-${{ github.run_attempt }}.json
           TEXT_AI_USER_1_STATUS_FILE: ${{ runner.temp }}/text-ai-preview-user-1-status-${{ github.run_id }}-${{ github.run_attempt }}.json
           TEXT_AI_USER_2_STATUS_FILE: ${{ runner.temp }}/text-ai-preview-user-2-status-${{ github.run_id }}-${{ github.run_attempt }}.json
-          TEXT_AI_CONNECTIVITY_PROBE_FILE: ${{ runner.temp }}/text-ai-preview-connectivity-${{ github.run_id }}-${{ github.run_attempt }}.json
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TEXT_AI_USER_1_ACCESS_CODE_PEPPER: ${{ secrets.TEXT_AI_USER_1_ACCESS_CODE_PEPPER }}
@@ -115,7 +113,6 @@ jobs:
             'TEXT_AI_PREFLIGHT_FILE',
             'TEXT_AI_USER_1_STATUS_FILE',
             'TEXT_AI_USER_2_STATUS_FILE',
-            'TEXT_AI_CONNECTIVITY_PROBE_FILE',
           ]);
           const paths = names.map((name) => process.env[name]);
           if (
@@ -125,49 +122,6 @@ jobs:
             throw new Error('invalid preview temp path');
           }
           await Promise.all(paths.map((path) => rm(path, { force: true })));
-          NODE
-          }
-
-          assert_connectivity_probe_file() {
-            node --input-type=module <<'NODE'
-          import { readFile } from 'node:fs/promises';
-          import { TextDecoder } from 'node:util';
-
-          const path = process.env.TEXT_AI_CONNECTIVITY_PROBE_FILE;
-          if (typeof path !== 'string' || path.length === 0) {
-            throw new Error('invalid connectivity probe path');
-          }
-          const bytes = await readFile(path);
-          if (bytes.length === 0 || bytes.length > 4096 || bytes.includes(0)) {
-            throw new Error('invalid connectivity probe result');
-          }
-          const raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-          if (!raw.endsWith('\n') || raw.includes('\r') || raw.slice(0, -1).includes('\n')) {
-            throw new Error('invalid connectivity probe result');
-          }
-          const value = JSON.parse(raw);
-          const keys = ['operation', 'connectivity'];
-          const allowed = new Set([
-            'http-2xx',
-            'http-3xx',
-            'http-4xx',
-            'http-5xx',
-            'http-other',
-            'timeout',
-            'fetch-rejected',
-          ]);
-          if (
-            value === null
-            || typeof value !== 'object'
-            || Array.isArray(value)
-            || Object.keys(value).length !== keys.length
-            || keys.some((key, index) => Object.keys(value)[index] !== key)
-            || value.operation !== 'probe-deepseek-connectivity'
-            || !allowed.has(value.connectivity)
-          ) {
-            throw new Error('invalid connectivity probe result');
-          }
-          process.stdout.write(`${JSON.stringify(value)}\n`);
           NODE
           }
 
@@ -586,36 +540,18 @@ jobs:
           }
 
           deploy_worker_disabled() {
-            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_DIAGNOSTICS_ENABLED:false" --var "TEXT_AI_CONNECTIVITY_PROBE_ENABLED:false" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:deepseek-v4-flash" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_DIAGNOSTICS_ENABLED:false" --var "TEXT_AI_GATEWAY_ENABLED:false" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:deepseek-v4-flash" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
           }
 
           deploy_worker_enabled() {
-            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_DIAGNOSTICS_ENABLED:true" --var "TEXT_AI_CONNECTIVITY_PROBE_ENABLED:false" --var "TEXT_AI_GATEWAY_ENABLED:true" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:deepseek-v4-flash" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
-          }
-
-          deploy_worker_connectivity_probe() {
-            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_DIAGNOSTICS_ENABLED:true" --var "TEXT_AI_CONNECTIVITY_PROBE_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:true" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:deepseek-v4-flash" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
+            ./node_modules/.bin/wrangler deploy --config workers/photo-ai-gateway/wrangler.jsonc --secrets-file "$TEXT_AI_SECRET_FILE" --var "TEXT_AI_ADMIN_ENABLED:true" --var "TEXT_AI_DIAGNOSTICS_ENABLED:true" --var "TEXT_AI_GATEWAY_ENABLED:true" --var "TEXT_AI_MAX_PROVIDER_ATTEMPTS:1" --var "TEXT_AI_MODEL:deepseek-v4-flash" --var "PHOTO_AI_GATEWAY_ENABLED:false" --var "PHOTO_AI_MODEL:doubao-seed-2-1-pro-260628" --var "PHOTO_AI_ALLOWED_ORIGINS:https://text-ai-preview.tiezheng.pages.dev" --var "PHOTO_AI_MONTHLY_BUDGET_MICROS:50000000"
           }
 
           deploy_pages_preview() {
             ./node_modules/.bin/wrangler pages deploy dist --project-name=tiezheng --branch=text-ai-preview --commit-hash="$GITHUB_SHA"
           }
 
-          TEXT_AI_CONNECTIVITY_PROBE_DEPLOYED=false
-          cleanup_preview_dispatch() {
-            local exit_code=$?
-            trap - EXIT
-            set +e
-            if [ "$TEXT_AI_CONNECTIVITY_PROBE_DEPLOYED" = 'true' ]; then
-              report_diagnostic_stage 'restore-worker'
-              deploy_worker_enabled > /dev/null
-              if [ $? -ne 0 ]; then exit_code=1; fi
-            fi
-            cleanup_preview_temp_files
-            if [ $? -ne 0 ]; then exit_code=1; fi
-            exit "$exit_code"
-          }
-          trap cleanup_preview_dispatch EXIT
+          trap cleanup_preview_temp_files EXIT
           if [ "$TEXT_AI_OPERATION" != 'disable-all' ]; then
             run_full_preflight
           fi
@@ -685,27 +621,6 @@ jobs:
               assert_diagnostic_redeploy_preconditions
               report_diagnostic_stage 'deploy-worker-enabled'
               deploy_worker_enabled
-              ;;
-            probe-connectivity)
-              if [ "$TEXT_AI_TARGET" != 'user-1' ] || [ "$TEXT_AI_CONFIRMATION" != 'PROBE_DEEPSEEK_CONNECTIVITY_NO_MODEL' ]; then
-                exit 1
-              fi
-              report_diagnostic_stage 'write-worker-secret'
-              write_worker_secret_file
-              report_diagnostic_stage 'capture-status'
-              capture_status_pair
-              report_diagnostic_stage 'assert-preconditions'
-              assert_diagnostic_redeploy_preconditions
-              report_diagnostic_stage 'deploy-connectivity-probe'
-              deploy_worker_connectivity_probe
-              TEXT_AI_CONNECTIVITY_PROBE_DEPLOYED=true
-              report_diagnostic_stage 'invoke-connectivity-probe'
-              node scripts/text-ai-preview-control.mjs invoke-admin --operation=probe-deepseek-connectivity --target=user-1 > "$TEXT_AI_CONNECTIVITY_PROBE_FILE"
-              report_diagnostic_stage 'validate-connectivity-result'
-              assert_connectivity_probe_file
-              report_diagnostic_stage 'restore-worker'
-              deploy_worker_enabled
-              TEXT_AI_CONNECTIVITY_PROBE_DEPLOYED=false
               ;;
             enable-second-account)
               if [ "$TEXT_AI_TARGET" != 'user-2' ]; then
