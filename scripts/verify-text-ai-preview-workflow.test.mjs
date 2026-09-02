@@ -207,7 +207,7 @@ test('keeps text diagnostics disabled during the Worker dry-run', () => {
   ));
 });
 
-test('deploy-diagnostics only redeploys an already-enabled Worker without admin mutation', () => {
+test('deploy-diagnostics redeploys matching Pages and Worker versions without admin mutation', () => {
   const deploy = branch(source, 'deploy-diagnostics', 'enable-second-account');
   const stages = [...deploy.matchAll(/^ {14}report_diagnostic_stage '([a-z0-9-]+)'$/gm)]
     .map((match) => match[1]);
@@ -215,6 +215,7 @@ test('deploy-diagnostics only redeploys an already-enabled Worker without admin 
     ['write-worker-secret', 'write_worker_secret_file'],
     ['capture-status', 'capture_status_pair'],
     ['assert-preconditions', 'assert_diagnostic_redeploy_preconditions'],
+    ['deploy-pages-preview', 'deploy_pages_preview'],
     ['deploy-worker-enabled', 'deploy_worker_enabled'],
   ];
 
@@ -227,7 +228,11 @@ test('deploy-diagnostics only redeploys an already-enabled Worker without admin 
   }
   assert.equal(deploy.includes('invoke-admin'), false);
   assert.equal(deploy.includes('text-ai-preview-control.mjs configure'), false);
-  assert.equal(deploy.includes('deploy_pages_preview'), false);
+  assert.equal(deploy.match(/deploy_pages_preview/g)?.length, 1);
+  assert.equal(
+    deploy.indexOf('deploy_pages_preview') < deploy.indexOf('deploy_worker_enabled'),
+    true,
+  );
   assert.equal(deploy.includes('/api/nutrition/text/estimate'), false);
   expectPolicyFailure(replaceOnce(
     source,

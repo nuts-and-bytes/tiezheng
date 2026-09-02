@@ -619,6 +619,8 @@ jobs:
               capture_status_pair
               report_diagnostic_stage 'assert-preconditions'
               assert_diagnostic_redeploy_preconditions
+              report_diagnostic_stage 'deploy-pages-preview'
+              deploy_pages_preview
               report_diagnostic_stage 'deploy-worker-enabled'
               deploy_worker_enabled
               ;;
