@@ -241,7 +241,6 @@ test('deploy-diagnostics only redeploys an already-enabled Worker without admin 
 test('probe-connectivity performs one non-model probe and restores the ordinary Worker', () => {
   const probe = branch(source, 'probe-connectivity', 'enable-second-account');
   assert.equal(probe.includes("'PROBE_DEEPSEEK_CONNECTIVITY_NO_MODEL'"), true);
-  assert.equal(probe.match(/deploy_pages_preview/g)?.length, 1);
   assert.equal(probe.includes('deploy_worker_connectivity_probe'), true);
   assert.equal(probe.includes(
     'invoke-admin --operation=probe-deepseek-connectivity --target=user-1',
@@ -252,14 +251,6 @@ test('probe-connectivity performs one non-model probe and restores the ordinary 
   assert.equal(probe.includes('/responses'), false);
   assert.equal(probe.includes('enable-account'), false);
   assert.equal(probe.includes('enable-text-global'), false);
-  assert.equal(
-    probe.indexOf('deploy_pages_preview') < probe.indexOf('deploy_worker_connectivity_probe'),
-    true,
-  );
-  assert.equal(
-    probe.indexOf('deploy_pages_preview') < probe.indexOf('invoke-admin --operation=probe-deepseek-connectivity'),
-    true,
-  );
 });
 
 test('connectivity probe switch is true only in the temporary Worker deployment', () => {

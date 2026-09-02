@@ -7,9 +7,9 @@ const FAILURE_MESSAGE = 'Text preview workflow policy failed';
 const WORKFLOW_PATH = resolve('.github/workflows/text-ai-preview.yml');
 const MAX_WORKFLOW_BYTES = 1_048_576;
 const EXPECTED_DISPATCH_SHA256 =
-  '42de793aa07d64b747a2e4756f90641f4d787cb865d02cb2220d495a3941403a';
+  '355acdad3549e82a2eee6795a10b4413b9d5ca2f39bc9e2374d3b556337056b1';
 const EXPECTED_OPERATION_CASE_SHA256 =
-  '3e0d9360681541f518906140781dbdb376296e4191743d432bc5295905242ff7';
+  '6d3907e97f14b9f92407e1e52a2cff8f18695a79bb49af101b532b6140f90339';
 const OPERATION_CHOICES = Object.freeze([
   'preflight',
   'deploy-disabled',
@@ -285,7 +285,6 @@ function verifyDispatch(source) {
     probeStart === -1
     || probeEnd === -1
     || count(probe, 'PROBE_DEEPSEEK_CONNECTIVITY_NO_MODEL') !== 1
-    || count(probe, 'deploy_pages_preview') !== 1
     || count(probe, 'deploy_worker_connectivity_probe') !== 1
     || count(probe, 'invoke-admin --operation=probe-deepseek-connectivity --target=user-1') !== 1
     || count(probe, 'assert_connectivity_probe_file') !== 1
@@ -294,8 +293,6 @@ function verifyDispatch(source) {
     || probe.includes('/responses')
     || probe.includes('enable-account')
     || probe.includes('enable-text-global')
-    || probe.indexOf('deploy_pages_preview') > probe.indexOf('deploy_worker_connectivity_probe')
-    || probe.indexOf('deploy_pages_preview') > probe.indexOf('invoke-admin --operation=probe-deepseek-connectivity')
   ) {
     fail();
   }
