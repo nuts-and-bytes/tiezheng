@@ -22,6 +22,12 @@ const JOB_NAME = 'text-ai-preview';
 const STEP_NAME = 'Dispatch fixed operation';
 const ACCOUNT_VARIABLE = 'CLOUDFLARE_ACCOUNT_ID';
 const RETIRED_ROTATION_SECRET_NAMES = Object.freeze(['ARK_API_KEY']);
+// 由操作者直接写入 Environment、不经设置向导的密钥；deploy 需要它们，轮换检查必须允许它们存在。
+const OPERATOR_MANAGED_ROTATION_SECRET_NAMES = Object.freeze(['CLOUDFLARE_AI_GATEWAY_TOKEN']);
+const ROTATION_OPTIONAL_SECRET_NAMES = Object.freeze([
+  ...RETIRED_ROTATION_SECRET_NAMES,
+  ...OPERATOR_MANAGED_ROTATION_SECRET_NAMES,
+]);
 const ACTIVE_STATUSES = Object.freeze(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
@@ -552,7 +558,7 @@ export function createGitHubSetupClient(runner = runBoundedCommand, retryDelay =
   }
 
   async function inspectRotation() {
-    return inspectRepository(SETUP_POLICY.secretNames, RETIRED_ROTATION_SECRET_NAMES);
+    return inspectRepository(SETUP_POLICY.secretNames, ROTATION_OPTIONAL_SECRET_NAMES);
   }
 
   async function writeValue(allowedNames, name, value, args) {

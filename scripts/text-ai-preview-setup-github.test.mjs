@@ -122,13 +122,28 @@ test('first-run inspection requires a clean pinned main and an empty secret inve
   );
 });
 
-test('rotation inspection accepts the current inventory with only the retired Ark secret optional', async () => {
+test('rotation inspection accepts the current inventory plus the retired Ark secret and the workflow-only AI Gateway token', async () => {
   const fixture = fakeRunner({ secretNames: SETUP_POLICY.secretNames });
   const client = createGitHubSetupClient(fixture.runner);
   assert.deepEqual(await client.inspectRotation(), { accountId: ACCOUNT_ID, expectedSha: SHA });
 
   const migrated = fakeRunner({ secretNames: [...SETUP_POLICY.secretNames, 'ARK_API_KEY'] });
   assert.deepEqual(await createGitHubSetupClient(migrated.runner).inspectRotation(), {
+    accountId: ACCOUNT_ID,
+    expectedSha: SHA,
+  });
+
+  // 3fa6c64 起 deploy 需要 CLOUDFLARE_AI_GATEWAY_TOKEN；它由操作者直接写入 Environment，
+  // 不经设置向导，轮换检查必须把它当作允许存在的额外名称，否则真实环境永远 ROTATION FAILED。
+  const gateway = fakeRunner({ secretNames: [...SETUP_POLICY.secretNames, 'CLOUDFLARE_AI_GATEWAY_TOKEN'] });
+  assert.deepEqual(await createGitHubSetupClient(gateway.runner).inspectRotation(), {
+    accountId: ACCOUNT_ID,
+    expectedSha: SHA,
+  });
+  const gatewayAndArk = fakeRunner({
+    secretNames: [...SETUP_POLICY.secretNames, 'ARK_API_KEY', 'CLOUDFLARE_AI_GATEWAY_TOKEN'],
+  });
+  assert.deepEqual(await createGitHubSetupClient(gatewayAndArk.runner).inspectRotation(), {
     accountId: ACCOUNT_ID,
     expectedSha: SHA,
   });
