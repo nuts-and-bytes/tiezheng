@@ -96,7 +96,13 @@ afterEach(() => {
 describe('createDoubaoAdapter', () => {
   test('uses the fixed endpoint, model, prompt, schema and one inline WebP only', async () => {
     let body: Record<string, unknown> | undefined;
-    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+    const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+      // 这份测试也跑在 workerd 里（vitest.edge.config.ts）：用适配器给出的 init 真实构造一次 Request。
+      // Workers 运行时只接受 redirect 'follow' / 'manual'，'error' 会在请求发出前直接抛 TypeError，
+      // 线上表现就是每次估算都变成 provider-unavailable。Node 环境下跳过，只在 workerd 里校验。
+      if (typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers') {
+        new Request(String(url), init);
+      }
       body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return jsonResponse(providerPayload());
     });
@@ -110,7 +116,7 @@ describe('createDoubaoAdapter', () => {
       'https://ark.cn-beijing.volces.com/api/v3/responses',
       expect.objectContaining({
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: {
           authorization: 'Bearer test-api-key',
           'content-type': 'application/json',
@@ -242,6 +248,7 @@ describe('createDoubaoAdapter', () => {
 
   test.each([
     [400, false],
+    [302, false],
     [401, false],
     [403, false],
     [404, false],

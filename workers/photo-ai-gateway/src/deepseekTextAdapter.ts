@@ -199,7 +199,7 @@ export function createDeepSeekTextAdapter(
       try {
         const response = await fetcher(endpoint, {
           method: 'POST',
-          redirect: 'error',
+          redirect: 'manual',
           headers: {
             authorization,
             'cf-aig-authorization': gatewayAuthorization,

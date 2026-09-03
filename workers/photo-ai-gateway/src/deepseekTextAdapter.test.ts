@@ -113,7 +113,7 @@ describe('DeepSeek text adapter contract', () => {
       'https://gateway.ai.cloudflare.com/v1/0123456789abcdef0123456789abcdef/tiezheng-text-ai/deepseek/responses',
       expect.objectContaining({
         method: 'POST',
-        redirect: 'error',
+        redirect: 'manual',
         headers: {
           authorization: `Bearer ${API_KEY}`,
           'cf-aig-authorization': `Bearer ${AI_GATEWAY.token}`,
@@ -152,6 +152,34 @@ describe('DeepSeek text adapter contract', () => {
       raw: { status: 'uncertain', candidate: null },
       usage: { inputTokens: 100, outputTokens: 20 },
     });
+  });
+
+  test('uses a redirect mode the Workers runtime accepts and refuses a 3xx without following it', async () => {
+    // Cloudflare Workers 的 fetch 只接受 redirect 'follow' 或 'manual'：传 'error' 会在请求发出前
+    // 直接抛 TypeError，适配器会把它归为 provider-unavailable，用户看到的就是「服务暂时不可用」。
+    let redirectMode: unknown;
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      redirectMode = init?.redirect;
+      return new Response('provider-secret-body', {
+        status: 302,
+        headers: { location: 'https://evil.example.test/' },
+      });
+    });
+
+    const promise = createDeepSeekTextAdapter(API_KEY, fetcher).estimate(
+      textRequest(),
+      new AbortController().signal,
+    );
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'provider-unavailable',
+      retryable: false,
+      providerHttpStatus: 302,
+      providerFailureKind: 'http-status',
+    });
+    await expect(promise).rejects.not.toThrow('evil.example.test');
+    expect(['follow', 'manual']).toContain(redirectMode);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   test('keeps the system policy fixed and serializes user data as exactly four JSON fields', async () => {

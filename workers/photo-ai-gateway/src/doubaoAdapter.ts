@@ -166,7 +166,7 @@ export function createDoubaoAdapter(
       try {
         const response = await fetcher(ENDPOINT, {
           method: 'POST',
-          redirect: 'error',
+          redirect: 'manual',
           headers: {
             authorization,
             'content-type': 'application/json',
