@@ -99,6 +99,10 @@ export type DrawerProps = DrawerPrimitive.Root.Props & {
 /**
  * Coss UI Drawer (https://coss.com/ui/docs/components/drawer) adapted to IRONPROOF
  * forged-metal theme tokens and built on @base-ui/react/drawer.
+ *
+ * Callers conditionally mount/unmount the sheet (open is true while mounted), so
+ * only entry (`data-[starting-style]`) and live swipe gesture styles are declared;
+ * unused `data-[ending-style]` exit classes are intentionally omitted.
  */
 export function Drawer({
   position = 'bottom',
@@ -129,7 +133,7 @@ export function DrawerBackdrop({
     <DrawerPrimitive.Backdrop
       data-slot="drawer-backdrop"
       className={mergeBaseClassName(
-        'fixed inset-0 z-[60] bg-black/75 opacity-[calc(1-var(--drawer-swipe-progress,0))] backdrop-blur-[2px] transition-opacity duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 data-[swiping]:duration-0 motion-reduce:transition-none',
+        'fixed inset-0 z-[60] bg-black/75 opacity-[calc(1-var(--drawer-swipe-progress,0))] backdrop-blur-[2px] transition-opacity duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] data-[starting-style]:opacity-0 data-[swiping]:duration-0 motion-reduce:transition-none',
         className,
       )}
       {...props}
@@ -192,25 +196,21 @@ export function DrawerBar({
     startYRef.current = null;
   }
 
+  // Never call stopPropagation() here: Base UI DrawerViewport handles touchstart
+  // to notify VirtualKeyboardProvider first, then honors data-base-ui-swipe-ignore.
   return (
     <div
       data-slot="drawer-bar"
       data-swipe-locked={locked ? 'true' : undefined}
       aria-hidden="true"
       onPointerDown={(event) => {
-        if (locked) {
-          event.stopPropagation();
-          startTrack(event.clientY);
-        }
+        if (locked) startTrack(event.clientY);
       }}
       onPointerMove={(event) => moveTrack(event.clientY)}
       onPointerUp={resetTrack}
       onPointerCancel={resetTrack}
       onTouchStart={(event) => {
-        if (locked) {
-          event.stopPropagation();
-          if (event.touches[0]) startTrack(event.touches[0].clientY);
-        }
+        if (locked && event.touches[0]) startTrack(event.touches[0].clientY);
       }}
       onTouchMove={(event) => {
         if (event.touches[0]) moveTrack(event.touches[0].clientY);
@@ -253,7 +253,6 @@ export function DrawerPopup({
   initialFocusRef,
   popupRef,
   portalProps,
-  onPointerDown,
   onTouchStart,
   ...props
 }: DrawerPopupProps) {
@@ -329,22 +328,13 @@ export function DrawerPopup({
     };
   }, [popupEl, initialFocusRef]);
 
-  const handlePointerDown: NonNullable<DrawerPrimitive.Popup.Props['onPointerDown']> = (
-    event,
-  ) => {
-    onPointerDown?.(event);
-    if (swipeLocked) {
-      // Stop pointer bubbling to DrawerViewport so swipe-to-dismiss never initiates while editing.
-      event.stopPropagation();
-    }
-  };
-
+  // Do NOT call stopPropagation() on touchstart/pointerdown: Base UI DrawerViewport
+  // calls virtualKeyboard.onTouchStart(event) before checking data-base-ui-swipe-ignore.
   const handleTouchStart: NonNullable<DrawerPrimitive.Popup.Props['onTouchStart']> = (
     event,
   ) => {
     onTouchStart?.(event);
     if (swipeLocked) {
-      event.stopPropagation();
       lockedTouchStartY.current = event.touches[0]?.clientY ?? null;
     }
   };
@@ -354,7 +344,8 @@ export function DrawerPopup({
     const target = event.target as HTMLElement | null;
     const scrollable = target?.closest('[data-slot="drawer-panel"]');
     const atTop = !scrollable || scrollable.scrollTop <= 0;
-    const deltaY = (event.touches[0]?.clientY ?? lockedTouchStartY.current) - lockedTouchStartY.current;
+    const deltaY =
+      (event.touches[0]?.clientY ?? lockedTouchStartY.current) - lockedTouchStartY.current;
     if (atTop && deltaY > 28) {
       lockedTouchStartY.current = null;
       onLockedSwipeAttempt?.();
@@ -373,9 +364,9 @@ export function DrawerPopup({
           ref={setCombinedRef}
           data-slot="drawer-popup"
           data-swipe-locked={swipeLocked ? 'true' : undefined}
+          data-base-ui-swipe-ignore={swipeLocked ? '' : undefined}
           aria-modal="true"
           initialFocus={initialFocusRef ?? true}
-          onPointerDown={handlePointerDown}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
@@ -384,7 +375,7 @@ export function DrawerPopup({
             joinClasses(
               'forged-surface relative flex max-h-[90dvh] min-h-0 w-full max-w-md touch-none flex-col overflow-hidden rounded-t-3xl border-x-0 border-b-0 text-ink outline-none will-change-transform transition-[transform,box-shadow,height] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none',
               position === 'bottom' &&
-                'row-start-2 transform-[translateY(calc(var(--keyboard-snap-offset,0px)+var(--drawer-swipe-movement-y,0px)))] pb-[max(0px,var(--drawer-keyboard-inset,0px))] data-[starting-style]:transform-[translateY(calc(100%+env(safe-area-inset-bottom,0px)))] data-[ending-style]:transform-[translateY(calc(100%+env(safe-area-inset-bottom,0px)))] data-[swiping]:duration-0 data-[swiping]:select-none',
+                'row-start-2 transform-[translateY(calc(var(--keyboard-snap-offset,0px)+var(--drawer-swipe-movement-y,0px)))] pb-[max(0px,var(--drawer-keyboard-inset,0px))] data-[starting-style]:transform-[translateY(calc(100%+env(safe-area-inset-bottom,0px)))] data-[swiping]:duration-0 data-[swiping]:select-none',
             ),
             className,
           )}

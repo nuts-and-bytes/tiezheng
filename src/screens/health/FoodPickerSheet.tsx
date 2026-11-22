@@ -98,6 +98,7 @@ export function FoodPickerSheet({
   );
   const initialManual = initialManualRef.current;
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const manualSectionRef = useRef<HTMLFieldSetElement>(null);
   const operationIdRef = useRef<string | null>(null);
   const operationId = initialOperationId(operationIdRef);
@@ -303,7 +304,6 @@ export function FoodPickerSheet({
       open
       modal
       position="bottom"
-      disablePointerDismissal={blockOutsidePress}
       onOpenChange={handleOpenChange}
     >
       <DrawerPopup
@@ -361,10 +361,12 @@ export function FoodPickerSheet({
               <legend className="mb-3 text-xs font-semibold tracking-[1.5px] text-amber">
                 本地食物目录
               </legend>
-              <label className="grid gap-1 text-xs text-mute">
-                搜索食物
+              <div className="grid gap-1 text-xs text-mute">
+                <label htmlFor="food-picker-search">搜索食物</label>
                 <div className="relative">
                   <input
+                    id="food-picker-search"
+                    ref={searchInputRef}
                     aria-label="搜索食物"
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
@@ -376,14 +378,17 @@ export function FoodPickerSheet({
                       type="button"
                       variant="tertiary"
                       aria-label="清空搜索"
-                      onClick={() => setQuery('')}
+                      onClick={() => {
+                        setQuery('');
+                        searchInputRef.current?.focus();
+                      }}
                       className="!absolute right-1.5 top-1/2 !min-h-8 size-8 -translate-y-1/2 !rounded-lg !p-0"
                     >
                       ×
                     </Button>
                   )}
                 </div>
-              </label>
+              </div>
               {visibleFoods.length === 0 ? (
                 <p className="mt-3 rounded-xl border border-line bg-bg/60 px-3 py-4 text-center text-xs text-mute">
                   未找到匹配食物，可点下方「手动添加食物」离线记录
