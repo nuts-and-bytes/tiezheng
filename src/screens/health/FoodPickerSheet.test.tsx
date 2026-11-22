@@ -20,6 +20,24 @@ afterEach(() => {
   document.body.style.overflow = '';
 });
 
+function swipeDrawerBar(bar: HTMLElement) {
+  // jsdom has no layout. Base UI uses elementFromPoint to resolve swipe-ignore
+  // before it decides whether to intercept the touchmove at document level.
+  const hitTest = Object.getOwnPropertyDescriptor(document, 'elementFromPoint');
+  Object.defineProperty(document, 'elementFromPoint', {
+    configurable: true,
+    value: () => bar,
+  });
+  try {
+    fireEvent.touchStart(bar, { touches: [{ clientX: 20, clientY: 100 }] });
+    fireEvent.touchMove(bar, { touches: [{ clientX: 20, clientY: 160 }] });
+    fireEvent.touchEnd(bar);
+  } finally {
+    if (hitTest) Object.defineProperty(document, 'elementFromPoint', hitTest);
+    else Reflect.deleteProperty(document, 'elementFromPoint');
+  }
+}
+
 function picker(overrides: Partial<ComponentProps<typeof FoodPickerSheet>> = {}) {
   const onClose = overrides.onClose ?? vi.fn();
   const onSave = overrides.onSave ?? vi.fn().mockResolvedValue(undefined);
@@ -395,4 +413,94 @@ test('StrictMode effect replay 后失败仍显示错误并可成功重试关闭'
 
   await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+test('Coss Drawer 三段结构适配铁证主题，编辑态用 data-base-ui-swipe-ignore 保全 touchstart 冒泡且单一遮罩策略生效', async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  picker({ onClose });
+
+  const dialog = screen.getByRole('dialog', { name: '选择食物' });
+  const backdrop = document.querySelector('[data-slot="drawer-backdrop"]') as HTMLElement;
+  const viewport = document.querySelector('[data-slot="drawer-viewport"]') as HTMLElement;
+  expect(dialog).toHaveAttribute('data-slot', 'drawer-popup');
+  expect(dialog).not.toHaveAttribute('data-swipe-locked');
+  expect(dialog).not.toHaveAttribute('data-base-ui-swipe-ignore');
+  // 条件卸载契约下不保留无效 ending-style 类
+  expect(dialog.className).not.toContain('data-[ending-style]');
+  expect(backdrop.className).not.toContain('data-[ending-style]');
+
+  expect(dialog.querySelector('[data-slot="drawer-bar"]')).not.toBeNull();
+  const panel = dialog.querySelector('[data-slot="drawer-panel"]');
+  const footer = dialog.querySelector('[data-slot="drawer-footer"]');
+  expect(panel).not.toBeNull();
+  expect(panel).toHaveClass('overflow-y-auto', 'overscroll-contain');
+  expect(footer).not.toBeNull();
+
+  // 进入手动录入态：通过 Base UI 原生 data-base-ui-swipe-ignore 防误滑，不阻断 touchstart 向 Viewport 冒泡
+  await user.click(screen.getByRole('button', { name: '手动添加食物' }));
+  expect(dialog).toHaveAttribute('data-swipe-locked', 'true');
+  expect(dialog).toHaveAttribute('data-base-ui-swipe-ignore', '');
+  expect(screen.getByText('防误滑已开启')).toBeInTheDocument();
+
+  const viewportTouchSpy = vi.fn();
+  viewport.addEventListener('touchstart', viewportTouchSpy);
+  const bar = dialog.querySelector('[data-slot="drawer-bar"]') as HTMLElement;
+  swipeDrawerBar(bar);
+  expect(viewportTouchSpy).toHaveBeenCalledTimes(1);
+  viewport.removeEventListener('touchstart', viewportTouchSpy);
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByRole('status')).toHaveTextContent('编辑中已防误滑');
+
+  // 单一遮罩策略：手动录入态点遮罩由 onOpenChange(outside-press) 拦截并给提示，不关闭
+  await user.click(backdrop);
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByRole('status')).toHaveTextContent('编辑中已防误触遮罩');
+
+  // 显式按 Esc 仍可正常关闭
+  await user.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+test('清空搜索按钮独立于 label、点击后焦点还给搜索框；编辑数量失焦后仍锁定防误滑', async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  picker({ onClose });
+
+  const dialog = screen.getByRole('dialog', { name: '选择食物' });
+  const search = screen.getByLabelText('搜索食物');
+  const searchLabel = document.querySelector('label[for="food-picker-search"]');
+  expect(searchLabel).not.toBeNull();
+
+  await user.type(search, '鸡蛋');
+  expect(dialog).toHaveAttribute('data-swipe-locked', 'true');
+  expect(dialog).toHaveAttribute('data-base-ui-swipe-ignore', '');
+
+  const clearBtn = screen.getByRole('button', { name: '清空搜索' });
+  // 清空按钮与搜索 label 结构彼此独立
+  expect(searchLabel!.contains(clearBtn)).toBe(false);
+
+  // 点击清空搜索后按钮卸载，焦点准确还给搜索框
+  await user.click(clearBtn);
+  expect(search).toHaveValue('');
+  expect(search).toHaveFocus();
+
+  // 将焦点移出空搜索框后，恢复自由浏览态
+  await user.tab({ shift: true });
+  expect(dialog).not.toHaveAttribute('data-swipe-locked');
+  expect(dialog).not.toHaveAttribute('data-base-ui-swipe-ignore');
+
+  // 修改实际克数并失焦：即使输入框已失焦，编辑数量态仍保持防误滑与防误触遮罩
+  const amountInput = await selectRice(user);
+  await user.clear(amountInput);
+  await user.type(amountInput, '180');
+  await user.tab();
+  expect(amountInput).not.toHaveFocus();
+  expect(dialog).toHaveAttribute('data-swipe-locked', 'true');
+  expect(dialog).toHaveAttribute('data-base-ui-swipe-ignore', '');
+
+  const bar = dialog.querySelector('[data-slot="drawer-bar"]') as HTMLElement;
+  swipeDrawerBar(bar);
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByRole('status')).toHaveTextContent('编辑中已防误滑');
 });
