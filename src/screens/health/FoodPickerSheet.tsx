@@ -1,11 +1,26 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type FormEvent,
+} from 'react';
 import { Button } from '../../components/Button';
+import {
+  Drawer,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerPanel,
+  DrawerPopup,
+  DrawerTitle,
+  type DrawerPrimitive,
+} from '../../components/Drawer';
 import { PRESET_FOOD_IMAGE_MANIFEST } from '../../data/presetFoodImageManifest.generated';
 import type { TextMealDraft } from '../../lib/textAiContract';
 import type { Food, MealSlot } from '../../lib/nutritionTypes';
 import type { SaveCustomFoodInput } from '../../repos/foodRepo';
 import { MEAL_LABELS } from './MealSection';
-import { useDialogFocusTrap } from './useDialogFocusTrap';
 
 const MIN_AMOUNT = 0.01;
 const MAX_AMOUNT = 100_000;
@@ -58,6 +73,16 @@ function initialManualValues(draft: TextMealDraft | undefined): InitialManualVal
   };
 }
 
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.tagName === 'INPUT' ||
+    target.tagName === 'SELECT' ||
+    target.tagName === 'TEXTAREA' ||
+    target.isContentEditable
+  );
+}
+
 export function FoodPickerSheet({
   slot,
   foods,
@@ -72,8 +97,8 @@ export function FoodPickerSheet({
     initialManualValues(initialManualDraft),
   );
   const initialManual = initialManualRef.current;
-  const dialogRef = useRef<HTMLDivElement>(null);
-  useDialogFocusTrap(dialogRef, onClose);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const manualSectionRef = useRef<HTMLFieldSetElement>(null);
   const operationIdRef = useRef<string | null>(null);
   const operationId = initialOperationId(operationIdRef);
   const submitLatch = useRef(false);
@@ -83,6 +108,10 @@ export function FoodPickerSheet({
   const [manual, setManual] = useState(initialManual !== undefined);
   const [manualUnit, setManualUnit] = useState<'g' | 'mL'>(initialManual?.unit ?? 'g');
   const [amount, setAmount] = useState(initialManual?.amount ?? '100');
+  const [amountBaseline, setAmountBaseline] = useState(initialManual?.amount ?? '100');
+  const [manualDirty, setManualDirty] = useState(initialManual !== undefined);
+  const [fieldFocused, setFieldFocused] = useState(false);
+  const [swipeNotice, setSwipeNotice] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -92,6 +121,12 @@ export function FoodPickerSheet({
       mounted.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!swipeNotice) return;
+    const timer = window.setTimeout(() => setSwipeNotice(''), 2600);
+    return () => window.clearTimeout(timer);
+  }, [swipeNotice]);
 
   const visibleFoods = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase('zh-CN');
@@ -109,6 +144,50 @@ export function FoodPickerSheet({
     [foods, selectedId],
   );
   const unit = manual ? manualUnit : (selected?.basisUnit ?? 'g');
+
+  const hasEditedAmount = amount !== amountBaseline;
+  const isEditing =
+    submitting || manual || manualDirty || fieldFocused || hasEditedAmount || query.trim() !== '';
+  const blockOutsidePress = submitting || manual || manualDirty || hasEditedAmount;
+
+  function handleOpenChange(
+    nextOpen: boolean,
+    details: DrawerPrimitive.Root.ChangeEventDetails,
+  ) {
+    if (nextOpen) return;
+
+    if (submitting) {
+      details.cancel();
+      return;
+    }
+
+    if (details.reason === 'swipe' && isEditing) {
+      details.cancel();
+      setSwipeNotice('编辑中已防误滑，点右上角 × 或按 Esc 关闭');
+      return;
+    }
+
+    if (details.reason === 'outside-press' && blockOutsidePress) {
+      details.cancel();
+      setSwipeNotice('编辑中已防误触遮罩，点右上角 × 或按 Esc 关闭');
+      return;
+    }
+
+    onClose();
+  }
+
+  function handleFormFocusCapture(event: FocusEvent<HTMLFormElement>) {
+    if (isEditableElement(event.target)) {
+      setFieldFocused(true);
+    }
+  }
+
+  function handleFormBlurCapture(event: FocusEvent<HTMLFormElement>) {
+    const nextTarget = event.relatedTarget;
+    if (!isEditableElement(nextTarget)) {
+      setFieldFocused(false);
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -220,177 +299,347 @@ export function FoodPickerSheet({
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-end bg-black/70" aria-hidden={false}>
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
+    <Drawer
+      open
+      modal
+      position="bottom"
+      disablePointerDismissal={blockOutsidePress}
+      onOpenChange={handleOpenChange}
+    >
+      <DrawerPopup
         aria-labelledby="food-picker-title"
-        className="forged-surface max-h-[88dvh] w-full overflow-y-auto rounded-t-3xl border-x-0 border-b-0 p-5 text-ink transition motion-reduce:transition-none"
+        initialFocusRef={closeButtonRef}
+        showBar
+        swipeLocked={isEditing}
+        onLockedSwipeAttempt={() =>
+          setSwipeNotice('编辑中已防误滑，点右上角 × 或按 Esc 关闭')
+        }
       >
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[10px] font-semibold tracking-[2px] text-amber">LOCAL FOOD</p>
-            <h2 id="food-picker-title" className="mt-1 text-lg font-extrabold">
-              选择食物
-            </h2>
-          </div>
-          <Button
-            variant="tertiary"
-            aria-label="关闭选择食物"
-            onClick={onClose}
-            className="size-11 p-0"
-          >
-            ×
-          </Button>
-        </div>
-        <div className="etch" />
-
-        <form className="space-y-5" noValidate onSubmit={submit}>
-          <fieldset disabled={submitting}>
-            <legend className="mb-3 text-xs font-semibold tracking-[1.5px] text-amber">
-              本地食物目录
-            </legend>
-            <label className="grid gap-1 text-xs text-mute">
-              搜索食物
-              <input
-                aria-label="搜索食物"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                className={CONTROL_CLASS}
-              />
-            </label>
-            <div className="mt-3 grid grid-cols-3 gap-3">
-              {visibleFoods.map((food) => {
-                const image = PRESET_FOOD_IMAGE_MANIFEST.find(
-                  (row) => row.foodId === food.id,
-                );
-                return (
-                  <Button
-                    type="button"
-                    variant="tertiary"
-                    aria-label={food.name}
-                    aria-pressed={!manual && selectedId === food.id}
-                    key={food.id}
-                    onClick={() => {
-                      setSelectedId(food.id);
-                      setManual(false);
-                      setAmount(String(food.basisAmount));
-                      setError('');
-                    }}
-                    className="min-h-11 rounded-xl border border-line bg-bg p-2 text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-iron focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+        <DrawerHeader>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="text-[10px] font-semibold tracking-[2px] text-amber">
+                  LOCAL FOOD
+                </p>
+                {isEditing && (
+                  <span
+                    data-slot="swipe-lock-badge"
+                    className="rounded-full border border-amber/35 bg-amber/10 px-2 py-0.5 text-[10px] font-medium text-amber"
                   >
-                    {image ? (
-                      <img
-                        alt=""
-                        src={image.path}
-                        width={image.width}
-                        height={image.height}
-                        className="aspect-square w-full rounded-lg object-cover"
-                      />
-                    ) : (
-                      <span
-                        role="img"
-                        aria-label={`${food.name}暂无图片`}
-                        className="flex aspect-square w-full items-center justify-center rounded-lg border border-line bg-raised text-[10px] text-mute"
-                      >
-                        暂无图片
-                      </span>
-                    )}
-                    <span className="mt-2 block leading-4">{food.name}</span>
-                  </Button>
-                );
-              })}
+                    防误滑已开启
+                  </span>
+                )}
+              </div>
+              <DrawerTitle id="food-picker-title" className="mt-1">
+                选择食物
+              </DrawerTitle>
             </div>
-          </fieldset>
-
-          <div className="flex gap-3">
-            {textAiEnabled ? (
-              <Button
-                type="button"
-                disabled={submitting}
-                className="flex-1"
-                onClick={() => {
-                  onClose();
-                  onEstimateMeal(slot);
-                }}
-              >
-                AI 估算餐食
-              </Button>
-            ) : null}
             <Button
-              type="button"
-              variant="secondary"
+              ref={closeButtonRef}
+              variant="tertiary"
+              aria-label="关闭选择食物"
               disabled={submitting}
-              className={textAiEnabled ? 'flex-1' : ''}
-              onClick={() => {
-                setManual(true);
-                setSelectedId(undefined);
-                setAmount('100');
-                setError('');
-              }}
+              onClick={onClose}
+              className="size-11 shrink-0 p-0"
             >
-              手动添加食物
+              ×
             </Button>
           </div>
+          <div className="etch !mb-0 !mt-3" />
+        </DrawerHeader>
 
-          {manual && (
-            <fieldset
-              disabled={submitting}
-              className="grid gap-3 border-l border-line pl-4 text-sm text-mute"
-            >
-              <legend className="mb-1 text-xs font-semibold tracking-[1.5px] text-amber">
-                标签数据
+        <form
+          className="flex min-h-0 flex-1 flex-col"
+          noValidate
+          onSubmit={submit}
+          onFocusCapture={handleFormFocusCapture}
+          onBlurCapture={handleFormBlurCapture}
+        >
+          <DrawerPanel className="space-y-5">
+            <fieldset disabled={submitting}>
+              <legend className="mb-3 text-xs font-semibold tracking-[1.5px] text-amber">
+                本地食物目录
               </legend>
-              <label className="grid gap-1">
-                食物名称
-                <input
-                  name="name"
-                  aria-label="食物名称"
-                  defaultValue={initialManual?.name ?? ''}
-                  required
-                  className={CONTROL_CLASS}
-                />
+              <label className="grid gap-1 text-xs text-mute">
+                搜索食物
+                <div className="relative">
+                  <input
+                    aria-label="搜索食物"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="按名称或别名筛选…"
+                    className={query ? `${CONTROL_CLASS} pr-10` : CONTROL_CLASS}
+                  />
+                  {query && (
+                    <Button
+                      type="button"
+                      variant="tertiary"
+                      aria-label="清空搜索"
+                      onClick={() => setQuery('')}
+                      className="!absolute right-1.5 top-1/2 !min-h-8 size-8 -translate-y-1/2 !rounded-lg !p-0"
+                    >
+                      ×
+                    </Button>
+                  )}
+                </div>
               </label>
-              <label className="grid gap-1">
-                生熟状态
-                <select name="rawOrCooked" aria-label="生熟状态" className={CONTROL_CLASS}>
-                  <option value="not-applicable">不适用</option>
-                  <option value="cooked">熟</option>
-                  <option value="raw">生</option>
-                </select>
-              </label>
-              <label className="grid gap-1">
-                处理方式
-                <input
-                  name="preparation"
-                  aria-label="处理方式"
-                  required
-                  className={CONTROL_CLASS}
-                />
-              </label>
-              <label className="grid gap-1">
-                原始单位
-                <select
-                  aria-label="原始单位"
-                  value={manualUnit}
-                  onChange={(event) => {
-                    setManualUnit(event.target.value as 'g' | 'mL');
-                    setAmount('100');
+              {visibleFoods.length === 0 ? (
+                <p className="mt-3 rounded-xl border border-line bg-bg/60 px-3 py-4 text-center text-xs text-mute">
+                  未找到匹配食物，可点下方「手动添加食物」离线记录
+                </p>
+              ) : (
+                <div className="mt-3 grid grid-cols-3 gap-3">
+                  {visibleFoods.map((food) => {
+                    const image = PRESET_FOOD_IMAGE_MANIFEST.find(
+                      (row) => row.foodId === food.id,
+                    );
+                    const isSelected = !manual && selectedId === food.id;
+                    return (
+                      <Button
+                        type="button"
+                        variant="tertiary"
+                        aria-label={food.name}
+                        aria-pressed={isSelected}
+                        key={food.id}
+                        onClick={() => {
+                          const nextAmount = String(food.basisAmount);
+                          setSelectedId(food.id);
+                          setManual(false);
+                          setManualDirty(false);
+                          setAmount(nextAmount);
+                          setAmountBaseline(nextAmount);
+                          setError('');
+                        }}
+                        className={`min-h-11 flex-col rounded-xl border p-2 text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-iron focus-visible:ring-offset-2 focus-visible:ring-offset-bg ${
+                          isSelected
+                            ? 'border-iron bg-iron/10 ring-1 ring-iron/60'
+                            : 'border-line bg-bg'
+                        }`}
+                      >
+                        {image ? (
+                          <img
+                            alt=""
+                            src={image.path}
+                            width={image.width}
+                            height={image.height}
+                            className="aspect-square w-full rounded-lg object-cover"
+                          />
+                        ) : (
+                          <span
+                            role="img"
+                            aria-label={`${food.name}暂无图片`}
+                            className="flex aspect-square w-full items-center justify-center rounded-lg border border-line bg-raised text-[10px] text-mute"
+                          >
+                            暂无图片
+                          </span>
+                        )}
+                        <span className="mt-2 block leading-4">{food.name}</span>
+                      </Button>
+                    );
+                  })}
+                </div>
+              )}
+            </fieldset>
+
+            <div className="flex gap-3">
+              {textAiEnabled ? (
+                <Button
+                  type="button"
+                  disabled={submitting}
+                  className="flex-1"
+                  onClick={() => {
+                    onClose();
+                    onEstimateMeal(slot);
                   }}
-                  className={CONTROL_CLASS}
                 >
-                  <option value="g">g</option>
-                  <option value="mL">mL</option>
-                </select>
-              </label>
-              <label className="grid gap-1">
-                原始基准数量
+                  AI 估算餐食
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={submitting}
+                className={textAiEnabled ? 'flex-1' : ''}
+                onClick={() => {
+                  setManual(true);
+                  setManualDirty(true);
+                  setSelectedId(undefined);
+                  setAmount('100');
+                  setAmountBaseline('100');
+                  setError('');
+                  requestAnimationFrame(() => {
+                    manualSectionRef.current?.scrollIntoView?.({
+                      block: 'nearest',
+                      behavior: 'smooth',
+                    });
+                  });
+                }}
+              >
+                手动添加食物
+              </Button>
+            </div>
+
+            {manual && (
+              <fieldset
+                ref={manualSectionRef}
+                disabled={submitting}
+                onChange={() => setManualDirty(true)}
+                className="grid gap-3 border-l border-iron/50 pl-4 text-sm text-mute"
+              >
+                <legend className="mb-1 text-xs font-semibold tracking-[1.5px] text-amber">
+                  标签数据
+                </legend>
+                <label className="grid gap-1">
+                  食物名称
+                  <input
+                    name="name"
+                    aria-label="食物名称"
+                    defaultValue={initialManual?.name ?? ''}
+                    required
+                    className={CONTROL_CLASS}
+                  />
+                </label>
+                <label className="grid gap-1">
+                  生熟状态
+                  <select name="rawOrCooked" aria-label="生熟状态" className={CONTROL_CLASS}>
+                    <option value="not-applicable">不适用</option>
+                    <option value="cooked">熟</option>
+                    <option value="raw">生</option>
+                  </select>
+                </label>
+                <label className="grid gap-1">
+                  处理方式
+                  <input
+                    name="preparation"
+                    aria-label="处理方式"
+                    required
+                    className={CONTROL_CLASS}
+                  />
+                </label>
+                <label className="grid gap-1">
+                  原始单位
+                  <select
+                    aria-label="原始单位"
+                    value={manualUnit}
+                    onChange={(event) => {
+                      setManualUnit(event.target.value as 'g' | 'mL');
+                      setAmount('100');
+                      setAmountBaseline('100');
+                    }}
+                    className={CONTROL_CLASS}
+                  >
+                    <option value="g">g</option>
+                    <option value="mL">mL</option>
+                  </select>
+                </label>
+                <label className="grid gap-1">
+                  原始基准数量
+                  <input
+                    name="originalBasisAmount"
+                    aria-label="原始 basis"
+                    type="number"
+                    defaultValue="100"
+                    min="0.01"
+                    max="100000"
+                    step="any"
+                    required
+                    className={CONTROL_CLASS}
+                  />
+                </label>
+                <label className="grid gap-1">
+                  能量单位
+                  <select
+                    name="originalEnergyUnit"
+                    aria-label="能量单位"
+                    className={CONTROL_CLASS}
+                  >
+                    <option value="kcal">kcal</option>
+                    <option value="kJ">kJ</option>
+                  </select>
+                </label>
+                <label className="grid gap-1">
+                  原始能量
+                  <input
+                    name="originalEnergyValue"
+                    aria-label="原始能量"
+                    type="number"
+                    min="0"
+                    max="1000000"
+                    step="any"
+                    required
+                    className={CONTROL_CLASS}
+                  />
+                </label>
+                <label className="grid gap-1">
+                  原始蛋白质（克）
+                  <input
+                    name="originalProteinG"
+                    aria-label="原始蛋白质（克）"
+                    type="number"
+                    min="0"
+                    max="100000"
+                    step="any"
+                    required
+                    className={CONTROL_CLASS}
+                  />
+                </label>
+                <label className="grid gap-1">
+                  可食部比例
+                  <input
+                    name="ediblePortionRatio"
+                    aria-label="可食部比例"
+                    type="number"
+                    defaultValue="1"
+                    min="0.000001"
+                    max="1"
+                    step="any"
+                    required
+                    className={CONTROL_CLASS}
+                  />
+                </label>
+                <label className="grid gap-1">
+                  密度 g/mL（可空）
+                  <input
+                    name="densityGPerMl"
+                    aria-label="密度 g/mL（可空）"
+                    type="number"
+                    min="0.000001"
+                    max="100"
+                    step="any"
+                    className={CONTROL_CLASS}
+                  />
+                </label>
+                <label className="grid gap-1">
+                  换算说明
+                  <input
+                    name="conversionAssumptions"
+                    aria-label="换算说明"
+                    required
+                    className={CONTROL_CLASS}
+                  />
+                </label>
+              </fieldset>
+            )}
+          </DrawerPanel>
+
+          <DrawerFooter className="space-y-3">
+            <fieldset disabled={submitting}>
+              <legend className="mb-1.5 flex items-center justify-between text-xs font-semibold tracking-[1.5px] text-amber">
+                <span>实际吃下数量</span>
+                {selected && !manual && (
+                  <span className="font-normal tracking-normal text-mute">
+                    已选：{selected.name}
+                  </span>
+                )}
+              </legend>
+              <label className="grid gap-1 text-xs text-mute">
+                {unit === 'g' ? '实际克数' : '实际毫升'}
                 <input
-                  name="originalBasisAmount"
-                  aria-label="原始 basis"
+                  aria-label={unit === 'g' ? '实际克数' : '实际毫升'}
+                  value={amount}
+                  onChange={(event) => setAmount(event.target.value)}
                   type="number"
-                  defaultValue="100"
                   min="0.01"
                   max="100000"
                   step="any"
@@ -398,111 +647,24 @@ export function FoodPickerSheet({
                   className={CONTROL_CLASS}
                 />
               </label>
-              <label className="grid gap-1">
-                能量单位
-                <select
-                  name="originalEnergyUnit"
-                  aria-label="能量单位"
-                  className={CONTROL_CLASS}
-                >
-                  <option value="kcal">kcal</option>
-                  <option value="kJ">kJ</option>
-                </select>
-              </label>
-              <label className="grid gap-1">
-                原始能量
-                <input
-                  name="originalEnergyValue"
-                  aria-label="原始能量"
-                  type="number"
-                  min="0"
-                  max="1000000"
-                  step="any"
-                  required
-                  className={CONTROL_CLASS}
-                />
-              </label>
-              <label className="grid gap-1">
-                原始蛋白质（克）
-                <input
-                  name="originalProteinG"
-                  aria-label="原始蛋白质（克）"
-                  type="number"
-                  min="0"
-                  max="100000"
-                  step="any"
-                  required
-                  className={CONTROL_CLASS}
-                />
-              </label>
-              <label className="grid gap-1">
-                可食部比例
-                <input
-                  name="ediblePortionRatio"
-                  aria-label="可食部比例"
-                  type="number"
-                  defaultValue="1"
-                  min="0.000001"
-                  max="1"
-                  step="any"
-                  required
-                  className={CONTROL_CLASS}
-                />
-              </label>
-              <label className="grid gap-1">
-                密度 g/mL（可空）
-                <input
-                  name="densityGPerMl"
-                  aria-label="密度 g/mL（可空）"
-                  type="number"
-                  min="0.000001"
-                  max="100"
-                  step="any"
-                  className={CONTROL_CLASS}
-                />
-              </label>
-              <label className="grid gap-1">
-                换算说明
-                <input
-                  name="conversionAssumptions"
-                  aria-label="换算说明"
-                  required
-                  className={CONTROL_CLASS}
-                />
-              </label>
             </fieldset>
-          )}
 
-          <fieldset disabled={submitting}>
-            <legend className="mb-2 text-xs font-semibold tracking-[1.5px] text-amber">
-              实际吃下数量
-            </legend>
-            <label className="grid gap-1 text-xs text-mute">
-              {unit === 'g' ? '实际克数' : '实际毫升'}
-              <input
-                aria-label={unit === 'g' ? '实际克数' : '实际毫升'}
-                value={amount}
-                onChange={(event) => setAmount(event.target.value)}
-                type="number"
-                min="0.01"
-                max="100000"
-                step="any"
-                required
-                className={CONTROL_CLASS}
-              />
-            </label>
-          </fieldset>
-
-          {error && (
-            <p role="alert" className="text-sm text-iron">
-              {error}
-            </p>
-          )}
-          <Button type="submit" fullWidth loading={submitting}>
-            加入{MEAL_LABELS[slot]}
-          </Button>
+            {swipeNotice && (
+              <p role="status" className="text-xs text-amber">
+                {swipeNotice}
+              </p>
+            )}
+            {error && (
+              <p role="alert" className="text-sm text-iron">
+                {error}
+              </p>
+            )}
+            <Button type="submit" fullWidth loading={submitting}>
+              加入{MEAL_LABELS[slot]}
+            </Button>
+          </DrawerFooter>
         </form>
-      </div>
-    </div>
+      </DrawerPopup>
+    </Drawer>
   );
 }

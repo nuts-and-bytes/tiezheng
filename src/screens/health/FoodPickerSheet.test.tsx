@@ -396,3 +396,58 @@ test('StrictMode effect replay 后失败仍显示错误并可成功重试关闭'
   await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
   expect(onClose).toHaveBeenCalledTimes(1);
 });
+
+test('Coss Drawer 三段结构适配铁证主题，浏览态可滑可点遮罩，编辑态防误滑与误触遮罩', async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  picker({ onClose });
+
+  const dialog = screen.getByRole('dialog', { name: '选择食物' });
+  expect(dialog).toHaveAttribute('data-slot', 'drawer-popup');
+  expect(dialog).not.toHaveAttribute('data-swipe-locked');
+  expect(dialog.querySelector('[data-slot="drawer-bar"]')).not.toBeNull();
+  const panel = dialog.querySelector('[data-slot="drawer-panel"]');
+  const footer = dialog.querySelector('[data-slot="drawer-footer"]');
+  expect(panel).not.toBeNull();
+  expect(panel).toHaveClass('overflow-y-auto', 'overscroll-contain');
+  expect(footer).not.toBeNull();
+
+  // 进入手动录入态：立即开启防误滑保护，拖拽手柄给出明确提示且不关闭
+  await user.click(screen.getByRole('button', { name: '手动添加食物' }));
+  expect(dialog).toHaveAttribute('data-swipe-locked', 'true');
+  expect(screen.getByText('防误滑已开启')).toBeInTheDocument();
+
+  const bar = dialog.querySelector('[data-slot="drawer-bar"]') as HTMLElement;
+  fireEvent.touchStart(bar, { touches: [{ clientY: 100 }] });
+  fireEvent.touchMove(bar, { touches: [{ clientY: 160 }] });
+  fireEvent.touchEnd(bar);
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByRole('status')).toHaveTextContent('编辑中已防误滑');
+
+  // 手动录入态点遮罩也不误关
+  const backdrop = document.querySelector('[data-slot="drawer-backdrop"]') as HTMLElement;
+  expect(backdrop).not.toBeNull();
+  await user.click(backdrop);
+  expect(onClose).not.toHaveBeenCalled();
+
+  // 显式按 Esc 仍可正常关闭
+  await user.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+test('输入搜索或修改克数时锁定下滑关闭，清空后恢复自由浏览态', async () => {
+  const user = userEvent.setup();
+  picker();
+
+  const dialog = screen.getByRole('dialog', { name: '选择食物' });
+  expect(dialog).not.toHaveAttribute('data-swipe-locked');
+
+  const search = screen.getByLabelText('搜索食物');
+  await user.type(search, '鸡蛋');
+  expect(dialog).toHaveAttribute('data-swipe-locked', 'true');
+
+  // 清空搜索并将焦点移出输入框，恢复非编辑浏览态
+  await user.click(screen.getByRole('button', { name: '清空搜索' }));
+  expect(search).toHaveValue('');
+  expect(dialog).not.toHaveAttribute('data-swipe-locked');
+});
