@@ -67,7 +67,7 @@ npm run icons       # 从 public/logo.svg 重新生成全套 PWA 图标
   - 核心训练、体重、饮食与照片数据默认保存在当前浏览器 IndexedDB，不自动跨设备同步；清理浏览器数据前请先在「我的」中导出备份。
   - `src/lib/nutritionFeatureFlags.ts` 独立控制自动营养目标、照片 AI 与文字 AI 开关；开启可选 AI 估算时会通过受鉴权的独立网关调用外部模型，估算结果仅作建议，经你确认后才会正式保存。
 - **CI 与发布**：[.github/workflows/ci.yml](.github/workflows/ci.yml) 在 PR 阶段执行类型检查、测试、Edge 检查与构建；`main` 分支校验通过后自动部署至 Cloudflare Pages。文字 AI 预览环境由受保护的手动工作流 [.github/workflows/text-ai-preview.yml](.github/workflows/text-ai-preview.yml) 管理。
-- **反馈与许可**：问题欢迎提 [Issue](https://github.com/nuts-and-bytes/tiezheng/issues)（请勿附上访问码或个人健康记录）。仓库目前未含独立 `LICENSE` 文件。
+- **反馈与许可**：问题欢迎提 [Issue](https://github.com/nuts-and-bytes/tiezheng/issues)（请勿附上访问码或个人健康记录）。采用 [MIT License](LICENSE)。
 
 </details>
 
